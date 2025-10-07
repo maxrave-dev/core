@@ -3,8 +3,10 @@
 package com.maxrave.common
 
 import com.maxrave.logger.Logger
-import java.time.LocalDateTime
-import java.time.Month
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.LocalTime
+import kotlinx.datetime.Month
 
 object Config {
     const val SPOTIFY_LOG_IN_URL: String = "https://accounts.spotify.com/en/login"
@@ -29,7 +31,7 @@ object Config {
     const val MAIN_PLAYER = "mainPlayer"
     const val SECONDARY_PLAYER = "secondaryPlayer"
 
-    val REMOVED_SONG_DATE_TIME: LocalDateTime = LocalDateTime.of(2003, Month.AUGUST, 26, 3, 0)
+    val REMOVED_SONG_DATE_TIME: LocalDateTime = LocalDateTime(LocalDate(2003, Month.AUGUST, 26), LocalTime(3, 0))
 }
 
 /*** Update supported location from sigma67/ytmusicapi
