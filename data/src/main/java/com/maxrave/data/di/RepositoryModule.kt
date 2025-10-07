@@ -30,6 +30,7 @@ import com.maxrave.domain.repository.UpdateRepository
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
+import java.io.File
 
 val repositoryModule =
     module {
@@ -46,8 +47,8 @@ val repositoryModule =
         }
 
         single<CommonRepository>(createdAtStart = true) {
-            CommonRepositoryImpl(androidContext(), get(named(SERVICE_SCOPE)), get(), get(), get(), get(), get()).apply {
-                this.init(get())
+            CommonRepositoryImpl(get(named(SERVICE_SCOPE)), get(), get(), get(), get(), get()).apply {
+                this.init(File(androidContext().filesDir, "ytdlp-cookie.txt").path, get())
             }
         }
 
@@ -56,7 +57,7 @@ val repositoryModule =
         }
 
         single<LocalPlaylistRepository> {
-            LocalPlaylistRepositoryImpl(androidContext(), get(), get())
+            LocalPlaylistRepositoryImpl(get(), get())
         }
 
         single<LyricsCanvasRepository> {
@@ -64,7 +65,7 @@ val repositoryModule =
         }
 
         single<PlaylistRepository> {
-            PlaylistRepositoryImpl(androidContext(), get(), get())
+            PlaylistRepositoryImpl(get(), get())
         }
 
         single<PodcastRepository> {

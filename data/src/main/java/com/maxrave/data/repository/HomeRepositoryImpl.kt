@@ -1,11 +1,6 @@
 package com.maxrave.data.repository
 
-import android.content.Context
-import com.maxrave.data.parser.parseChart
-import com.maxrave.data.parser.parseGenreObject
-import com.maxrave.data.parser.parseMixedContent
-import com.maxrave.data.parser.parseMoodsMomentObject
-import com.maxrave.data.parser.parseNewRelease
+import com.maxrave.data.parser.*
 import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.data.model.home.chart.Chart
 import com.maxrave.domain.data.model.mood.Genre
@@ -29,8 +24,8 @@ internal class HomeRepositoryImpl(
     private val youTube: YouTube,
 ) : HomeRepository {
     override fun getHomeData(
-        context: Context,
         params: String?,
+        viewString: String,
     ): Flow<Resource<List<HomeItem>>> =
         flow {
             runCatching {
@@ -131,7 +126,12 @@ internal class HomeRepositoryImpl(
                                 ?.content
                                 ?.sectionListRenderer
                                 ?.contents
-                        list.addAll(parseMixedContent(data, context))
+                        list.addAll(
+                            parseMixedContent(
+                                data,
+                                viewString,
+                            )
+                        )
                         var count = 0
                         while (count < limit && continueParam != null) {
                             youTube
@@ -148,7 +148,12 @@ internal class HomeRepositoryImpl(
                                     Logger.d("Repository", "continueParam: $continueParam")
                                     val dataContinue =
                                         response.continuationContents?.sectionListContinuation?.contents
-                                    list.addAll(parseMixedContent(dataContinue, context))
+                                    list.addAll(
+                                        parseMixedContent(
+                                                dataContinue,
+                                                viewString,
+                                            )
+                                    )
                                     count++
                                     Logger.d("Repository", "count: $count")
                                 }.onFailure {
@@ -164,12 +169,15 @@ internal class HomeRepositoryImpl(
             }
         }.flowOn(Dispatchers.IO)
 
-    override fun getNewRelease(context: Context): Flow<Resource<List<HomeItem>>> =
+    override fun getNewRelease(
+        newReleaseString: String,
+        musicVideoString: String
+    ): Flow<Resource<List<HomeItem>>> =
         flow {
             youTube
                 .newRelease()
                 .onSuccess { result ->
-                    emit(Resource.Success<List<HomeItem>>(parseNewRelease(result, context)))
+                    emit(Resource.Success<List<HomeItem>>(parseNewRelease(result, newReleaseString, musicVideoString)))
                 }.onFailure { error ->
                     emit(Resource.Error<List<HomeItem>>(error.message.toString()))
                 }

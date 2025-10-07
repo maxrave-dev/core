@@ -1,7 +1,5 @@
 package com.maxrave.data.parser
 
-import android.content.Context
-import com.maxrave.common.R
 import com.maxrave.domain.data.entities.SetVideoIdEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.playlist.Author
@@ -23,7 +21,7 @@ internal fun parsePlaylistData(
     header: Any?,
     listContent: List<MusicShelfRenderer.Content>,
     playlistId: String,
-    context: Context,
+    viewString: String
 ): PlaylistBrowse? {
     if (header != null) {
         var title = ""
@@ -273,7 +271,7 @@ internal fun parsePlaylistData(
                                             ?.navigationEndpoint
                                             ?.browseEndpoint
                                             ?.browseId ?: return null,
-                                    name = context.getString(R.string.album),
+                                    name = "Album",
                                 )
                             },
                     artists =
@@ -281,7 +279,7 @@ internal fun parsePlaylistData(
                             parseSongArtists(
                                 it,
                                 1,
-                                context,
+                                viewString,
                             )
                         }
                             ?: listOf(),

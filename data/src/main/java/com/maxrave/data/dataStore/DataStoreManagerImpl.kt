@@ -2,17 +2,12 @@ package com.maxrave.data.dataStore
 
 import android.content.Context
 import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.floatPreferencesKey
-import androidx.datastore.preferences.core.intPreferencesKey
-import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import com.maxrave.common.SELECTED_LANGUAGE
 import com.maxrave.common.SETTINGS_FILENAME
-import com.maxrave.common.SPONSOR_BLOCK
 import com.maxrave.common.SUPPORTED_LANGUAGE
+import com.maxrave.common.SponsorBlockType
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.AI_PROVIDER_GEMINI
 import com.maxrave.domain.manager.DataStoreManager.Values.FALSE
@@ -355,8 +350,8 @@ internal class DataStoreManagerImpl(
 
     override suspend fun getSponsorBlockCategories(): ArrayList<String> {
         val list: ArrayList<String> = arrayListOf()
-        for (category in SPONSOR_BLOCK.list) {
-            if (getString(category.toString()).first() == TRUE) list.add(category.toString())
+        for (category in SponsorBlockType.toList()) {
+            if (getString(category.value).first() == TRUE) list.add(category.value)
         }
         return list
     }
@@ -369,7 +364,7 @@ internal class DataStoreManagerImpl(
                     settings[stringPreferencesKey(category)] = TRUE
                 }
             }
-            SPONSOR_BLOCK.list.filter { !categories.contains(it) }.forEach { category ->
+            SponsorBlockType.toList().filter { !categories.contains(it.value) }.forEach { category ->
                 settingsDataStore.edit { settings ->
                     settings[stringPreferencesKey(category.toString())] = FALSE
                 }

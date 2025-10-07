@@ -2,7 +2,6 @@
 
 package com.maxrave.common
 
-import android.content.Context
 import com.maxrave.logger.Logger
 import java.time.LocalDateTime
 import java.time.Month
@@ -257,50 +256,92 @@ object LIMIT_CACHE_SIZE {
     }
 }
 
-object SPONSOR_BLOCK {
-    val list: Array<CharSequence> =
-        arrayOf("sponsor", "selfpromo", "interaction", "intro", "outro", "preview", "music_offtopic", "poi_highlight", "filler")
-    val listName: Array<Int> =
-        arrayOf(
-            R.string.sponsor,
-            R.string.self_promotion,
-            R.string.interaction,
-            R.string.intro,
-            R.string.outro,
-            R.string.preview,
-            R.string.music_off_topic,
-            R.string.poi_highlight,
-            R.string.filler,
-        )
+sealed class SponsorBlockType(val value: String) {
+    data object SPONSOR : SponsorBlockType("sponsor")
+    data object SELF_PROMOTION : SponsorBlockType("selfpromo")
+    data object INTERACTION : SponsorBlockType("interaction")
+    data object INTRO : SponsorBlockType("intro")
+    data object OUTRO : SponsorBlockType("outro")
+    data object PREVIEW : SponsorBlockType("preview")
+    data object MUSIC_OFF_TOPIC : SponsorBlockType("music_offtopic")
+    data object POI_HIGHLIGHT : SponsorBlockType("poi_highlight")
+    data object FILLER : SponsorBlockType("filler")
 
-    fun fromDbToName(
-        context: Context,
-        list: List<CharSequence>,
-    ): List<String> {
-        val result = mutableListOf<String>()
-        for (item in list) {
-            val index = list.indexOf(item)
-            result.add(context.getString(listName[index]))
+    companion object {
+        fun fromValue(value: String): SponsorBlockType? {
+            return when (value) {
+                SPONSOR.value -> SPONSOR
+                SELF_PROMOTION.value -> SELF_PROMOTION
+                INTERACTION.value -> INTERACTION
+                INTRO.value -> INTRO
+                OUTRO.value -> OUTRO
+                PREVIEW.value -> PREVIEW
+                MUSIC_OFF_TOPIC.value -> MUSIC_OFF_TOPIC
+                POI_HIGHLIGHT.value -> POI_HIGHLIGHT
+                FILLER.value -> FILLER
+                else -> null
+            }
         }
-        return result
-    }
 
-    fun fromNameToDb(
-        context: Context,
-        input: List<String>,
-    ): List<CharSequence> {
-        val allString = fromDbToName(context, list.toList())
-        val listIndex =
-            allString.map {
-                allString.indexOf(it)
-            }
-        val result =
-            listIndex.mapNotNull {
-                list.getOrNull(it)
-            }
-        return result
+        fun toList(): List<SponsorBlockType> {
+            return listOf(
+                SPONSOR,
+                SELF_PROMOTION,
+                INTERACTION,
+                INTRO,
+                OUTRO,
+                PREVIEW,
+                MUSIC_OFF_TOPIC,
+                POI_HIGHLIGHT,
+                FILLER
+            )
+        }
     }
 }
+//object SPONSOR_BLOCK {
+//    val list: Array<CharSequence> =
+//        arrayOf("sponsor", "selfpromo", "interaction", "intro", "outro", "preview", "music_offtopic", "poi_highlight", "filler")
+//    val listName: Array<Int> =
+//        arrayOf(
+//            R.string.sponsor,
+//            R.string.self_promotion,
+//            R.string.interaction,
+//            R.string.intro,
+//            R.string.outro,
+//            R.string.preview,
+//            R.string.music_off_topic,
+//            R.string.poi_highlight,
+//            R.string.filler,
+//        )
+//
+//    fun fromDbToName(
+//        context: Context,
+//        list: List<CharSequence>,
+//    ): List<String> {
+//        val result = mutableListOf<String>()
+//        for (item in list) {
+//            val index = list.indexOf(item)
+//            result.add(context.getString(listName[index]))
+//        }
+//        return result
+//    }
+//
+//    fun fromNameToDb(
+//        context: Context,
+//        input: List<String>,
+//    ): List<CharSequence> {
+//        val allString = fromDbToName(context, list.toList())
+//        val listIndex =
+//            allString.map {
+//                allString.indexOf(it)
+//            }
+//        val result =
+//            listIndex.mapNotNull {
+//                list.getOrNull(it)
+//            }
+//        return result
+//    }
+//}
 
 object CHART_SUPPORTED_COUNTRY {
     val items =

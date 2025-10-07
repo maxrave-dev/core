@@ -7,7 +7,7 @@ import com.maxrave.domain.manager.DataStoreManager
 import kotlinx.coroutines.flow.Flow
 
 interface CommonRepository {
-    fun init(dataStoreManager: DataStoreManager)
+    fun init(cookiePath: String, dataStoreManager: DataStoreManager)
 
     // Database
     fun closeDatabase()
@@ -28,5 +28,5 @@ interface CommonRepository {
 
     suspend fun writeTextToFile(text: String, filePath: String): Boolean
 
-    suspend fun getCookiesFromInternalDatabase(url: String): CookieItem
+    suspend fun getCookiesFromInternalDatabase(url: String, packageName: String): CookieItem
 }

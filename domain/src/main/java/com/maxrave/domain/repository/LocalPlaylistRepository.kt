@@ -60,42 +60,61 @@ interface LocalPlaylistRepository {
 
     suspend fun getListTrackVideoId(id: Long): List<String>
 
-    fun insertLocalPlaylist(localPlaylist: LocalPlaylistEntity): Flow<LocalResource<String>>
+    fun insertLocalPlaylist(
+        localPlaylist: LocalPlaylistEntity,
+        successMessage: String,
+    ): Flow<LocalResource<String>>
 
-    fun deleteLocalPlaylist(id: Long): Flow<LocalResource<String>>
+    fun deleteLocalPlaylist(
+        id: Long,
+        successMessage: String
+    ): Flow<LocalResource<String>>
 
     fun updateTitleLocalPlaylist(
         id: Long,
         newTitle: String,
+        updatedMessage: String,
+        updatedYtMessage: String,
+        errorMessage: String,
     ): Flow<LocalResource<String>>
 
     fun updateThumbnailLocalPlaylist(
         id: Long,
         newThumbnail: String,
+        successMessage: String
     ): Flow<LocalResource<String>>
 
     fun updateDownloadState(
         id: Long,
         downloadState: Int,
+        successMessage: String
     ): Flow<LocalResource<String>>
 
     fun syncYouTubePlaylistToLocalPlaylist(
         playlist: PlaylistState,
         tracks: List<Track>,
+        successMessage: String,
+        errorMessage: String,
     ): Flow<LocalResource<String>>
 
-    fun syncLocalPlaylistToYouTubePlaylist(playlistId: Long): Flow<LocalResource<String>>
+    fun syncLocalPlaylistToYouTubePlaylist(
+        playlistId: Long,
+        successMessage: String,
+        errorMessage: String,
+    ): Flow<LocalResource<String>>
 
-    fun unsyncLocalPlaylist(id: Long): Flow<LocalResource<String>>
+    fun unsyncLocalPlaylist(id: Long, successMessage: String): Flow<LocalResource<String>>
 
     fun updateSyncState(
         id: Long,
         syncState: Int,
+        successMessage: String
     ): Flow<LocalResource<String>>
 
     fun updateYouTubePlaylistId(
         id: Long,
         youtubePlaylistId: String,
+        successMessage: String
     ): Flow<LocalResource<String>>
 
     fun updateListTrackSynced(id: Long): Flow<Boolean>
@@ -103,11 +122,17 @@ interface LocalPlaylistRepository {
     fun addTrackToLocalPlaylist(
         id: Long,
         song: SongEntity,
+        successMessage: String,
+        updatedYtMessage: String,
+        errorMessage: String,
     ): Flow<LocalResource<String>>
 
     fun removeTrackFromLocalPlaylist(
         id: Long,
         song: SongEntity,
+        successMessage: String,
+        updatedYtMessage: String,
+        errorMessage: String,
     ): Flow<LocalResource<String>>
 
     fun getSuggestionsTrackForPlaylist(id: Long): Flow<LocalResource<Pair<String?, List<Track>>>>

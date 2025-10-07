@@ -1,6 +1,5 @@
 package com.maxrave.domain.repository
 
-import android.content.Context
 import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.data.model.home.chart.Chart
 import com.maxrave.domain.data.model.mood.Mood
@@ -11,11 +10,11 @@ import kotlinx.coroutines.flow.Flow
 
 interface HomeRepository {
     fun getHomeData(
-        context: Context,
         params: String? = null,
+        viewString: String,
     ): Flow<Resource<List<HomeItem>>>
 
-    fun getNewRelease(context: Context): Flow<Resource<List<HomeItem>>>
+    fun getNewRelease(newReleaseString: String, musicVideoString: String): Flow<Resource<List<HomeItem>>>
 
     fun getChartData(countryCode: String = "KR"): Flow<Resource<Chart>>
 

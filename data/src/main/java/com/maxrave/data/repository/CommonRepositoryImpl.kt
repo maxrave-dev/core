@@ -1,6 +1,5 @@
 package com.maxrave.data.repository
 
-import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteDatabase.OPEN_READONLY
 import android.webkit.CookieManager
@@ -34,7 +33,6 @@ import org.simpmusic.aiservice.AiClient
 import java.io.File
 
 internal class CommonRepositoryImpl(
-    private val context: Context,
     private val coroutineScope: CoroutineScope,
     private val database: MusicDatabase,
     private val localDataSource: LocalDataSource,
@@ -42,10 +40,9 @@ internal class CommonRepositoryImpl(
     private val spotify: Spotify,
     private val aiClient: AiClient,
 ) : CommonRepository {
-    override fun init(dataStoreManager: DataStoreManager) {
-        youTube.setUpInterceptors(context)
-        youTube.cachePath = File(context.cacheDir, "http-cache")
-        youTube.cookiePath = File(context.filesDir, "ytdlp-cookie.txt").path.toPath()
+    override fun init(cookiePath: String, dataStoreManager: DataStoreManager) {
+        youTube.setUpInterceptors()
+        youTube.cookiePath = cookiePath.toPath()
         coroutineScope.launch {
             val resetSpotifyToken =
                 launch {
@@ -83,7 +80,7 @@ internal class CommonRepositoryImpl(
                         }
                         Logger.d("YouTube", "New cookie")
                         localDataSource.getUsedGoogleAccount()?.netscapeCookie?.let {
-                            writeTextToFile(it, File(context.filesDir, "ytdlp-cookie.txt").path)
+                            writeTextToFile(it, cookiePath)
                             Logger.w("YouTube", "Wrote cookie to file")
                         }
                     }
@@ -236,7 +233,10 @@ internal class CommonRepositoryImpl(
     /**
      * Original from YTDLnis app
      */
-    override suspend fun getCookiesFromInternalDatabase(url: String): CookieItem =
+    override suspend fun getCookiesFromInternalDatabase(
+        url: String,
+        packageName: String
+    ): CookieItem =
         withContext(Dispatchers.IO) {
             try {
                 val projection =
@@ -251,7 +251,7 @@ internal class CommonRepositoryImpl(
                 CookieManager.getInstance().flush()
                 val cookieList = mutableListOf<CookieItem.Content>()
                 val dbPath =
-                    File("/data/data/${context.packageName}/").walkTopDown().find { it.name == "Cookies" }
+                    File("/data/data/${packageName}/").walkTopDown().find { it.name == "Cookies" }
                         ?: throw Exception("Cookies File not found!")
 
                 val db =

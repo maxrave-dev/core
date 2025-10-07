@@ -1,20 +1,10 @@
 package com.maxrave.data.parser
 
-import android.content.Context
-import com.maxrave.common.R
 import com.maxrave.domain.data.model.home.Content
 import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
-import com.maxrave.kotlinytmusicscraper.models.ArtistItem
-import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
-import com.maxrave.kotlinytmusicscraper.models.MusicTwoRowItemRenderer
-import com.maxrave.kotlinytmusicscraper.models.PlaylistItem
-import com.maxrave.kotlinytmusicscraper.models.Run
-import com.maxrave.kotlinytmusicscraper.models.SectionListRenderer
-import com.maxrave.kotlinytmusicscraper.models.SongItem
-import com.maxrave.kotlinytmusicscraper.models.Thumbnail
-import com.maxrave.kotlinytmusicscraper.models.VideoItem
+import com.maxrave.kotlinytmusicscraper.models.*
 import com.maxrave.kotlinytmusicscraper.pages.ArtistPage
 import com.maxrave.kotlinytmusicscraper.pages.ExplorePage
 import com.maxrave.kotlinytmusicscraper.pages.RelatedPage
@@ -22,7 +12,7 @@ import com.maxrave.logger.Logger
 
 internal fun parseMixedContent(
     data: List<SectionListRenderer.Content>?,
-    context: Context,
+    viewString: String,
 ): List<HomeItem> {
     val list = mutableListOf<HomeItem>()
     if (data != null) {
@@ -437,7 +427,7 @@ internal fun parseMixedContent(
                                             parseSongArtists(
                                                 result1.musicResponsiveListItemRenderer!!,
                                                 1,
-                                                context,
+                                                viewString,
                                             ) ?: listOf(),
                                         description = null,
                                         isExplicit = ytItem.explicit,
@@ -513,7 +503,7 @@ internal fun parseMixedContent(
 
 internal fun parseSongFlat(
     data: MusicResponsiveListItemRenderer?,
-    context: Context,
+    viewString: String
 ): Content? {
     if (data?.flexColumns != null) {
         val column =
@@ -550,7 +540,7 @@ internal fun parseSongFlat(
                 } else {
                     null
                 },
-            artists = parseSongArtists(data, 1, context) ?: listOf(),
+            artists = parseSongArtists(data, 1, viewString) ?: listOf(),
             description = null,
             isExplicit = null,
             playlistId = null,
@@ -605,14 +595,14 @@ internal fun parseSongFlat(
 internal fun parseSongArtists(
     data: MusicResponsiveListItemRenderer,
     index: Int,
-    context: Context,
+    viewString: String
 ): List<Artist>? {
     val flexItem = getFlexColumnItem(data, index)
     return if (flexItem == null) {
         null
     } else {
         val runs = flexItem.text?.runs
-        runs?.let { parseSongArtistsRuns(it, context) }
+        runs?.let { parseSongArtistsRuns(it, viewString) }
     }
 }
 
@@ -633,7 +623,7 @@ fun getFlexColumnItem(
 
 internal fun parsePlaylist(
     data: MusicTwoRowItemRenderer,
-    context: Context,
+    viewString: String
 ): Content {
     val subtitle = data.subtitle
     var description = ""
@@ -665,7 +655,7 @@ internal fun parsePlaylist(
                             ?.split(" ")
                             ?.get(0)
                 }
-                author.addAll(parseSongArtistsRuns(subtitle.runs!!.take(1), context))
+                author.addAll(parseSongArtistsRuns(subtitle.runs!!.take(1), viewString))
             }
         }
     }
@@ -696,7 +686,7 @@ internal fun parsePlaylist(
 
 internal fun parseSongArtistsRuns(
     runs: List<Run>,
-    context: Context,
+    viewString: String
 ): List<Artist> {
     val artists = mutableListOf<Artist>()
     for (i in 0..(runs.size / 2)) {
@@ -709,7 +699,7 @@ internal fun parseSongArtistsRuns(
             )
         } else {
             if (!runs[i * 2].text.contains(
-                    context.getString(R.string.view_count).removeRange(0..4),
+                    viewString.removeRange(0..4),
                 )
             ) {
                 artists.add(Artist(name = runs[i * 2].text, id = null))
@@ -718,224 +708,6 @@ internal fun parseSongArtistsRuns(
     }
     Logger.d("artists_log", artists.toString())
     return artists
-}
-
-internal fun parseRelatedArtists(data: MusicTwoRowItemRenderer): Content =
-    Content(
-        album = null,
-        artists = listOf(),
-        description =
-            data.subtitle
-                ?.runs
-                ?.get(0)
-                ?.text
-                ?.split(" ")
-                ?.get(0) ?: "",
-        isExplicit = false,
-        playlistId = null,
-        browseId =
-            data.title
-                ?.runs
-                ?.get(0)
-                ?.navigationEndpoint
-                ?.browseEndpoint
-                ?.browseId,
-        thumbnails =
-            data.thumbnailRenderer
-                ?.musicThumbnailRenderer
-                ?.thumbnail
-                ?.thumbnails
-                ?.toListThumbnail()
-                ?: listOf(),
-        title =
-            data.title
-                ?.runs
-                ?.get(0)
-                ?.text ?: "",
-        videoId = null,
-        views = null,
-    )
-
-internal fun parseAlbum(data: MusicTwoRowItemRenderer): Content {
-    val title =
-        data.title
-            ?.runs
-            ?.get(0)
-            ?.text
-    val browseId = data.navigationEndpoint?.browseEndpoint?.browseId
-    val thumbnails =
-        data.thumbnailRenderer
-            ?.musicThumbnailRenderer
-            ?.thumbnail
-            ?.thumbnails
-    return Content(
-        album = Album(id = browseId ?: "", name = title ?: ""),
-        artists = listOf(),
-        description = null,
-        isExplicit = false,
-        playlistId = null,
-        browseId = browseId,
-        thumbnails = thumbnails?.toListThumbnail() ?: listOf(),
-        title = title ?: "",
-        videoId = "",
-        views = "",
-    )
-}
-
-internal fun parseSong(
-    data: MusicTwoRowItemRenderer,
-    context: Context,
-): Content {
-    val title =
-        data.title
-            ?.runs
-            ?.get(0)
-            ?.text
-    val videoId = data.navigationEndpoint?.watchEndpoint?.videoId
-    val thumbnails =
-        data.thumbnailRenderer
-            ?.musicThumbnailRenderer
-            ?.thumbnail
-            ?.thumbnails
-    val runs = data.subtitle?.runs
-    var name = ""
-    var id = ""
-    var view = ""
-    var radioString = ""
-    val listArtist: MutableList<Artist> = mutableListOf()
-    val listAlbum: MutableList<Album> = mutableListOf()
-    Logger.d("parse_runs", runs.toString())
-    if (runs != null) {
-        for (i in runs.indices) {
-            if (runs[0].text == context.getString(R.string.song)) {
-                if (i.rem(2) == 0) {
-                    if (i == runs.size - 1) {
-                        listArtist.add(
-                            Artist(
-                                name = runs[i].text,
-                                id = runs[i].navigationEndpoint?.browseEndpoint?.browseId,
-                            ),
-                        )
-                    } else if (i != 0) {
-                        name += runs[i].text
-                        id += runs[i].navigationEndpoint?.browseEndpoint?.browseId
-                        if (id.startsWith("MPRE")) {
-                            listAlbum.add(Album(id = id, name = name))
-                        } else {
-                            listArtist.add(Artist(name = name, id = id))
-                        }
-                    }
-                }
-            } else {
-                if (i.rem(2) == 0) {
-                    if (i == runs.size - 1) {
-                        view += runs[i].text
-                    } else {
-                        name += runs[i].text
-                        id += runs[i].navigationEndpoint?.browseEndpoint?.browseId
-                        if (id.startsWith("MPRE")) {
-                            listAlbum.add(Album(id = id, name = name))
-                        } else {
-                            listArtist.add(Artist(name = name, id = id))
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Logger.d("parse_songArtist", listArtist.toString())
-    Logger.d("parse_songAlbum", listAlbum.toString())
-    return Content(
-        album = listAlbum.firstOrNull(),
-        artists = listArtist,
-        isExplicit = false,
-        thumbnails = thumbnails?.toListThumbnail() ?: listOf(),
-        title = title ?: "",
-        videoId = videoId!!,
-        views = view,
-        browseId = "",
-        playlistId = "",
-        description = "",
-    )
-}
-
-internal fun parseSongRuns(runs: List<Run>?): Triple<Album?, List<Artist>, Map<String, String?>> {
-    val list: Map<String, String?> = mutableMapOf()
-    val listArtist: MutableList<Artist> = mutableListOf()
-    val listAlbum: MutableList<Album> = mutableListOf()
-    if ((runs?.size?.rem(2) ?: 1) == 0) {
-        runs?.forEach { run ->
-            val text = run.text
-            if (run.navigationEndpoint != null) {
-                val item =
-                    mapOf("name" to text, "id" to run.navigationEndpoint!!.browseEndpoint?.browseId)
-                if (item["id"] != null) {
-                    if (item["id"]!!.startsWith("MPRE") || item["id"]!!.contains("release_detail")) {
-                        listAlbum.add(
-                            Album(
-                                name = item["name"] as String,
-                                id = item["id"] as String,
-                            ),
-                        )
-                    } else {
-                        listArtist.add(
-                            Artist(
-                                name = item["name"] as String,
-                                id = item["id"] as String,
-                            ),
-                        )
-                    }
-                }
-            } else {
-                if (Regex("^\\d([^ ])* [^ ]*\$").matches(text)) {
-                    list.plus(mapOf("views" to text.split(" ")[0]))
-                } else if (Regex("^(\\d+:)*\\d+:\\d+\$").matches(text)) {
-                    list.plus(mapOf("duration" to text))
-                    list.plus(
-                        mapOf(
-                            "duration_seconds" to
-                                text
-                                    .split(":")
-                                    .let { it[0].toInt() * 60 + it[1].toInt() },
-                        ),
-                    )
-                } else if (Regex("^\\d{4}\$").matches(text)) {
-                    list.plus(mapOf("year" to text))
-                } else {
-                    listArtist.add(Artist(name = text, id = null))
-                }
-            }
-        }
-    }
-
-    return Triple(listAlbum.firstOrNull(), listArtist, list)
-}
-
-internal fun parseWatchPlaylist(data: MusicTwoRowItemRenderer): Content {
-    val title =
-        data.title
-            ?.runs
-            ?.get(0)
-            ?.text
-    val playlistId = data.navigationEndpoint?.watchPlaylistEndpoint?.playlistId
-    val thumbnails =
-        data.thumbnailRenderer
-            ?.musicThumbnailRenderer
-            ?.thumbnail
-            ?.thumbnails
-    Logger.w("parse_watch_playlist", title.toString())
-    return Content(
-        album = null,
-        artists = listOf(),
-        description = null,
-        isExplicit = null,
-        playlistId = playlistId,
-        browseId = null,
-        thumbnails = thumbnails?.toListThumbnail() ?: listOf(),
-        title = title ?: "",
-        videoId = null,
-        views = null,
-    )
 }
 
 fun Thumbnail.toThumbnail(): com.maxrave.domain.data.model.searchResult.songs.Thumbnail =
@@ -955,12 +727,13 @@ fun List<Thumbnail>.toListThumbnail(): List<com.maxrave.domain.data.model.search
 
 internal fun parseNewRelease(
     explore: ExplorePage,
-    context: Context,
+    newReleaseString: String,
+    musicVideoString: String,
 ): ArrayList<HomeItem> {
     val result = arrayListOf<HomeItem>()
     result.add(
         HomeItem(
-            title = context.getString(R.string.new_release),
+            title = newReleaseString,
             contents =
                 explore.released.map {
                     Content(
@@ -994,7 +767,7 @@ internal fun parseNewRelease(
     )
     result.add(
         HomeItem(
-            title = context.getString(R.string.music_video),
+            title = musicVideoString,
             contents =
                 explore.musicVideo.map { videoItem ->
                     val artists =

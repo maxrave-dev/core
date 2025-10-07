@@ -35,6 +35,7 @@ interface MediaPlayerHandler {
     // Listeners
     var onUpdateNotification: (List<GenericCommandButton>) -> Unit
     var pushPlayerError: (PlayerError) -> Unit
+    var showToast: (ToastType) -> Unit
 
     // Playback control
     suspend fun onPlayerEvent(playerEvent: PlayerEvent)
@@ -346,4 +347,11 @@ enum class PlaylistType {
     PLAYLIST,
     LOCAL_PLAYLIST,
     RADIO,
+}
+
+sealed class ToastType(
+    extra: String? = null,
+) {
+    data object ExplicitContent : ToastType()
+    data class PlayerError(val error: String) : ToastType(error)
 }

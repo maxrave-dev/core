@@ -44,15 +44,18 @@ interface PlaylistRepository {
 
     fun getRadio(
         radioId: String,
+        defaultDescription: String,
+        radioString: String,
+        viewString: String,
         originalTrack: SongEntity? = null,
         artist: ArtistEntity? = null,
     ): Flow<Resource<Pair<PlaylistBrowse, String?>>>
 
-    fun getRDATRadioData(radioId: String): Flow<Resource<Pair<PlaylistBrowse, String?>>>
+    fun getRDATRadioData(radioId: String, viewString: String): Flow<Resource<Pair<PlaylistBrowse, String?>>>
 
-    fun getFullPlaylistData(playlistId: String): Flow<Resource<PlaylistBrowse>>
+    fun getFullPlaylistData(playlistId: String, viewString: String): Flow<Resource<PlaylistBrowse>>
 
-    fun getPlaylistData(playlistId: String): Flow<Resource<Pair<PlaylistBrowse, String?>>>
+    fun getPlaylistData(playlistId: String, viewString: String): Flow<Resource<Pair<PlaylistBrowse, String?>>>
 
     fun getLibraryPlaylist(): Flow<List<PlaylistsResult>?>
 
