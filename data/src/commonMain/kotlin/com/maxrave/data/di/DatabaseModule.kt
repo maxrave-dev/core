@@ -29,7 +29,6 @@ import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 import org.simpmusic.aiservice.AiClient
 import org.simpmusic.lyrics.SimpMusicLyricsClient
-import java.time.ZoneOffset
 import kotlin.time.ExperimentalTime
 
 @OptIn(ExperimentalTime::class)
@@ -187,7 +186,7 @@ val databaseModule =
 
         // Move YouTube from Singleton to Koin DI
         single(createdAtStart = true) {
-            YouTube(androidContext())
+            YouTube()
         }
 
         single(createdAtStart = true) {
@@ -199,8 +198,6 @@ val databaseModule =
         }
 
         single(createdAtStart = true) {
-            SimpMusicLyricsClient(
-                androidContext(),
-            )
+            SimpMusicLyricsClient()
         }
     }

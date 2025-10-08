@@ -333,12 +333,11 @@ internal class SongRepositoryImpl(
     override fun downloadToFile(
         track: Track,
         path: String,
-        bitmap: Bitmap,
         videoId: String,
         isVideo: Boolean,
     ): Flow<DownloadProgress> =
         youTube
-            .download(track.toSongItemForDownload(), path, bitmap, videoId, isVideo)
+            .download(track.toSongItemForDownload(), path, videoId, isVideo)
             .map {
                 DownloadProgress(
                     audioDownloadProgress = it.audioDownloadProgress,

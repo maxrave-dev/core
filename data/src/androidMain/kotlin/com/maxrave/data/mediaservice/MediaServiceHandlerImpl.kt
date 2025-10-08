@@ -89,6 +89,7 @@ import kotlinx.datetime.LocalDateTime
 import kotlinx.serialization.json.Json
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
+import org.koin.mp.KoinPlatform.getKoin
 import kotlin.math.pow
 
 private val TAG = "Media3ServiceHandlerImpl"
@@ -100,10 +101,9 @@ internal class MediaServiceHandlerImpl(
     private val localPlaylistRepository: LocalPlaylistRepository,
     private val coroutineScope: CoroutineScope,
 ) : MediaPlayerHandler,
-    MediaPlayerListener,
-    KoinComponent {
-    private val context: Context by inject()
-    override val player: MediaPlayerInterface by inject()
+    MediaPlayerListener {
+    private val context: Context = getKoin().get()
+    override val player: MediaPlayerInterface = getKoin().get()
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
     override var pushPlayerError: (PlayerError) -> Unit = {}

@@ -1,6 +1,5 @@
 package com.maxrave.domain.repository
 
-import android.graphics.Bitmap
 import com.maxrave.domain.data.entities.QueueEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
@@ -102,7 +101,6 @@ interface SongRepository {
     fun downloadToFile(
         track: Track,
         path: String,
-        bitmap: Bitmap,
         videoId: String,
         isVideo: Boolean,
     ): Flow<DownloadProgress>

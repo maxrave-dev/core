@@ -72,6 +72,9 @@ kotlin {
                 implementation(projects.common)
                 implementation(projects.domain)
                 implementation(projects.aiService)
+                implementation(projects.lyricsService)
+                implementation(projects.spotify)
+                implementation(projects.kotlinYtmusicScraper)
 
                 implementation(libs.kotlin.stdlib)
                 // Add KMP dependencies here
@@ -102,9 +105,6 @@ kotlin {
                 // commonMain by default and will correctly pull the Android artifacts of any KMP
                 // dependencies declared in commonMain.
                 implementation(libs.koin.android)
-                implementation(projects.kotlinYtmusicScraper)
-                implementation(projects.spotify)
-                implementation(projects.lyricsService)
                 implementation(projects.media3)
             }
         }
