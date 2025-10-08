@@ -8,7 +8,7 @@ import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.utils.Resource
 import kotlinx.coroutines.flow.Flow
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 interface PlaylistRepository {
     fun getAllPlaylists(limit: Int): Flow<List<PlaylistEntity>>

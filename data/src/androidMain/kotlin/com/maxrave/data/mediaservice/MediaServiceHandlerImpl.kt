@@ -1,16 +1,13 @@
 package com.maxrave.data.mediaservice
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.app.ActivityManager
 import android.app.ActivityManager.RunningAppProcessInfo
 import android.content.Context
 import android.content.Intent
-import android.content.ServiceConnection
 import android.media.audiofx.AudioEffect
 import android.media.audiofx.LoudnessEnhancer
-import android.os.IBinder
-import com.maxrave.common.*
+import com.maxrave.common.ASC
 import com.maxrave.common.Config.ALBUM_CLICK
 import com.maxrave.common.Config.PLAYLIST_CLICK
 import com.maxrave.common.Config.RADIO_CLICK
@@ -18,49 +15,95 @@ import com.maxrave.common.Config.RECOVER_TRACK_QUEUE
 import com.maxrave.common.Config.SHARE
 import com.maxrave.common.Config.SONG_CLICK
 import com.maxrave.common.Config.VIDEO_CLICK
+import com.maxrave.common.DESC
+import com.maxrave.common.LOCAL_PLAYLIST_ID
+import com.maxrave.common.LOCAL_PLAYLIST_ID_SAVED_QUEUE
+import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.entities.NewFormatEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
-import com.maxrave.domain.data.player.*
+import com.maxrave.domain.data.player.GenericCommandButton
+import com.maxrave.domain.data.player.GenericMediaItem
+import com.maxrave.domain.data.player.GenericMediaMetadata
+import com.maxrave.domain.data.player.GenericPlaybackParameters
+import com.maxrave.domain.data.player.GenericTracks
+import com.maxrave.domain.data.player.PlayerConstants
+import com.maxrave.domain.data.player.PlayerError
 import com.maxrave.domain.extension.isVideo
+import com.maxrave.domain.extension.now
 import com.maxrave.domain.extension.toGenericMediaItem
 import com.maxrave.domain.extension.toSongEntity
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.FALSE
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
-import com.maxrave.domain.mediaservice.handler.*
+import com.maxrave.domain.mediaservice.handler.ControlState
+import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
+import com.maxrave.domain.mediaservice.handler.NowPlayingTrackState
+import com.maxrave.domain.mediaservice.handler.PlayerEvent
+import com.maxrave.domain.mediaservice.handler.PlaylistType
+import com.maxrave.domain.mediaservice.handler.QueueData
+import com.maxrave.domain.mediaservice.handler.RepeatState
+import com.maxrave.domain.mediaservice.handler.SimpleMediaState
+import com.maxrave.domain.mediaservice.handler.SleepTimerState
+import com.maxrave.domain.mediaservice.handler.ToastType
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.LocalPlaylistRepository
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
-import com.maxrave.domain.utils.*
+import com.maxrave.domain.utils.FilterState
+import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.connectArtists
+import com.maxrave.domain.utils.toArrayListTrack
+import com.maxrave.domain.utils.toListName
+import com.maxrave.domain.utils.toSongEntity
+import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
-import com.maxrave.media3.di.setServiceActivitySession
-import com.maxrave.media3.di.startService
-import com.maxrave.media3.di.stopService
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.cancellable
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.lastOrNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.single
+import kotlinx.coroutines.flow.singleOrNull
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.datetime.LocalDateTime
 import kotlinx.serialization.json.Json
-import java.time.LocalDateTime
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import kotlin.math.pow
 
 private val TAG = "Media3ServiceHandlerImpl"
 
 internal class MediaServiceHandlerImpl(
-    inputPlayer: MediaPlayerInterface,
-    private val context: Context,
     private val dataStoreManager: DataStoreManager,
     private val songRepository: SongRepository,
     private val streamRepository: StreamRepository,
     private val localPlaylistRepository: LocalPlaylistRepository,
     private val coroutineScope: CoroutineScope,
 ) : MediaPlayerHandler,
-    MediaPlayerListener {
-    override val player: MediaPlayerInterface = inputPlayer
+    MediaPlayerListener,
+    KoinComponent {
+    private val context: Context by inject()
+    override val player: MediaPlayerInterface by inject()
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
     override var pushPlayerError: (PlayerError) -> Unit = {}
@@ -326,7 +369,7 @@ internal class MediaServiceHandlerImpl(
                                 Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
                             }
                         }
-                        songRepository.updateSongInLibrary(LocalDateTime.now(), songEntity.videoId).singleOrNull().let {
+                        songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
                             Logger.w(TAG, "getDataOfNowPlayingState: $it")
                         }
                         songRepository.updateListenCount(songEntity.videoId)
@@ -2076,25 +2119,6 @@ internal class MediaServiceHandlerImpl(
         } else {
             stopBufferedUpdate()
         }
-    }
-
-    override fun startMediaService(
-        context: Context,
-        serviceConnection: ServiceConnection,
-    ) {
-        startService(context, serviceConnection)
-    }
-
-    override fun stopMediaService(context: Context) {
-        stopService(context)
-    }
-
-    override fun setActivitySession(
-        context: Context,
-        cls: Class<out Activity>,
-        service: IBinder?,
-    ) {
-        setServiceActivitySession(context, cls, service)
     }
 }
 

@@ -30,8 +30,9 @@ import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.data.type.RecentlyType
+import com.maxrave.domain.extension.now
 import kotlinx.coroutines.flow.Flow
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 @Dao
 internal interface DatabaseDao {
@@ -235,7 +236,7 @@ internal interface DatabaseDao {
     suspend fun updateLiked(
         liked: Int,
         videoId: String,
-        favoriteAt: LocalDateTime? = if (liked == 1) LocalDateTime.now() else null,
+        favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
     )
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -266,7 +267,7 @@ internal interface DatabaseDao {
     suspend fun updateDownloadState(
         downloadState: Int,
         videoId: String,
-        downloadedAt: LocalDateTime? = if (downloadState == 3) LocalDateTime.now() else null,
+        downloadedAt: LocalDateTime? = if (downloadState == 3) now() else null,
     )
 
     @Query("UPDATE song SET durationSeconds = :durationSeconds WHERE videoId = :videoId")
@@ -328,7 +329,7 @@ internal interface DatabaseDao {
     suspend fun updateFollowed(
         followed: Int,
         channelId: String,
-        followedAt: LocalDateTime? = if (followed == 1) LocalDateTime.now() else null,
+        followedAt: LocalDateTime? = if (followed == 1) now() else null,
     )
 
     @Query("UPDATE artist SET inLibrary = :inLibrary WHERE channelId = :channelId")
@@ -360,7 +361,7 @@ internal interface DatabaseDao {
     suspend fun updateAlbumLiked(
         liked: Int,
         browseId: String,
-        favoriteAt: LocalDateTime? = if (liked == 1) LocalDateTime.now() else null,
+        favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
     )
 
     @Query("UPDATE album SET inLibrary = :inLibrary WHERE browseId = :browseId")
@@ -373,7 +374,7 @@ internal interface DatabaseDao {
     suspend fun updateAlbumDownloadState(
         downloadState: Int,
         browseId: String,
-        downloadedAt: LocalDateTime? = if (downloadState == 3) LocalDateTime.now() else null,
+        downloadedAt: LocalDateTime? = if (downloadState == 3) now() else null,
     )
 
     @Query("SELECT * FROM album WHERE downloadState = 3 ORDER BY downloadedAt DESC LIMIT :limit OFFSET :offset")
@@ -414,7 +415,7 @@ internal interface DatabaseDao {
     suspend fun updatePlaylistLiked(
         liked: Int,
         playlistId: String,
-        favoriteAt: LocalDateTime? = if (liked == 1) LocalDateTime.now() else null,
+        favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
     )
 
     @Query("UPDATE playlist SET inLibrary = :inLibrary WHERE id = :playlistId")
@@ -427,7 +428,7 @@ internal interface DatabaseDao {
     suspend fun updatePlaylistDownloadState(
         downloadState: Int,
         playlistId: String,
-        downloadedAt: LocalDateTime? = if (downloadState == 3) LocalDateTime.now() else null,
+        downloadedAt: LocalDateTime? = if (downloadState == 3) now() else null,
     )
 
     @Query("SELECT * FROM playlist WHERE downloadState = 3 ORDER BY downloadedAt DESC LIMIT :limit OFFSET :offset")
@@ -492,7 +493,7 @@ internal interface DatabaseDao {
     suspend fun updateLocalPlaylistDownloadState(
         downloadState: Int,
         id: Long,
-        downloadedAt: LocalDateTime? = if (downloadState == 3) LocalDateTime.now() else null,
+        downloadedAt: LocalDateTime? = if (downloadState == 3) now() else null,
     )
 
     @Query("SELECT * FROM local_playlist WHERE downloadState = 3 ORDER BY downloadedAt DESC LIMIT :limit OFFSET :offset")

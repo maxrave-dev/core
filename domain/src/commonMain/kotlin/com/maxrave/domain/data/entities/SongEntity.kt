@@ -4,7 +4,8 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.maxrave.domain.data.entities.DownloadState.STATE_NOT_DOWNLOADED
 import com.maxrave.domain.data.type.RecentlyType
-import java.time.LocalDateTime
+import com.maxrave.domain.extension.now
+import kotlinx.datetime.LocalDateTime
 
 @Entity(tableName = "song")
 data class SongEntity(
@@ -26,9 +27,9 @@ data class SongEntity(
     val liked: Boolean = false,
     val totalPlayTime: Long = 0,
     val downloadState: Int = STATE_NOT_DOWNLOADED,
-    val favoriteAt: LocalDateTime? = LocalDateTime.now(),
-    val downloadedAt: LocalDateTime? = LocalDateTime.now(),
-    val inLibrary: LocalDateTime = LocalDateTime.now(),
+    val favoriteAt: LocalDateTime? = now(),
+    val downloadedAt: LocalDateTime? = now(),
+    val inLibrary: LocalDateTime = now(),
     val canvasUrl: String? = null,
     val canvasThumbUrl: String? = null,
 ) : RecentlyType {

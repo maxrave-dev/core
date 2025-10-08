@@ -6,7 +6,7 @@ import com.maxrave.domain.data.model.browse.album.AlbumBrowse
 import com.maxrave.domain.data.model.searchResult.albums.AlbumsResult
 import com.maxrave.domain.utils.Resource
 import kotlinx.coroutines.flow.Flow
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 interface AlbumRepository {
     fun getAllAlbums(limit: Int): Flow<List<AlbumEntity>>

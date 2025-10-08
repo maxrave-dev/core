@@ -4,7 +4,7 @@ import com.maxrave.domain.data.entities.ArtistEntity
 import com.maxrave.domain.data.model.browse.artist.ArtistBrowse
 import com.maxrave.domain.utils.Resource
 import kotlinx.coroutines.flow.Flow
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 interface ArtistRepository {
     fun getAllArtists(limit: Int): Flow<List<ArtistEntity>>

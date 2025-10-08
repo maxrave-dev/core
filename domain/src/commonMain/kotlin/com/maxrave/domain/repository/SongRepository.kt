@@ -9,7 +9,7 @@ import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.utils.Resource
 import kotlinx.coroutines.flow.Flow
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 interface SongRepository {
     fun getAllSongs(limit: Int): Flow<List<SongEntity>>

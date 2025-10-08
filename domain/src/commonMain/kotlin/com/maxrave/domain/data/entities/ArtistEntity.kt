@@ -4,7 +4,8 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.maxrave.domain.data.type.ArtistType
 import com.maxrave.domain.data.type.RecentlyType
-import java.time.LocalDateTime
+import com.maxrave.domain.extension.now
+import kotlinx.datetime.LocalDateTime
 
 @Entity(tableName = "artist")
 data class ArtistEntity(
@@ -13,8 +14,8 @@ data class ArtistEntity(
     val name: String,
     val thumbnails: String?,
     val followed: Boolean = false,
-    val followedAt: LocalDateTime? = LocalDateTime.now(),
-    val inLibrary: LocalDateTime = LocalDateTime.now(),
+    val followedAt: LocalDateTime? = now(),
+    val inLibrary: LocalDateTime = now(),
 ) : RecentlyType,
     ArtistType {
     override fun objectType() = RecentlyType.Type.ARTIST

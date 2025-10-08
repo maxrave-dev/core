@@ -17,6 +17,7 @@ import com.maxrave.domain.data.entities.LocalPlaylistEntity.YouTubeSyncState.Syn
 import com.maxrave.domain.data.entities.LocalPlaylistEntity.YouTubeSyncState.Syncing
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.playlist.PlaylistState
+import com.maxrave.domain.extension.now
 import com.maxrave.domain.repository.LocalPlaylistRepository
 import com.maxrave.domain.utils.*
 import com.maxrave.kotlinytmusicscraper.YouTube
@@ -35,7 +36,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 private const val TAG = "LocalPlaylistRepositoryImpl"
 
@@ -50,9 +51,10 @@ internal class LocalPlaylistRepositoryImpl(
 
     override fun getAllLocalPlaylists(): Flow<List<LocalPlaylistEntity>> =
         flow {
-            val list = getFullDataFromDB { limit, offset ->
-                localDataSource.getAllLocalPlaylists(limit, offset)
-            }
+            val list =
+                getFullDataFromDB { limit, offset ->
+                    localDataSource.getAllLocalPlaylists(limit, offset)
+                }
             emit(list)
         }.flowOn(Dispatchers.IO)
 
@@ -85,7 +87,7 @@ internal class LocalPlaylistRepositoryImpl(
             emit(
                 getFullDataFromDB { limit, offset ->
                     localDataSource.getAllDownloadingLocalPlaylists(limit, offset)
-                }
+                },
             )
         }.flowOn(Dispatchers.IO)
 
@@ -163,12 +165,11 @@ internal class LocalPlaylistRepositoryImpl(
     override fun deleteLocalPlaylist(
         id: Long,
         successMessage: String,
-    ) =
-        wrapMessageResource(
-            successMessage = successMessage,
-        ) {
-            localDataSource.deleteLocalPlaylist(id)
-        }
+    ) = wrapMessageResource(
+        successMessage = successMessage,
+    ) {
+        localDataSource.deleteLocalPlaylist(id)
+    }
 
     override fun updateTitleLocalPlaylist(
         id: Long,
@@ -202,7 +203,7 @@ internal class LocalPlaylistRepositoryImpl(
     override fun updateThumbnailLocalPlaylist(
         id: Long,
         newThumbnail: String,
-        successMessage: String
+        successMessage: String,
     ) = wrapMessageResource(
         successMessage = successMessage,
     ) {
@@ -212,7 +213,7 @@ internal class LocalPlaylistRepositoryImpl(
     override fun updateDownloadState(
         id: Long,
         downloadState: Int,
-        successMessage: String
+        successMessage: String,
     ) = wrapMessageResource(
         successMessage = successMessage,
     ) {
@@ -250,7 +251,7 @@ internal class LocalPlaylistRepositoryImpl(
                             playlistId = localPlaylistId,
                             songId = track.videoId,
                             position = i,
-                            inPlaylist = LocalDateTime.now(),
+                            inPlaylist = now(),
                         ),
                     )
                 }
@@ -337,64 +338,62 @@ internal class LocalPlaylistRepositoryImpl(
     override fun syncLocalPlaylistToYouTubePlaylist(
         playlistId: Long,
         successMessage: String,
-        errorMessage: String
-    ) =
-        flow<LocalResource<String>> {
-            emit(LocalResource.Loading())
-            val playlist = localDataSource.getLocalPlaylist(playlistId) ?: return@flow
-            val res =
-                youTube.createPlaylist(
-                    playlist.title,
-                    playlist.tracks,
-                )
-            val value = res.getOrNull()
-            if (res.isSuccess && value != null) {
-                val ytId = value.playlistId
-                Logger.d(TAG, "syncLocalPlaylistToYouTubePlaylist: $ytId")
-                youTube
-                    .getYouTubePlaylistFullTracksWithSetVideoId(ytId)
-                    .onSuccess { list ->
-                        Logger.d(TAG, "syncLocalPlaylistToYouTubePlaylist: onSuccess song ${list.map { it.first.title }}")
-                        Logger.d(TAG, "syncLocalPlaylistToYouTubePlaylist: onSuccess setVideoId ${list.map { it.second }}")
-                        list.forEach { new ->
-                            localDataSource.insertSong(new.first.toTrack().toSongEntity())
-                            localDataSource.insertSetVideoId(
-                                SetVideoIdEntity(
-                                    videoId = new.first.id,
-                                    setVideoId = new.second,
-                                    youtubePlaylistId = ytId,
-                                ),
-                            )
-                        }
-                        if (list.isEmpty()) Logger.w(TAG, "syncLocalPlaylistToYouTubePlaylist: SetVideoIds Empty list")
-                        localDataSource.updateLocalPlaylistYouTubePlaylistId(playlistId, ytId)
-                        localDataSource.updateLocalPlaylistYouTubePlaylistSyncState(playlistId, Synced)
-                        Logger.d(TAG, "syncLocalPlaylistToYouTubePlaylist: $ytId")
-                        emit(LocalResource.Success(ytId))
-                    }.onFailure {
-                        emit(LocalResource.Error(it.message ?: errorMessage))
+        errorMessage: String,
+    ) = flow<LocalResource<String>> {
+        emit(LocalResource.Loading())
+        val playlist = localDataSource.getLocalPlaylist(playlistId) ?: return@flow
+        val res =
+            youTube.createPlaylist(
+                playlist.title,
+                playlist.tracks,
+            )
+        val value = res.getOrNull()
+        if (res.isSuccess && value != null) {
+            val ytId = value.playlistId
+            Logger.d(TAG, "syncLocalPlaylistToYouTubePlaylist: $ytId")
+            youTube
+                .getYouTubePlaylistFullTracksWithSetVideoId(ytId)
+                .onSuccess { list ->
+                    Logger.d(TAG, "syncLocalPlaylistToYouTubePlaylist: onSuccess song ${list.map { it.first.title }}")
+                    Logger.d(TAG, "syncLocalPlaylistToYouTubePlaylist: onSuccess setVideoId ${list.map { it.second }}")
+                    list.forEach { new ->
+                        localDataSource.insertSong(new.first.toTrack().toSongEntity())
+                        localDataSource.insertSetVideoId(
+                            SetVideoIdEntity(
+                                videoId = new.first.id,
+                                setVideoId = new.second,
+                                youtubePlaylistId = ytId,
+                            ),
+                        )
                     }
-            } else {
-                val e = res.exceptionOrNull()
-                e?.printStackTrace()
-                emit(LocalResource.Error(e?.message ?: errorMessage))
-            }
+                    if (list.isEmpty()) Logger.w(TAG, "syncLocalPlaylistToYouTubePlaylist: SetVideoIds Empty list")
+                    localDataSource.updateLocalPlaylistYouTubePlaylistId(playlistId, ytId)
+                    localDataSource.updateLocalPlaylistYouTubePlaylistSyncState(playlistId, Synced)
+                    Logger.d(TAG, "syncLocalPlaylistToYouTubePlaylist: $ytId")
+                    emit(LocalResource.Success(ytId))
+                }.onFailure {
+                    emit(LocalResource.Error(it.message ?: errorMessage))
+                }
+        } else {
+            val e = res.exceptionOrNull()
+            e?.printStackTrace()
+            emit(LocalResource.Error(e?.message ?: errorMessage))
         }
+    }
 
     override fun unsyncLocalPlaylist(
         id: Long,
-        successMessage: String
-    ) =
-        wrapMessageResource(
-            successMessage = successMessage,
-        ) {
-            localDataSource.unsyncLocalPlaylist(id)
-        }
+        successMessage: String,
+    ) = wrapMessageResource(
+        successMessage = successMessage,
+    ) {
+        localDataSource.unsyncLocalPlaylist(id)
+    }
 
     override fun updateSyncState(
         id: Long,
         syncState: Int,
-        successMessage: String
+        successMessage: String,
     ) = wrapMessageResource(
         successMessage = successMessage,
     ) {
@@ -404,7 +403,7 @@ internal class LocalPlaylistRepositoryImpl(
     override fun updateYouTubePlaylistId(
         id: Long,
         youtubePlaylistId: String,
-        successMessage: String
+        successMessage: String,
     ) = wrapMessageResource(
         successMessage = successMessage,
     ) {
@@ -439,7 +438,7 @@ internal class LocalPlaylistRepositoryImpl(
                                     playlistId = id,
                                     songId = new.first.id,
                                     position = currentTracks.size,
-                                    inPlaylist = LocalDateTime.now(),
+                                    inPlaylist = now(),
                                 ),
                             )
                             localDataSource.insertSetVideoId(
@@ -484,7 +483,7 @@ internal class LocalPlaylistRepositoryImpl(
                     playlistId = id,
                     songId = song.videoId,
                     position = nextPosition,
-                    inPlaylist = LocalDateTime.now(),
+                    inPlaylist = now(),
                 )
             runBlocking {
                 localDataSource.insertPairSongLocalPlaylist(nextPair)
@@ -514,10 +513,10 @@ internal class LocalPlaylistRepositoryImpl(
                             }
                             emit(LocalResource.Success(updatedYtMessage))
                         } else {
-                            emit(LocalResource.Error<String>("${errorMessage}: Empty playlistEditResults"))
+                            emit(LocalResource.Error<String>("$errorMessage: Empty playlistEditResults"))
                         }
                     }.onFailure {
-                        emit(LocalResource.Error<String>("${errorMessage}: ${it.message}"))
+                        emit(LocalResource.Error<String>("$errorMessage: ${it.message}"))
                     }
             }
         }.flowOn(Dispatchers.IO)
@@ -546,10 +545,10 @@ internal class LocalPlaylistRepositoryImpl(
                         .onSuccess {
                             emit(LocalResource.Success(successMessage))
                         }.onFailure {
-                            emit(LocalResource.Error<String>("${errorMessage}: ${it.message}"))
+                            emit(LocalResource.Error<String>("$errorMessage: ${it.message}"))
                         }
                 } else {
-                    emit(LocalResource.Error<String>("${errorMessage}: SetVideoId is null"))
+                    emit(LocalResource.Error<String>("$errorMessage: SetVideoId is null"))
                 }
             }
         }.flowOn(Dispatchers.IO)

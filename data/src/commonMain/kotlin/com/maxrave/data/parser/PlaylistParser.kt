@@ -9,19 +9,20 @@ import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
+import com.maxrave.domain.extension.now
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
 import com.maxrave.kotlinytmusicscraper.models.SectionListRenderer
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
 import com.maxrave.kotlinytmusicscraper.models.response.SearchResponse
 import com.maxrave.kotlinytmusicscraper.pages.PodcastItem
 import com.maxrave.logger.Logger
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 internal fun parsePlaylistData(
     header: Any?,
     listContent: List<MusicShelfRenderer.Content>,
     playlistId: String,
-    viewString: String
+    viewString: String,
 ): PlaylistBrowse? {
     if (header != null) {
         var title = ""
@@ -29,7 +30,7 @@ internal fun parsePlaylistData(
         var duration = ""
         var description = ""
         val listThumbnails: ArrayList<Thumbnail> = arrayListOf()
-        var year = LocalDateTime.now().year.toString()
+        var year = now().year.toString()
         var trackCount = 0
         when (header) {
             is BrowseResponse.Header.MusicDetailHeaderRenderer -> {
@@ -70,7 +71,7 @@ internal fun parsePlaylistData(
                     year =
                         header.subtitle.runs
                             ?.get(4)
-                            ?.text ?: LocalDateTime.now().year.toString()
+                            ?.text ?: now().year.toString()
                 }
                 header.thumbnail.croppedSquareThumbnailRenderer
                     ?.thumbnail
@@ -192,7 +193,7 @@ internal fun parsePlaylistData(
                         ?.runs
                         ?.lastOrNull()
                         ?.text
-                        ?: LocalDateTime.now().year.toString()
+                        ?: now().year.toString()
                 val author =
                     Author(
                         id =

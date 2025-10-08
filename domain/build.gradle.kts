@@ -15,15 +15,6 @@ kotlin {
         namespace = "com.maxrave.domain"
         compileSdk = 36
         minSdk = 26
-
-        withHostTestBuilder {
-        }
-
-        withDeviceTestBuilder {
-            sourceSetTreeName = "test"
-        }.configure {
-            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        }
     }
     val xcfName = "domainKit"
 
@@ -46,7 +37,6 @@ kotlin {
     }
 
     jvm {
-
     }
 
     sourceSets {
@@ -75,14 +65,6 @@ kotlin {
             }
         }
 
-        getByName("androidDeviceTest") {
-            dependencies {
-                implementation(libs.androidx.runner)
-                implementation(libs.androidx.core)
-                implementation(libs.androidx.junit)
-            }
-        }
-
         iosMain {
             dependencies {
                 // Add iOS-specific dependencies here. This a source set created by Kotlin Gradle
@@ -95,7 +77,6 @@ kotlin {
 
         jvmMain {
             dependencies {
-
             }
         }
     }

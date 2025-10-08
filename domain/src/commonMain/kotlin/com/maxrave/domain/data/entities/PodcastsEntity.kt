@@ -8,7 +8,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Relation
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.data.type.RecentlyType
-import java.time.LocalDateTime
+import com.maxrave.domain.extension.now
+import kotlinx.datetime.LocalDateTime
 
 @Entity(tableName = "podcast_table")
 data class PodcastsEntity(
@@ -21,7 +22,7 @@ data class PodcastsEntity(
     val description: String?,
     val thumbnail: String?,
     val isFavorite: Boolean = false,
-    val inLibrary: LocalDateTime = LocalDateTime.now(),
+    val inLibrary: LocalDateTime = now(),
     val favoriteTime: LocalDateTime? = null, // Nullable to allow for non-favorite podcasts
     val listEpisodes: List<String>, // List of episode video IDs
 ) : RecentlyType,

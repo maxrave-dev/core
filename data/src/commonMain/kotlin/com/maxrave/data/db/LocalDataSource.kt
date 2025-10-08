@@ -18,9 +18,10 @@ import com.maxrave.domain.data.entities.SetVideoIdEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
+import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.FilterState
 import com.maxrave.logger.Logger
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 internal class LocalDataSource(
     private val databaseDao: DatabaseDao,
@@ -482,7 +483,7 @@ internal class LocalDataSource(
             val updatedPodcast =
                 podcast.copy(
                     isFavorite = isFavorite,
-                    favoriteTime = if (isFavorite) LocalDateTime.now() else null,
+                    favoriteTime = if (isFavorite) now() else null,
                 )
             return databaseDao.insertPodcast(updatedPodcast) > 0
         } else {
@@ -500,5 +501,5 @@ internal class LocalDataSource(
         offset,
     )
 
-    suspend fun updatePodcastInLibraryNow(id: String) = databaseDao.updatePodcastInLibrary(id, LocalDateTime.now())
+    suspend fun updatePodcastInLibraryNow(id: String) = databaseDao.updatePodcastInLibrary(id, now())
 }

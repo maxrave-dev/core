@@ -1,9 +1,5 @@
 package com.maxrave.domain.mediaservice.handler
 
-import android.app.Activity
-import android.content.Context
-import android.content.ServiceConnection
-import android.os.IBinder
 import com.maxrave.domain.data.entities.NewFormatEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.model.browse.album.Track
@@ -154,22 +150,6 @@ interface MediaPlayerHandler {
     fun shouldReleaseOnTaskRemoved(): Boolean
 
     fun release()
-
-    /**
-     * Service
-     */
-    fun startMediaService(
-        context: Context,
-        serviceConnection: ServiceConnection,
-    )
-
-    fun stopMediaService(context: Context)
-
-    fun setActivitySession(
-        context: Context,
-        cls: Class<out Activity>,
-        service: IBinder?,
-    )
 }
 
 // State classes and enums - these would need to be defined in domain layer
@@ -353,5 +333,8 @@ sealed class ToastType(
     extra: String? = null,
 ) {
     data object ExplicitContent : ToastType()
-    data class PlayerError(val error: String) : ToastType(error)
+
+    data class PlayerError(
+        val error: String,
+    ) : ToastType(error)
 }

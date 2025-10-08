@@ -8,6 +8,28 @@ import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericMediaMetadata
 import com.maxrave.domain.utils.connectArtists
 import com.maxrave.domain.utils.toListName
+import kotlinx.datetime.DateTimeUnit
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.plus
+import kotlinx.datetime.toInstant
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
+
+@OptIn(ExperimentalTime::class)
+fun now(): LocalDateTime = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+
+fun LocalDateTime.isBefore(other: LocalDateTime): Boolean = this < other
+
+fun LocalDateTime.isAfter(other: LocalDateTime): Boolean = this > other
+
+@OptIn(ExperimentalTime::class)
+fun LocalDateTime.plusSeconds(seconds: Long): LocalDateTime =
+    this
+        .toInstant(TimeZone.currentSystemDefault())
+        .plus(seconds, DateTimeUnit.SECOND, TimeZone.currentSystemDefault())
+        .toLocalDateTime(TimeZone.currentSystemDefault())
 
 fun GenericMediaItem.isSong(): Boolean = this.metadata.description?.contains(MERGING_DATA_TYPE.SONG) == true
 

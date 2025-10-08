@@ -9,6 +9,9 @@ import com.maxrave.data.mapping.toTrack
 import com.maxrave.domain.data.entities.NewFormatEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
+import com.maxrave.domain.extension.isBefore
+import com.maxrave.domain.extension.now
+import com.maxrave.domain.extension.plusSeconds
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.Resource
@@ -17,13 +20,15 @@ import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
+import kotlin.let
 
 internal class StreamRepositoryImpl(
     private val localDataSource: LocalDataSource,
@@ -41,16 +46,16 @@ internal class StreamRepositoryImpl(
     override suspend fun updateFormat(videoId: String) {
         localDataSource.getNewFormat(videoId)?.let { oldFormat ->
             Logger.w("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
-            Logger.w("Stream", "now: ${LocalDateTime.now()}")
-            Logger.w("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(LocalDateTime.now())}")
-            if (oldFormat.expiredTime.isBefore(LocalDateTime.now())) {
+            Logger.w("Stream", "now: ${now()}")
+            Logger.w("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(now())}")
+            if (oldFormat.expiredTime.isBefore(now())) {
                 youTube
                     .player(videoId)
                     .onSuccess { triple ->
                         val response = triple.second
                         localDataSource.updateNewFormat(
                             oldFormat.copy(
-                                expiredTime = LocalDateTime.now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
+                                expiredTime = now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
                                 playbackTrackingVideostatsPlaybackUrl =
                                     response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
                                         "https://s.youtube.com",
@@ -156,7 +161,7 @@ internal class StreamRepositoryImpl(
                     Logger.w("Stream", "Super format: $superFormat")
                     Logger.w("Stream", "format: $format")
                     Logger.d("Stream", "expireInSeconds ${response.streamingData?.expiresInSeconds}")
-                    Logger.w("Stream", "expired at ${LocalDateTime.now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L)}")
+                    Logger.w("Stream", "expired at ${now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L)}")
                     runBlocking {
                         insertNewFormat(
                             NewFormatEntity(
@@ -199,7 +204,7 @@ internal class StreamRepositoryImpl(
                                         "https://music.youtube.com",
                                     ),
                                 cpn = data.first,
-                                expiredTime = LocalDateTime.now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
+                                expiredTime = now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
                                 audioUrl = superFormat?.url ?: audioFormat?.url,
                                 videoUrl = videoFormat?.url,
                             ),

@@ -22,13 +22,17 @@ import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.logger.Logger
 import com.maxrave.spotify.Spotify
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import kotlinx.serialization.json.Json
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 import org.simpmusic.aiservice.AiClient
 import org.simpmusic.lyrics.SimpMusicLyricsClient
 import java.time.ZoneOffset
+import kotlin.time.ExperimentalTime
 
+@OptIn(ExperimentalTime::class)
 val databaseModule =
     module {
         // Database
@@ -88,9 +92,8 @@ val databaseModule =
                                             "position" to pair.position,
                                             "inPlaylist" to
                                                 pair.inPlaylist
-                                                    .atZone(ZoneOffset.UTC)
-                                                    .toInstant()
-                                                    .toEpochMilli(),
+                                                    .toInstant(TimeZone.UTC)
+                                                    .toEpochMilliseconds(),
                                         ),
                                 )
                             }

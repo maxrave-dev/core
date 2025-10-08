@@ -4,10 +4,13 @@ import androidx.room.ProvidedTypeConverter
 import androidx.room.TypeConverter
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.metadata.Line
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.json.Json
-import java.time.Instant
-import java.time.LocalDateTime
-import java.time.ZoneOffset
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
 
 @ProvidedTypeConverter
 internal class Converters {
@@ -82,16 +85,18 @@ internal class Converters {
             json.encodeToString(it)
         }
 
+    @OptIn(ExperimentalTime::class)
     @TypeConverter
     fun fromTimestamp(value: Long?): LocalDateTime? =
         if (value != null) {
-            LocalDateTime.ofInstant(Instant.ofEpochMilli(value), ZoneOffset.UTC)
+            Instant.fromEpochMilliseconds(value).toLocalDateTime(TimeZone.UTC)
         } else {
             null
         }
 
+    @OptIn(ExperimentalTime::class)
     @TypeConverter
-    fun dateToTimestamp(date: LocalDateTime?): Long? = date?.atZone(ZoneOffset.UTC)?.toInstant()?.toEpochMilli()
+    fun dateToTimestamp(date: LocalDateTime?): Long? = date?.toInstant(TimeZone.UTC)?.toEpochMilliseconds()
 
     @TypeConverter
     fun fromListMapToString(list: List<Map<String, String>>): String = json.encodeToString(list)

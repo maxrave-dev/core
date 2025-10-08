@@ -4,7 +4,8 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.data.type.RecentlyType
-import java.time.LocalDateTime
+import com.maxrave.domain.extension.now
+import kotlinx.datetime.LocalDateTime
 
 @Entity(tableName = "album")
 data class AlbumEntity(
@@ -22,9 +23,9 @@ data class AlbumEntity(
     val type: String,
     val year: String?,
     val liked: Boolean = false,
-    val inLibrary: LocalDateTime = LocalDateTime.now(),
-    val favoriteAt: LocalDateTime? = LocalDateTime.now(),
-    val downloadedAt: LocalDateTime? = LocalDateTime.now(),
+    val inLibrary: LocalDateTime = now(),
+    val favoriteAt: LocalDateTime? = now(),
+    val downloadedAt: LocalDateTime? = now(),
     val downloadState: Int = DownloadState.STATE_NOT_DOWNLOADED,
 ) : PlaylistType,
     RecentlyType {

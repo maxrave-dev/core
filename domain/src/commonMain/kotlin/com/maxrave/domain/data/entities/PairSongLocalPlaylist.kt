@@ -4,7 +4,8 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.PrimaryKey
-import java.time.LocalDateTime
+import com.maxrave.domain.extension.now
+import kotlinx.datetime.LocalDateTime
 
 @Entity(
     tableName = "pair_song_local_playlist",
@@ -28,5 +29,5 @@ data class PairSongLocalPlaylist(
     @ColumnInfo(index = true) val playlistId: Long,
     @ColumnInfo(index = true) val songId: String,
     val position: Int = 0,
-    val inPlaylist: LocalDateTime = LocalDateTime.now(),
+    val inPlaylist: LocalDateTime = now(),
 )

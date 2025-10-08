@@ -26,15 +26,6 @@ kotlin {
         namespace = "com.maxrave.data"
         compileSdk = 36
         minSdk = 26
-
-        withHostTestBuilder {
-        }
-
-        withDeviceTestBuilder {
-            sourceSetTreeName = "test"
-        }.configure {
-            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        }
     }
 
     room {
@@ -69,7 +60,6 @@ kotlin {
     }
 
     jvm {
-
     }
 
     dependencies {
@@ -81,6 +71,8 @@ kotlin {
             dependencies {
                 implementation(projects.common)
                 implementation(projects.domain)
+                implementation(projects.aiService)
+
                 implementation(libs.kotlin.stdlib)
                 // Add KMP dependencies here
                 // Kotlinx serialization
@@ -110,18 +102,10 @@ kotlin {
                 // commonMain by default and will correctly pull the Android artifacts of any KMP
                 // dependencies declared in commonMain.
                 implementation(libs.koin.android)
-                implementation(project(":kotlinYtmusicScraper"))
-                implementation(project(":spotify"))
-                implementation(project(":lyricsService"))
-                implementation(project(":aiService"))
-            }
-        }
-
-        getByName("androidDeviceTest") {
-            dependencies {
-                implementation(libs.androidx.runner)
-                implementation(libs.androidx.core)
-                implementation(libs.androidx.junit)
+                implementation(projects.kotlinYtmusicScraper)
+                implementation(projects.spotify)
+                implementation(projects.lyricsService)
+                implementation(projects.media3)
             }
         }
 
@@ -137,7 +121,6 @@ kotlin {
 
         jvmMain {
             dependencies {
-
             }
         }
     }

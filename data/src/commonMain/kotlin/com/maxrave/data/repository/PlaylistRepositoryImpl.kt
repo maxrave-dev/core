@@ -18,6 +18,7 @@ import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
 import com.maxrave.domain.data.type.PlaylistType
+import com.maxrave.domain.extension.now
 import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.toTrack
@@ -36,7 +37,7 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
-import java.time.LocalDateTime
+import kotlinx.datetime.LocalDateTime
 
 internal class PlaylistRepositoryImpl(
     private val localDataSource: LocalDataSource,
@@ -168,7 +169,7 @@ internal class PlaylistRepositoryImpl(
                                 PlaylistBrowse(
                                     author = Author(id = "", name = "YouTube Music"),
                                     description =
-                                        defaultDescription,
+                                    defaultDescription,
                                     duration = "",
                                     durationSeconds = 0,
                                     id = radioId,
@@ -184,7 +185,7 @@ internal class PlaylistRepositoryImpl(
                                     title = "${originalTrack?.title ?: artist?.name} $radioString",
                                     trackCount = listTrackResult.size,
                                     tracks = listTrackResult,
-                                    year = LocalDateTime.now().year.toString(),
+                                    year = now().year.toString(),
                                 )
                             Logger.w("Repository", "playlistBrowse: $playlistBrowse")
                             emit(Resource.Success<Pair<PlaylistBrowse, String?>>(Pair(playlistBrowse, continuation)))
@@ -196,7 +197,10 @@ internal class PlaylistRepositoryImpl(
             }.flowOn(Dispatchers.IO)
         }
 
-    override fun getRDATRadioData(radioId: String, viewString: String): Flow<Resource<Pair<PlaylistBrowse, String?>>> =
+    override fun getRDATRadioData(
+        radioId: String,
+        viewString: String,
+    ): Flow<Resource<Pair<PlaylistBrowse, String?>>> =
         flow<Resource<Pair<PlaylistBrowse, String?>>> {
             runCatching {
                 val id =
@@ -292,7 +296,10 @@ internal class PlaylistRepositoryImpl(
             }
         }.flowOn(Dispatchers.IO)
 
-    override fun getFullPlaylistData(playlistId: String, viewString: String): Flow<Resource<PlaylistBrowse>> =
+    override fun getFullPlaylistData(
+        playlistId: String,
+        viewString: String,
+    ): Flow<Resource<PlaylistBrowse>> =
         flow {
             runCatching {
                 var id = ""
@@ -421,7 +428,10 @@ internal class PlaylistRepositoryImpl(
             }
         }.flowOn(Dispatchers.IO)
 
-    override fun getPlaylistData(playlistId: String, viewString: String): Flow<Resource<Pair<PlaylistBrowse, String?>>> =
+    override fun getPlaylistData(
+        playlistId: String,
+        viewString: String,
+    ): Flow<Resource<Pair<PlaylistBrowse, String?>>> =
         flow {
             runCatching {
                 var id = ""

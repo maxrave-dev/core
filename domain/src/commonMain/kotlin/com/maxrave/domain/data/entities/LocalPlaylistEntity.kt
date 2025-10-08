@@ -5,7 +5,8 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import com.maxrave.domain.data.type.HomeContentType
 import com.maxrave.domain.data.type.PlaylistType
-import java.time.LocalDateTime
+import com.maxrave.domain.extension.now
+import kotlinx.datetime.LocalDateTime
 
 @Entity(tableName = "local_playlist")
 @Suppress("ktlint:standard:property-naming")
@@ -14,8 +15,8 @@ data class LocalPlaylistEntity(
     val id: Long = 0,
     val title: String,
     val thumbnail: String? = null,
-    val inLibrary: LocalDateTime = LocalDateTime.now(),
-    val downloadedAt: LocalDateTime? = LocalDateTime.now(),
+    val inLibrary: LocalDateTime = now(),
+    val downloadedAt: LocalDateTime? = now(),
     val downloadState: Int = DownloadState.STATE_NOT_DOWNLOADED,
     val youtubePlaylistId: String? = null,
     @ColumnInfo(name = "youtube_sync_state", defaultValue = "0")

@@ -15,15 +15,6 @@ kotlin {
         namespace = "com.maxrave.common"
         compileSdk = 36
         minSdk = 26
-
-        withHostTestBuilder {
-        }
-
-        withDeviceTestBuilder {
-            sourceSetTreeName = "test"
-        }.configure {
-            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        }
     }
 
     // For iOS targets, this is also where you should
@@ -54,7 +45,6 @@ kotlin {
     }
 
     jvm {
-
     }
 
     // Source set declarations.
@@ -68,7 +58,7 @@ kotlin {
                 implementation(libs.kotlin.stdlib)
                 // Add KMP dependencies here
                 implementation(libs.napier.logging)
-                implementation(libs.kotlinx.datetime)
+                api(libs.kotlinx.datetime)
             }
         }
 
@@ -86,14 +76,6 @@ kotlin {
             }
         }
 
-        getByName("androidDeviceTest") {
-            dependencies {
-                implementation(libs.androidx.runner)
-                implementation(libs.androidx.core)
-                implementation(libs.androidx.junit)
-            }
-        }
-
         iosMain {
             dependencies {
                 // Add iOS-specific dependencies here. This a source set created by Kotlin Gradle
@@ -106,7 +88,6 @@ kotlin {
 
         jvmMain {
             dependencies {
-
             }
         }
     }

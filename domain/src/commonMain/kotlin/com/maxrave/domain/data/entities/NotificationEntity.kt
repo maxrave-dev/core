@@ -2,7 +2,8 @@ package com.maxrave.domain.data.entities
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
-import java.time.LocalDateTime
+import com.maxrave.domain.extension.now
+import kotlinx.datetime.LocalDateTime
 
 @Entity(tableName = "notification")
 data class NotificationEntity(
@@ -12,5 +13,5 @@ data class NotificationEntity(
     val name: String,
     val single: List<Map<String, String>> = listOf(),
     val album: List<Map<String, String>> = listOf(),
-    val time: LocalDateTime = LocalDateTime.now(),
+    val time: LocalDateTime = now(),
 )
