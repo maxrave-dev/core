@@ -82,16 +82,10 @@ kotlin {
                 // Room
                 implementation(libs.room.runtime)
                 implementation(libs.androidx.sqlite.bundled)
-                implementation(libs.androidx.room.sqlite.wrapper)
+                implementation(libs.androidx.room.migration)
 
                 // Koin
                 implementation(libs.koin.core)
-            }
-        }
-
-        commonTest {
-            dependencies {
-                implementation(libs.kotlin.test)
             }
         }
 
@@ -118,6 +112,7 @@ kotlin {
 
         jvmMain {
             dependencies {
+                implementation(projects.mediaJvm)
             }
         }
     }

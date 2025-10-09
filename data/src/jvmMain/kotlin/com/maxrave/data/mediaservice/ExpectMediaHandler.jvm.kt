@@ -7,5 +7,11 @@ actual fun createMediaServiceHandler(
     localPlaylistRepository: com.maxrave.domain.repository.LocalPlaylistRepository,
     coroutineScope: kotlinx.coroutines.CoroutineScope,
 ): com.maxrave.domain.mediaservice.handler.MediaPlayerHandler {
-    TODO("Not yet implemented")
+    return VlcjMediaPlayerHandlerImpl(
+        dataStoreManager = dataStoreManager,
+        songRepository = songRepository,
+        streamRepository = streamRepository,
+        localPlaylistRepository = localPlaylistRepository,
+        coroutineScope = coroutineScope,
+    )
 }
