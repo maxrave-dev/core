@@ -59,6 +59,10 @@ import com.maxrave.domain.data.entities.TranslatedLyricsEntity
     ],
 )
 @TypeConverters(Converters::class)
-internal abstract class MusicDatabase : RoomDatabase() {
+abstract class MusicDatabase : RoomDatabase() {
     abstract fun getDatabaseDao(): DatabaseDao
 }
+
+expect fun getDatabaseBuilder(): RoomDatabase.Builder<MusicDatabase>
+
+expect fun getDatabasePath(): String

@@ -41,21 +41,16 @@ kotlin {
     // https://developer.android.com/kotlin/multiplatform/migrate
     val xcfName = "dataKit"
 
-    iosX64 {
-        binaries.framework {
+    listOf(
+        iosX64(),
+        iosArm64(),
+        iosSimulatorArm64()
+    ).forEach { iosTarget ->
+        iosTarget.binaries.framework {
             baseName = xcfName
-        }
-    }
-
-    iosArm64 {
-        binaries.framework {
-            baseName = xcfName
-        }
-    }
-
-    iosSimulatorArm64 {
-        binaries.framework {
-            baseName = xcfName
+            isStatic = true
+            // Required when using NativeSQLiteDriver
+            linkerOpts.add("-lsqlite3")
         }
     }
 
@@ -87,6 +82,7 @@ kotlin {
                 // Room
                 implementation(libs.room.runtime)
                 implementation(libs.androidx.sqlite.bundled)
+                implementation(libs.androidx.room.sqlite.wrapper)
 
                 // Koin
                 implementation(libs.koin.core)
@@ -106,6 +102,7 @@ kotlin {
                 // dependencies declared in commonMain.
                 implementation(libs.koin.android)
                 implementation(projects.media3)
+                implementation(libs.room.ktx)
             }
         }
 

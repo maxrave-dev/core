@@ -35,7 +35,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.datetime.LocalDateTime
 
 @Dao
-internal interface DatabaseDao {
+interface DatabaseDao {
     // Transaction request with multiple queries
     @Transaction
     suspend fun getAllRecentData(): List<RecentlyType> {

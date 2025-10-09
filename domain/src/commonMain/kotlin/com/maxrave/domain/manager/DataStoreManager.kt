@@ -1,7 +1,7 @@
 package com.maxrave.domain.manager
 
+import com.maxrave.domain.data.model.network.ProxyConfiguration
 import kotlinx.coroutines.flow.Flow
-import java.net.Proxy
 
 interface DataStoreManager {
     val appVersion: Flow<String>
@@ -172,7 +172,7 @@ interface DataStoreManager {
 
     suspend fun setProxyPort(proxyPort: Int)
 
-    fun getJVMProxy(): Proxy?
+    fun getJVMProxy(): ProxyConfiguration?
 
     val endlessQueue: Flow<String>
 

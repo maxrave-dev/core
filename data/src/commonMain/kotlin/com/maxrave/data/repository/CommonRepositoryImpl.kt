@@ -2,6 +2,7 @@ package com.maxrave.data.repository
 
 import com.maxrave.data.db.LocalDataSource
 import com.maxrave.data.db.MusicDatabase
+import com.maxrave.data.io.fileSystem
 import com.maxrave.domain.data.entities.NotificationEntity
 import com.maxrave.domain.data.model.cookie.CookieItem
 import com.maxrave.domain.data.type.RecentlyType
@@ -22,10 +23,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okio.FileSystem
 import okio.IOException
 import okio.Path.Companion.toPath
-import okio.SYSTEM
 import okio.buffer
 import okio.use
 import org.simpmusic.aiservice.AIHost
@@ -50,7 +49,7 @@ internal class CommonRepositoryImpl(
                     dataStoreManager.setSpotifyClientToken("")
                     dataStoreManager.setSpotifyPersonalToken("")
                     dataStoreManager.setSpotifyClientTokenExpires(Clock.System.now().epochSeconds)
-                    dataStoreManager.setSpotifyPersonalTokenExpires(Clock.System.now().epochSeconds))
+                    dataStoreManager.setSpotifyPersonalTokenExpires(Clock.System.now().epochSeconds)
                 }
             val localeJob =
                 launch {
@@ -184,12 +183,10 @@ internal class CommonRepositoryImpl(
 
     // Database
     override fun closeDatabase() {
-        if (database.isOpen) {
-            database.close()
-        }
+        database.close()
     }
 
-    override fun getDatabasePath() = database.openHelper.writableDatabase.path
+    override fun getDatabasePath() = com.maxrave.data.db.getDatabasePath()
 
     override fun databaseDaoCheckpoint() = localDataSource.checkpoint()
 
@@ -220,7 +217,7 @@ internal class CommonRepositoryImpl(
         filePath: String,
     ): Boolean {
         try {
-            FileSystem.SYSTEM.sink(filePath.toPath()).buffer().use { sink ->
+            fileSystem().sink(filePath.toPath()).buffer().use { sink ->
                 sink.writeUtf8(text)
                 sink.close()
                 return true

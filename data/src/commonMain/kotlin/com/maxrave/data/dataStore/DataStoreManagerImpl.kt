@@ -1,13 +1,16 @@
 package com.maxrave.data.dataStore
 
-import android.content.Context
 import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.*
-import androidx.datastore.preferences.preferencesDataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import com.maxrave.common.SELECTED_LANGUAGE
-import com.maxrave.common.SETTINGS_FILENAME
 import com.maxrave.common.SUPPORTED_LANGUAGE
 import com.maxrave.common.SponsorBlockType
+import com.maxrave.domain.data.model.network.ProxyConfiguration
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.AI_PROVIDER_GEMINI
 import com.maxrave.domain.manager.DataStoreManager.Values.FALSE
@@ -22,16 +25,13 @@ import com.maxrave.domain.manager.DataStoreManager.Values.SIMPMUSIC
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import java.net.InetSocketAddress
-import java.net.Proxy
 import com.maxrave.common.QUALITY as COMMON_QUALITY
-
-val Context.dataStore by preferencesDataStore(name = SETTINGS_FILENAME)
 
 internal class DataStoreManagerImpl(
     private val settingsDataStore: DataStore<Preferences>,
@@ -685,19 +685,17 @@ internal class DataStoreManagerImpl(
         }
     }
 
-    override fun getJVMProxy(): Proxy? =
+    override fun getJVMProxy(): ProxyConfiguration? =
         runBlocking {
             try {
                 if (usingProxy.first() == TRUE) {
                     val proxyType = proxyType.first()
                     val proxyHost = proxyHost.first()
                     val proxyPort = proxyPort.first()
-                    return@runBlocking Proxy(
-                        when (proxyType) {
-                            DataStoreManager.ProxyType.PROXY_TYPE_HTTP -> Proxy.Type.HTTP
-                            DataStoreManager.ProxyType.PROXY_TYPE_SOCKS -> Proxy.Type.SOCKS
-                        },
-                        InetSocketAddress(proxyHost, proxyPort),
+                    return@runBlocking ProxyConfiguration(
+                        proxyHost,
+                        proxyPort,
+                        proxyType,
                     )
                 } else {
                     return@runBlocking null
@@ -1188,3 +1186,5 @@ internal class DataStoreManagerImpl(
         val EXPLICIT_CONTENT_ENABLED = stringPreferencesKey("explicit_content_enabled")
     }
 }
+
+expect fun createDataStoreInstance(): DataStore<Preferences>
