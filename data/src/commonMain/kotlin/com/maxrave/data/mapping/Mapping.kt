@@ -1,6 +1,5 @@
 package com.maxrave.data.mapping
 
-import android.text.Html
 import com.maxrave.data.parser.toListThumbnail
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.canvas.CanvasResult
@@ -34,6 +33,7 @@ import org.simpmusic.lyrics.models.response.LyricsResponse
 import org.simpmusic.lyrics.models.response.TranslatedLyricsResponse
 import org.simpmusic.lyrics.parser.parseSyncedLyrics
 import org.simpmusic.lyrics.parser.parseUnsyncedLyrics
+import kotlin.jvm.JvmName
 
 internal fun SongItem.toTrack(): Track =
     Track(
@@ -239,7 +239,7 @@ internal fun Transcript.toLyrics(): Lyrics {
                 endTimeMs = "0",
                 startTimeMs = (it.start.toFloat() * 1000).toInt().toString(),
                 syllables = listOf(),
-                words = Html.fromHtml(it.content, Html.FROM_HTML_MODE_COMPACT).toString(),
+                words = it.content.replace(Regex("<[^>]*>"), ""),
             )
         }
     val sortedLine = lines.sortedBy { it.startTimeMs.toInt() }

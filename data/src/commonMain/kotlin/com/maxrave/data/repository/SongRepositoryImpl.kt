@@ -1,6 +1,5 @@
 package com.maxrave.data.repository
 
-import android.graphics.Bitmap
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.data.db.LocalDataSource
 import com.maxrave.data.extension.getFullDataFromDB
@@ -23,6 +22,7 @@ import com.maxrave.kotlinytmusicscraper.pages.NextPage
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistContinuation
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -376,7 +376,7 @@ internal class SongRepositoryImpl(
                         emit(Resource.Success(Pair(next.items.toListTrack(), next.continuation)))
                     }.onFailure {
                         it.printStackTrace()
-                        emit(Resource.Error(it.message ?: it.localizedMessage ?: "Error"))
+                        emit(Resource.Error(it.message ?: "Error"))
                     }
             }
         }

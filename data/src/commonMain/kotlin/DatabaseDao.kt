@@ -1,14 +1,11 @@
-package com.maxrave.data.db
-
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.RawQuery
+import androidx.room.RoomRawQuery
 import androidx.room.Transaction
 import androidx.room.Update
-import androidx.sqlite.db.SupportSQLiteQuery
-import com.maxrave.data.extension.toSQLiteQuery
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
@@ -195,7 +192,7 @@ interface DatabaseDao {
     @Query("DELETE FROM search_history")
     suspend fun deleteSearchHistory()
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertSearchHistory(searchHistory: SearchHistory): Long
 
     // Song
@@ -239,7 +236,7 @@ interface DatabaseDao {
         favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
     )
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
     suspend fun insertSong(song: SongEntity): Long
 
     @Query("UPDATE song SET canvasUrl = :canvasUrl WHERE videoId = :videoId")
@@ -316,7 +313,7 @@ interface DatabaseDao {
         offset: Int,
     ): List<ArtistEntity>
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
     suspend fun insertArtist(artist: ArtistEntity)
 
     @Query("UPDATE artist SET thumbnails = :thumbnails WHERE channelId = :channelId")
@@ -354,7 +351,7 @@ interface DatabaseDao {
         offset: Int,
     ): List<AlbumEntity>
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
     suspend fun insertAlbum(album: AlbumEntity): Long
 
     @Query("UPDATE album SET liked = :liked, favoriteAt = :favoriteAt  WHERE browseId = :browseId")
@@ -402,13 +399,13 @@ interface DatabaseDao {
         offset: Int,
     ): List<PlaylistEntity>
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
     suspend fun insertPlaylist(playlist: PlaylistEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertAndReplacePlaylist(playlist: PlaylistEntity)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertRadioPlaylist(playlist: PlaylistEntity)
 
     @Query("UPDATE playlist SET liked = :liked, favoriteAt = :favoriteAt WHERE id = :playlistId")
@@ -459,7 +456,7 @@ interface DatabaseDao {
     @Query("SELECT * FROM local_playlist WHERE id = :id")
     suspend fun getLocalPlaylist(id: Long): LocalPlaylistEntity?
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
     suspend fun insertLocalPlaylist(localPlaylist: LocalPlaylistEntity)
 
     @Query("DELETE FROM local_playlist WHERE id = :id")
@@ -523,17 +520,17 @@ interface DatabaseDao {
     @Query("SELECT tracks FROM local_playlist WHERE id = :id")
     fun getListTracksFlowOfLocalPlaylist(id: Long): Flow<List<String>>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertLyrics(lyrics: LyricsEntity)
 
     @Query("SELECT * FROM lyrics WHERE videoId = :videoId")
     suspend fun getLyrics(videoId: String): LyricsEntity?
 
     @RawQuery
-    fun raw(supportSQLiteQuery: SupportSQLiteQuery): Int
+    suspend fun raw(supportSQLiteQuery: RoomRawQuery): Int
 
-    fun checkpoint() {
-        raw("pragma wal_checkpoint(full)".toSQLiteQuery())
+    suspend fun checkpoint() {
+        raw(RoomRawQuery("pragma wal_checkpoint(full)"))
     }
 
     @Query("SELECT * FROM song WHERE downloadState = 1 OR downloadState = 2 ORDER BY downloadedAt ASC LIMIT :limit OFFSET :offset")
@@ -542,7 +539,7 @@ interface DatabaseDao {
         offset: Int,
     ): List<SongEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertNewFormat(format: NewFormatEntity)
 
     @Update
@@ -554,13 +551,13 @@ interface DatabaseDao {
     @Query("SELECT * FROM new_format WHERE videoId = :videoId")
     fun getNewFormatAsFlow(videoId: String): Flow<NewFormatEntity?>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertSongInfo(songInfo: SongInfoEntity)
 
     @Query("SELECT * FROM song_info WHERE videoId = :videoId")
     suspend fun getSongInfo(videoId: String): SongInfoEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun recoverQueue(queue: QueueEntity)
 
     @Query("DELETE FROM queue")
@@ -572,14 +569,14 @@ interface DatabaseDao {
     @Query("SELECT * FROM local_playlist WHERE youtubePlaylistId = :youtubePlaylistId")
     suspend fun getLocalPlaylistByYoutubePlaylistId(youtubePlaylistId: String): LocalPlaylistEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertSetVideoId(setVideoIdEntity: SetVideoIdEntity)
 
     @Query("SELECT * FROM set_video_id WHERE videoId = :videoId")
     suspend fun getSetVideoId(videoId: String): SetVideoIdEntity?
 
     // PairSongLocalPlaylist
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertPairSongLocalPlaylist(pairSongLocalPlaylist: PairSongLocalPlaylist)
 
     @Query("SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId ORDER BY position ASC LIMIT :limit OFFSET :offset")
@@ -641,7 +638,7 @@ interface DatabaseDao {
     )
 
     // GoogleAccountEntity
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertGoogleAccount(googleAccountEntity: GoogleAccountEntity): Long
 
     @Query("SELECT * FROM googleaccountentity")
@@ -665,7 +662,7 @@ interface DatabaseDao {
         inLibrary: LocalDateTime,
     )
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertFollowedArtistSingleAndAlbum(followedArtistSingleAndAlbum: FollowedArtistSingleAndAlbum)
 
     @Query("SELECT * FROM followed_artist_single_and_album WHERE channelId = :channelId")
@@ -689,7 +686,7 @@ interface DatabaseDao {
     @Query("DELETE FROM notification WHERE id = :id")
     suspend fun deleteNotification(id: Long)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertTranslatedLyrics(translatedLyricsEntity: TranslatedLyricsEntity)
 
     @Query("SELECT * FROM translated_lyrics WHERE videoId = :videoId AND language = :language")
@@ -705,10 +702,10 @@ interface DatabaseDao {
     )
 
     // Insert methods
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertPodcast(podcast: PodcastsEntity): Long
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertEpisodes(episodes: List<EpisodeEntity>): List<Long>
 
     // Get methods

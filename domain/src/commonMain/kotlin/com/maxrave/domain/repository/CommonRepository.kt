@@ -14,7 +14,7 @@ interface CommonRepository {
 
     fun getDatabasePath(): String?
 
-    fun databaseDaoCheckpoint()
+    suspend fun databaseDaoCheckpoint()
 
     // Recently data
     fun getAllRecentData(): Flow<List<RecentlyType>>

@@ -16,7 +16,7 @@ actual fun getDatabaseBuilder(): RoomDatabase.Builder<MusicDatabase> {
 }
 
 @OptIn(ExperimentalForeignApi::class)
-private fun documentDirectory(): String {
+fun documentDirectory(): String {
     val documentDirectory = NSFileManager.defaultManager.URLForDirectory(
         directory = NSDocumentDirectory,
         inDomain = NSUserDomainMask,

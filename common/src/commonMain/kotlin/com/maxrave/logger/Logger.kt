@@ -1,34 +1,34 @@
 package com.maxrave.logger
 
-import io.github.aakira.napier.DebugAntilog
-import io.github.aakira.napier.Napier
+import co.touchlab.kermit.Logger
 
 object Logger {
-    init {
-        Napier.base(DebugAntilog())
-    }
-
-    private val logger = Napier
+    private val logger = Logger
 
     fun d(
         tag: String,
         message: String,
     ) {
-        logger.d(tag = tag, message = message)
+        logger.d(
+            tag,
+            message = {
+                message
+            }
+        )
     }
 
     fun i(
         tag: String,
         message: String,
     ) {
-        logger.i(tag = tag, message = message)
+        logger.i(tag, message = { message })
     }
 
     fun w(
         tag: String,
         message: String,
     ) {
-        logger.w(tag = tag, message = message)
+        logger.w(tag, message = { message })
     }
 
     fun e(
@@ -36,6 +36,13 @@ object Logger {
         message: String,
         e: Throwable? = null,
     ) {
-        logger.e(tag = tag, message = message, throwable = e)
+        logger.e(tag, throwable = e, message = { message })
     }
+}
+
+enum class LogLevel {
+    DEBUG,
+    INFO,
+    WARN,
+    ERROR
 }

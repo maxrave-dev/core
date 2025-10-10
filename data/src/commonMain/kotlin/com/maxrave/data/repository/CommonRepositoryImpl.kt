@@ -188,7 +188,7 @@ internal class CommonRepositoryImpl(
 
     override fun getDatabasePath() = com.maxrave.data.db.getDatabasePath()
 
-    override fun databaseDaoCheckpoint() = localDataSource.checkpoint()
+    override suspend fun databaseDaoCheckpoint() = localDataSource.checkpoint()
 
     // Recently data
     override fun getAllRecentData(): Flow<List<RecentlyType>> =

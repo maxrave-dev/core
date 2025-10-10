@@ -4,7 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import com.maxrave.data.dataStore.DataStoreManagerImpl
 import com.maxrave.data.dataStore.createDataStoreInstance
-import com.maxrave.data.db.DatabaseDao
+import DatabaseDao
 import com.maxrave.data.db.LocalDataSource
 import com.maxrave.data.db.MusicDatabase
 import com.maxrave.data.db.getDatabaseBuilder

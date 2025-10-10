@@ -1,5 +1,6 @@
 package com.maxrave.data.db
 
+import DatabaseDao
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
@@ -26,7 +27,7 @@ import kotlinx.datetime.LocalDateTime
 internal class LocalDataSource(
     private val databaseDao: DatabaseDao,
 ) {
-    fun checkpoint() = databaseDao.checkpoint()
+    suspend fun checkpoint() = databaseDao.checkpoint()
 
     suspend fun getAllRecentData() = databaseDao.getAllRecentData()
 
