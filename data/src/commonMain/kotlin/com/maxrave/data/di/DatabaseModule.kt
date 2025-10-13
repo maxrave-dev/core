@@ -1,16 +1,20 @@
 package com.maxrave.data.di
 
+import DatabaseDao
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.maxrave.data.dataStore.DataStoreManagerImpl
 import com.maxrave.data.dataStore.createDataStoreInstance
-import DatabaseDao
+import com.maxrave.data.db.Converters
 import com.maxrave.data.db.LocalDataSource
 import com.maxrave.data.db.MusicDatabase
 import com.maxrave.data.db.getDatabaseBuilder
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.spotify.Spotify
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import org.koin.dsl.module
 import org.simpmusic.aiservice.AiClient
 import org.simpmusic.lyrics.SimpMusicLyricsClient
@@ -21,7 +25,11 @@ val databaseModule =
     module {
         // Database
         single(createdAtStart = true) {
-            getDatabaseBuilder().build()
+            getDatabaseBuilder()
+                .addTypeConverter(Converters())
+                .setDriver(BundledSQLiteDriver())
+                .setQueryCoroutineContext(Dispatchers.IO)
+                .build()
         }
         // DatabaseDao
         single(createdAtStart = true) {

@@ -346,7 +346,7 @@ fun MediaPlayerViewWithSubtitle(
 
                 // Add autoEnterEnabled for versions S and up
                 builder.setAutoEnterEnabled(false)
-                activity?.setPictureInPictureParams(builder.build())
+                activity.setPictureInPictureParams(builder.build())
             }
         }
     }
@@ -367,14 +367,14 @@ fun MediaPlayerViewWithSubtitle(
             val onUserLeaveBehavior =
                 Runnable {
                     if (currentShouldEnterPipMode) {
-                        activity?.enterPictureInPictureMode(PictureInPictureParams.Builder().build())
+                        activity.enterPictureInPictureMode(PictureInPictureParams.Builder().build())
                     }
                 }
-            activity?.addOnUserLeaveHintListener(
+            activity.addOnUserLeaveHintListener(
                 onUserLeaveBehavior,
             )
             onDispose {
-                activity?.removeOnUserLeaveHintListener(
+                activity.removeOnUserLeaveHintListener(
                     onUserLeaveBehavior,
                 )
             }
