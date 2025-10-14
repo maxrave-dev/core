@@ -19,19 +19,9 @@ kotlin {
         implementation(platform(libs.koin.bom))
         implementation(libs.koin.jvm)
         implementation(libs.kotlinx.serialization.json)
-        val fxSuffix = when (osdetector.classifier) {
-            "linux-x86_64" -> "linux"
-            "linux-aarch_64" -> "linux-aarch64"
-            "windows-x86_64" -> "win"
-            "osx-x86_64" -> "mac"
-            "osx-aarch_64" -> "mac-aarch64"
-            else -> throw IllegalStateException("Unknown OS: ${osdetector.classifier}")
-        }
-        implementation("org.openjfx:javafx-base:21:${fxSuffix}")
-        implementation("org.openjfx:javafx-graphics:21:${fxSuffix}")
-        implementation("org.openjfx:javafx-controls:21:${fxSuffix}")
-        implementation("org.openjfx:javafx-swing:21:${fxSuffix}")
-        implementation("org.openjfx:javafx-web:21:${fxSuffix}")
-        implementation("org.openjfx:javafx-media:21:${fxSuffix}")
+
+        // Gstreamer
+        implementation(libs.gst1.java.core)
+        implementation(libs.gst1.java.fx)
     }
 }
