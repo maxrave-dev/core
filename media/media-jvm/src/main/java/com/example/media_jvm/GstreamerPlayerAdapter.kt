@@ -557,8 +557,15 @@ class GstreamerPlayerAdapter(
         val videoId = mediaItem.uri ?: return
 
         coroutineScope.launch(Dispatchers.IO) {
+            // Notify listeners
+            listeners.forEach {
+                it.onMediaItemTransition(
+                    mediaItem,
+                    PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO,
+                )
+            }
             // Extract playable URL from videoId
-            val playableUrl = extractPlayableUrl(videoId) ?: return@launch
+            val playableUrl = extractPlayableUrl(videoId) ?: ""
 
             // GStreamer operations should NOT be on Dispatchers.Main
             // Check if we have a precached player for this index
@@ -599,14 +606,6 @@ class GstreamerPlayerAdapter(
             } else {
                 // Keep in PAUSED state (ready to play)
                 Logger.d("GstreamerPlayerAdapter", "Player ready in PAUSED state")
-            }
-
-            // Notify listeners
-            listeners.forEach {
-                it.onMediaItemTransition(
-                    mediaItem,
-                    PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO,
-                )
             }
 
             // Trigger precaching for upcoming tracks
@@ -826,7 +825,7 @@ class GstreamerPlayerAdapter(
                     val videoId = mediaItem.uri ?: continue
 
                     // Extract playable URL from videoId
-                    val playableUrl = extractPlayableUrl(videoId) ?: continue
+                    val playableUrl = extractPlayableUrl(videoId) ?: ""
 
                     try {
                         val player = createMediaPlayer(playableUrl)
