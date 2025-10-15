@@ -117,6 +117,7 @@ class YouTube {
         set(value) {
             ytMusic.cookiePath = value
         }
+
     /**
      * Set the locale and language for YouTube Music
      */
@@ -1088,13 +1089,15 @@ class YouTube {
             val pId = if (playlistId?.startsWith("VL") == true) playlistId.removeRange(0..1) else playlistId
             val ghostRequest = ytMusic.ghostRequest(videoId, pId)
             val cookie =
-                "PREF=hl=en&tz=UTC; SOCS=CAI; ${ghostRequest.headers
-                    .getAll("set-cookie")
-                    ?.map {
-                        it.split(";").first()
-                    }?.filter {
-                        it.lastOrNull() != '='
-                    }?.joinToString("; ")}"
+                "PREF=hl=en&tz=UTC; SOCS=CAI; ${
+                    ghostRequest.headers
+                        .getAll("set-cookie")
+                        ?.map {
+                            it.split(";").first()
+                        }?.filter {
+                            it.lastOrNull() != '='
+                        }?.joinToString("; ")
+                }"
             var response = ""
             var data = ""
             val ksoupHtmlParser =
@@ -1378,6 +1381,25 @@ class YouTube {
 
             var decodedSigResponse: PlayerResponse? = null
             var currentClient: YouTubeClient
+            val now = Clock.System.now().epochSeconds
+            if (now < poTokenObject.second) {
+                Logger.d(TAG, "Use saved PoToken")
+                poTokenObject.first
+            } else {
+                ytMusic
+                    .createPoTokenChallenge()
+                    .bodyAsText()
+                    .let { challenge ->
+                        val listChallenge = poTokenJsonDeserializer.decodeFromString<List<String?>>(challenge)
+                        listChallenge.filterNotNull().firstOrNull()
+                    }?.let { poTokenChallenge ->
+                        ytMusic.generatePoToken(poTokenChallenge).bodyAsText().getPoToken().also { poToken ->
+                            if (poToken != null) {
+                                poTokenObject = Pair(poToken, now + 3600)
+                            }
+                        }
+                    }
+            }
             for (client in listClients) {
                 val tempRes =
                     ytMusic
@@ -1386,6 +1408,7 @@ class YouTube {
                             videoId,
                             playlistId,
                             cpn,
+                            poTokenObject.first,
                         ).body<PlayerResponse>()
                 val response =
                     if (shouldYtdlp) {
@@ -1404,26 +1427,7 @@ class YouTube {
             }
             if (decodedSigResponse == null) {
                 val (tempCookie, visitorData, playbackTracking) = getVisitorData(videoId, playlistId)
-                val now = Clock.System.now().epochSeconds
-                val poToken =
-                    if (now < poTokenObject.second) {
-                        Logger.d(TAG, "Use saved PoToken")
-                        poTokenObject.first
-                    } else {
-                        ytMusic
-                            .createPoTokenChallenge()
-                            .bodyAsText()
-                            .let { challenge ->
-                                val listChallenge = poTokenJsonDeserializer.decodeFromString<List<String?>>(challenge)
-                                listChallenge.filterNotNull().firstOrNull()
-                            }?.let { poTokenChallenge ->
-                                ytMusic.generatePoToken(poTokenChallenge).bodyAsText().getPoToken().also { poToken ->
-                                    if (poToken != null) {
-                                        poTokenObject = Pair(poToken, now + 3600)
-                                    }
-                                }
-                            }
-                    }
+                val poToken = poTokenObject.first
                 Logger.d(TAG, "PoToken $poToken")
                 val playerResponse = ytMusic.noLogInPlayer(videoId, tempCookie, visitorData, poToken ?: "").body<PlayerResponse>()
                 Logger.d(TAG, "Player Response $playerResponse")
@@ -1928,10 +1932,12 @@ class YouTube {
             try {
                 ytMusic
                     .getYouTubeCaption(
-                        "${ytWeb.captions?.playerCaptionsTracklistRenderer?.captionTracks?.firstOrNull()?.baseUrl?.replace(
-                            "&fmt=srv3",
-                            "",
-                        )}&tlang=$preferLang",
+                        "${
+                            ytWeb.captions?.playerCaptionsTracklistRenderer?.captionTracks?.firstOrNull()?.baseUrl?.replace(
+                                "&fmt=srv3",
+                                "",
+                            )
+                        }&tlang=$preferLang",
                     ).body<Transcript>()
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -2004,7 +2010,7 @@ class YouTube {
         filePath: String,
         videoId: String,
         isVideo: Boolean = false,
-        shouldYtdlp: Boolean
+        shouldYtdlp: Boolean,
     ): Flow<DownloadProgress> =
         channelFlow {
             // Video if videoId is not null
@@ -2054,9 +2060,11 @@ class YouTube {
                                     )
                                 } else {
                                     trySend(DownloadProgress.MERGING)
-                                    trySend(ytMusic.mergeAudioVideoDownload(
-                                        filePath
-                                    ))
+                                    trySend(
+                                        ytMusic.mergeAudioVideoDownload(
+                                            filePath,
+                                        ),
+                                    )
                                 }
                             }
                         }.onSuccess {
@@ -2080,10 +2088,12 @@ class YouTube {
                         }.onSuccess {
                             Logger.d(TAG, "Download only Audio Success")
                             // Convert to mp3
-                            trySend(ytMusic.saveAudioWithThumbnail(
-                                filePath,
-                                track,
-                            ))
+                            trySend(
+                                ytMusic.saveAudioWithThumbnail(
+                                    filePath,
+                                    track,
+                                ),
+                            )
                         }.onFailure { e ->
                             e.printStackTrace()
                             trySend(DownloadProgress.failed(e.message ?: "Download failed"))

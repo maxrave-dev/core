@@ -38,6 +38,7 @@ import java.util.concurrent.TimeUnit
 import java.util.stream.Stream
 
 private const val TAG = "GstreamerPlayerAdapter"
+
 /**
  * GStreamer implementation of MediaPlayerInterface
  * Features:
@@ -53,15 +54,14 @@ class GstreamerPlayerAdapter(
     private val dataStoreManager: DataStoreManager,
     private val streamRepository: StreamRepository,
 ) : MediaPlayerInterface {
-
     // Internal state enum for proper state machine
     private enum class InternalState {
-        IDLE,           // No media loaded
-        PREPARING,      // Loading media
-        READY,          // Ready to play/paused
-        PLAYING,        // Currently playing
-        ENDED,          // Playback ended
-        ERROR           // Error state
+        IDLE, // No media loaded
+        PREPARING, // Loading media
+        READY, // Ready to play/paused
+        PLAYING, // Currently playing
+        ENDED, // Playback ended
+        ERROR, // Error state
     }
 
     init {
@@ -85,25 +85,48 @@ class GstreamerPlayerAdapter(
     // ========== State Management ==========
     private val listeners = mutableListOf<MediaPlayerListener>()
 
-    @Volatile private var currentPlayer: PlayBin? = null
-    @Volatile private var internalState = InternalState.IDLE
-    @Volatile private var internalPlayWhenReady = true
-    @Volatile private var internalVolume = 1.0f
-    @Volatile private var internalRepeatMode = PlayerConstants.REPEAT_MODE_OFF
-    @Volatile private var internalShuffleModeEnabled = false
-    @Volatile private var internalPlaybackSpeed = 1.0f
+    @Volatile
+    private var currentPlayer: PlayBin? = null
+
+    @Volatile
+    private var internalState = InternalState.IDLE
+
+    @Volatile
+    private var internalPlayWhenReady = true
+
+    @Volatile
+    private var internalVolume = 1.0f
+
+    @Volatile
+    private var internalRepeatMode = PlayerConstants.REPEAT_MODE_OFF
+
+    @Volatile
+    private var internalShuffleModeEnabled = false
+
+    @Volatile
+    private var internalPlaybackSpeed = 1.0f
 
     // Position tracking - updated periodically, not on every query
-    @Volatile private var cachedPosition = 0L
-    @Volatile private var cachedDuration = 0L
-    @Volatile private var cachedBufferedPosition = 0L
-    @Volatile private var cachedIsLoading = false
+    @Volatile
+    private var cachedPosition = 0L
+
+    @Volatile
+    private var cachedDuration = 0L
+
+    @Volatile
+    private var cachedBufferedPosition = 0L
+
+    @Volatile
+    private var cachedIsLoading = false
     private var positionUpdateJob: Job? = null
 
     // State transition debouncing to prevent flickering
-    @Volatile private var lastStateChangeTime = 0L
+    @Volatile
+    private var lastStateChangeTime = 0L
     private val stateChangeDebounceMs = 100L
-    @Volatile private var isTransitioning = false
+
+    @Volatile
+    private var isTransitioning = false
 
     // Bus listener management
     private data class BusListeners(
@@ -113,16 +136,18 @@ class GstreamerPlayerAdapter(
         val warning: Bus.WARNING,
         val stateChanged: Bus.STATE_CHANGED,
         val buffering: Bus.BUFFERING,
-        val asyncDone: Bus.ASYNC_DONE
+        val asyncDone: Bus.ASYNC_DONE,
     )
+
     private var activeBusListeners: BusListeners? = null
 
     // Precaching system
     private data class PrecachedPlayer(
         val player: PlayBin,
         val mediaItem: GenericMediaItem,
-        val url: String
+        val url: String,
     )
+
     private val precachedPlayers = ConcurrentHashMap<Int, PrecachedPlayer>()
     private var precacheEnabled = true
     private val maxPrecacheCount = 2
@@ -142,58 +167,63 @@ class GstreamerPlayerAdapter(
     override fun play() {
         Logger.d(TAG, "▶️ play() called (current state: $internalState, playWhenReady: $internalPlayWhenReady)")
         coroutineScope.launch {
-                when (internalState) {
-                    InternalState.READY, InternalState.ENDED -> {
-                        currentPlayer?.let { player ->
-                            Logger.d(TAG, "▶️ Play: Setting GStreamer state to PLAYING")
-                            isTransitioning = true
-                            player.state = State.PLAYING
-                            internalPlayWhenReady = true
-                            // State change will be handled by stateChangedListener
-                        } ?: Logger.w(TAG, "Play called but currentPlayer is null")
-                    }
-                    InternalState.PREPARING -> {
-                        // Just set playWhenReady, will auto-play when ready
-                        cachedIsLoading = true
-                        listeners.forEach { it.onIsLoadingChanged(true) }
-                        Logger.d(TAG, "▶️ Play: During PREPARING - will auto-play when ready")
-                    }
-                    InternalState.PLAYING -> {
-                        // Already playing, update flag
+            when (internalState) {
+                InternalState.READY, InternalState.ENDED -> {
+                    currentPlayer?.let { player ->
+                        Logger.d(TAG, "▶️ Play: Setting GStreamer state to PLAYING")
+                        isTransitioning = true
+                        player.state = State.PLAYING
                         internalPlayWhenReady = true
-                        cachedIsLoading = true
-                        listeners.forEach { it.onIsLoadingChanged(true) }
-                        Logger.d(TAG, "▶️ Play: Already playing")
-                    }
-                    else -> {
-                        Logger.w(TAG, "▶️ Play: Called in invalid state: $internalState")
-                    }
+                        // State change will be handled by stateChangedListener
+                    } ?: Logger.w(TAG, "Play called but currentPlayer is null")
                 }
+
+                InternalState.PREPARING -> {
+                    // Just set playWhenReady, will auto-play when ready
+                    cachedIsLoading = true
+                    listeners.forEach { it.onIsLoadingChanged(true) }
+                    Logger.d(TAG, "▶️ Play: During PREPARING - will auto-play when ready")
+                }
+
+                InternalState.PLAYING -> {
+                    // Already playing, update flag
+                    internalPlayWhenReady = true
+                    cachedIsLoading = true
+                    listeners.forEach { it.onIsLoadingChanged(true) }
+                    Logger.d(TAG, "▶️ Play: Already playing")
+                }
+
+                else -> {
+                    Logger.w(TAG, "▶️ Play: Called in invalid state: $internalState")
+                }
+            }
         }
     }
 
     override fun pause() {
         Logger.d(TAG, "⏸️ pause() called (current state: $internalState, playWhenReady: $internalPlayWhenReady)")
         coroutineScope.launch {
-                when (internalState) {
-                    InternalState.PLAYING, InternalState.READY -> {
-                        currentPlayer?.let { player ->
-                            Logger.d(TAG, "⏸️ Pause: Setting GStreamer state to PAUSED")
-                            isTransitioning = true
-                            player.state = State.PAUSED
-                            internalPlayWhenReady = false
-                            // State change will be handled by stateChangedListener
-                        }
-                    }
-                    InternalState.PREPARING -> {
-                        // Just set playWhenReady to false
+            when (internalState) {
+                InternalState.PLAYING, InternalState.READY -> {
+                    currentPlayer?.let { player ->
+                        Logger.d(TAG, "⏸️ Pause: Setting GStreamer state to PAUSED")
+                        isTransitioning = true
+                        player.state = State.PAUSED
                         internalPlayWhenReady = false
-                        Logger.d(TAG, "⏸️ Pause: During PREPARING - will not auto-play")
-                    }
-                    else -> {
-                        Logger.w(TAG, "⏸️ Pause: Called in invalid state: $internalState")
+                        // State change will be handled by stateChangedListener
                     }
                 }
+
+                InternalState.PREPARING -> {
+                    // Just set playWhenReady to false
+                    internalPlayWhenReady = false
+                    Logger.d(TAG, "⏸️ Pause: During PREPARING - will not auto-play")
+                }
+
+                else -> {
+                    Logger.w(TAG, "⏸️ Pause: Called in invalid state: $internalState")
+                }
+            }
         }
     }
 
@@ -332,38 +362,38 @@ class GstreamerPlayerAdapter(
         if (index !in playlist.indices) return
 
         coroutineScope.launch {
-                playlist.removeAt(index)
+            playlist.removeAt(index)
 
-                // Remove from precache
-                precachedPlayers.remove(index)?.let { cached ->
-                    cleanupPlayerInternal(cached.player)
+            // Remove from precache
+            precachedPlayers.remove(index)?.let { cached ->
+                cleanupPlayerInternal(cached.player)
+            }
+
+            when {
+                index < localCurrentMediaItemIndex -> {
+                    localCurrentMediaItemIndex--
+                    // Rekey precache
+                    clearPrecacheExceptCurrentInternal()
+                    triggerPrecachingInternal()
                 }
 
-                when {
-                    index < localCurrentMediaItemIndex -> {
-                        localCurrentMediaItemIndex--
-                        // Rekey precache
-                        clearPrecacheExceptCurrentInternal()
-                        triggerPrecachingInternal()
+                index == localCurrentMediaItemIndex -> {
+                    if (localCurrentMediaItemIndex >= playlist.size) {
+                        localCurrentMediaItemIndex = playlist.size - 1
                     }
-
-                    index == localCurrentMediaItemIndex -> {
-                        if (localCurrentMediaItemIndex >= playlist.size) {
-                            localCurrentMediaItemIndex = playlist.size - 1
-                        }
-                        if (localCurrentMediaItemIndex >= 0) {
-                            loadAndPlayTrackInternal(localCurrentMediaItemIndex, 0, internalPlayWhenReady)
-                        } else {
-                            cleanupCurrentPlayerInternal()
-                        }
-                    }
-
-                    else -> {
-                        // Index after current, just update precache
-                        clearPrecacheExceptCurrentInternal()
-                        triggerPrecachingInternal()
+                    if (localCurrentMediaItemIndex >= 0) {
+                        loadAndPlayTrackInternal(localCurrentMediaItemIndex, 0, internalPlayWhenReady)
+                    } else {
+                        cleanupCurrentPlayerInternal()
                     }
                 }
+
+                else -> {
+                    // Index after current, just update precache
+                    clearPrecacheExceptCurrentInternal()
+                    triggerPrecachingInternal()
+                }
+            }
         }
     }
 
@@ -374,25 +404,25 @@ class GstreamerPlayerAdapter(
         if (fromIndex !in playlist.indices || toIndex !in playlist.indices) return
 
         coroutineScope.launch {
-                val item = playlist.removeAt(fromIndex)
-                playlist.add(toIndex, item)
+            val item = playlist.removeAt(fromIndex)
+            playlist.add(toIndex, item)
 
-                // Update current index
-                localCurrentMediaItemIndex =
-                    when {
-                        localCurrentMediaItemIndex == fromIndex -> toIndex
-                        fromIndex < localCurrentMediaItemIndex && toIndex >= localCurrentMediaItemIndex ->
-                            localCurrentMediaItemIndex - 1
+            // Update current index
+            localCurrentMediaItemIndex =
+                when {
+                    localCurrentMediaItemIndex == fromIndex -> toIndex
+                    fromIndex < localCurrentMediaItemIndex && toIndex >= localCurrentMediaItemIndex ->
+                        localCurrentMediaItemIndex - 1
 
-                        fromIndex > localCurrentMediaItemIndex && toIndex <= localCurrentMediaItemIndex ->
-                            localCurrentMediaItemIndex + 1
+                    fromIndex > localCurrentMediaItemIndex && toIndex <= localCurrentMediaItemIndex ->
+                        localCurrentMediaItemIndex + 1
 
-                        else -> localCurrentMediaItemIndex
-                    }
+                    else -> localCurrentMediaItemIndex
+                }
 
-                // Clear and rebuild precache
-                clearPrecacheExceptCurrentInternal()
-                triggerPrecachingInternal()
+            // Clear and rebuild precache
+            clearPrecacheExceptCurrentInternal()
+            triggerPrecachingInternal()
         }
     }
 
@@ -634,10 +664,12 @@ class GstreamerPlayerAdapter(
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_IDLE) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
             }
+
             InternalState.PREPARING -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_BUFFERING) }
                 listeners.forEach { it.onIsLoadingChanged(true) }
             }
+
             InternalState.READY -> {
                 if (internalPlayWhenReady) {
                     play()
@@ -647,15 +679,18 @@ class GstreamerPlayerAdapter(
                     listeners.forEach { it.onIsPlayingChanged(false) }
                 }
             }
+
             InternalState.PLAYING -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_READY) }
                 listeners.forEach { it.onIsLoadingChanged(false) }
                 listeners.forEach { it.onIsPlayingChanged(true) }
             }
+
             InternalState.ENDED -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_ENDED) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
             }
+
             InternalState.ERROR -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_IDLE) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
@@ -679,72 +714,74 @@ class GstreamerPlayerAdapter(
         // Cancel previous load
         currentLoadJob?.cancel()
 
-        currentLoadJob = coroutineScope.launch {
-            try {
-                transitionToState(InternalState.PREPARING)
+        currentLoadJob =
+            coroutineScope.launch {
+                try {
+                    transitionToState(InternalState.PREPARING)
 
-                // Notify media item transition
-                listeners.forEach {
-                    it.onMediaItemTransition(
-                        mediaItem,
-                        PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO,
-                    )
-                }
-                // Use precached player if available
-                val cachedPlayer = precachedPlayers.remove(index)
-                val player = if (cachedPlayer?.player != null) {
-                    cachedPlayer.player
-                } else {
-                    // Extract URL outside GStreamer thread
-                    val playableUrl = extractPlayableUrl(videoId)
-
-                    if (playableUrl.isNullOrEmpty()) {
-                        Logger.e(TAG, "Failed to extract playable URL for $videoId")
-                        transitionToState(InternalState.ERROR)
-                        return@launch
+                    // Notify media item transition
+                    listeners.forEach {
+                        it.onMediaItemTransition(
+                            mediaItem,
+                            PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO,
+                        )
                     }
-                    createMediaPlayerInternal(playableUrl)
+                    // Use precached player if available
+                    val cachedPlayer = precachedPlayers.remove(index)
+                    val player =
+                        if (cachedPlayer?.player != null) {
+                            cachedPlayer.player
+                        } else {
+                            // Extract URL outside GStreamer thread
+                            val playableUrl = extractPlayableUrl(videoId)
+
+                            if (playableUrl.isNullOrEmpty()) {
+                                Logger.e(TAG, "Failed to extract playable URL for $videoId")
+                                transitionToState(InternalState.ERROR)
+                                return@launch
+                            }
+                            createMediaPlayerInternal(playableUrl)
+                        }
+
+                    // Cleanup current
+                    cleanupCurrentPlayerInternal()
+
+                    // Set as current
+                    currentPlayer = player
+                    setupPlayerListenersInternal(player)
+
+                    // Apply settings
+                    player.volume = internalVolume.toDouble()
+                    player["mute"] = false
+
+                    // Set to PAUSED to load pipeline
+                    player.state = State.PAUSED
+
+                    transitionToState(InternalState.READY)
+
+                    // Seek if needed
+                    if (startPositionMs > 0) {
+                        player.seek(startPositionMs, TimeUnit.MILLISECONDS)
+                        cachedPosition = startPositionMs
+                    }
+
+                    // Auto-play if requested
+                    if (shouldPlay) {
+                        player.state = State.PLAYING
+                    } else {
+                        player.state = State.READY
+                    }
+
+                    // Start position updates
+                    startPositionUpdates()
+
+                    // Trigger precaching
+                    triggerPrecachingInternal()
+                } catch (e: Exception) {
+                    Logger.e(TAG, "Load track error: ${e.message}", e)
+                    transitionToState(InternalState.ERROR)
                 }
-
-                // Cleanup current
-                cleanupCurrentPlayerInternal()
-
-                // Set as current
-                currentPlayer = player
-                setupPlayerListenersInternal(player)
-
-                // Apply settings
-                player.volume = internalVolume.toDouble()
-                player["mute"] = false
-
-                // Set to PAUSED to load pipeline
-                player.state = State.PAUSED
-
-                transitionToState(InternalState.READY)
-
-                // Seek if needed
-                if (startPositionMs > 0) {
-                    player.seek(startPositionMs, TimeUnit.MILLISECONDS)
-                    cachedPosition = startPositionMs
-                }
-
-                // Auto-play if requested
-                if (shouldPlay) {
-                    player.state = State.PLAYING
-                } else {
-                    player.state = State.READY
-                }
-
-                // Start position updates
-                startPositionUpdates()
-
-                // Trigger precaching
-                triggerPrecachingInternal()
-            } catch (e: Exception) {
-                Logger.e(TAG, "Load track error: ${e.message}", e)
-                transitionToState(InternalState.ERROR)
             }
-        }
     }
 
     /**
@@ -800,110 +837,122 @@ class GstreamerPlayerAdapter(
         val bus = player.bus
 
         // Create new listeners
-        val eosListener = Bus.EOS { _ ->
-            coroutineScope.launch {
-                Logger.d(TAG, "End of stream reached")
-                transitionToState(InternalState.ENDED)
-                handleTrackEndInternal()
-            }
-        }
-
-        val durationListener = Bus.DURATION_CHANGED { _ ->
-            coroutineScope.launch {
-                currentPlayer?.let { player ->
-                    val dur = player.queryDuration(Format.TIME)
-                    cachedDuration = if (dur != -1L) dur / 1000000 else 0L
-                    Logger.d(TAG, "Duration updated: $cachedDuration ms")
+        val eosListener =
+            Bus.EOS { _ ->
+                coroutineScope.launch {
+                    Logger.d(TAG, "End of stream reached")
+                    transitionToState(InternalState.ENDED)
+                    handleTrackEndInternal()
                 }
             }
-        }
 
-        val errorListener = Bus.ERROR { _, code, message ->
-            coroutineScope.launch {
-                val error = PlayerError(
-                    errorCode = PlayerConstants.ERROR_CODE_TIMEOUT,
-                    errorCodeName = "GSTREAMER_ERROR",
-                    message = message ?: "Playback error (code: $code)",
-                )
-                Logger.e(TAG, "Playback error: $message")
-                listeners.forEach { it.onPlayerError(error) }
-                transitionToState(InternalState.ERROR)
-            }
-        }
-
-        val warningListener = Bus.WARNING { _, code, message ->
-            Logger.w(TAG, "Warning (code: $code): $message")
-        }
-
-        val stateChangedListener = Bus.STATE_CHANGED { _, oldState, newState, pending ->
-            // Filter out intermediate state transitions to prevent flickering
-            // Only react to meaningful PAUSED <-> PLAYING transitions
-            if (oldState == newState) return@STATE_CHANGED
-
-            // Ignore transitions to/from READY state (intermediate)
-            if (newState == State.READY || oldState == State.READY) return@STATE_CHANGED
-
-            coroutineScope.launch {
-                // Debounce rapid state changes
-                val currentTime = System.currentTimeMillis()
-                if (currentTime - lastStateChangeTime < stateChangeDebounceMs) {
-                    Logger.d(TAG, "State change debounced: $oldState -> $newState")
-                    return@launch
-                }
-                lastStateChangeTime = currentTime
-
-                Logger.d(TAG, "State changed: $oldState -> $newState (internal: $internalState)")
-
-                when (newState) {
-                    State.PLAYING -> {
-                        if (internalState != InternalState.PLAYING) {
-                            transitionToState(InternalState.PLAYING)
-                            notifyEqualizerIntent(true)
-                        }
-                        isTransitioning = false
+        val durationListener =
+            Bus.DURATION_CHANGED { _ ->
+                coroutineScope.launch {
+                    currentPlayer?.let { player ->
+                        val dur = player.queryDuration(Format.TIME)
+                        cachedDuration = if (dur != -1L) dur / 1000000 else 0L
+                        Logger.d(TAG, "Duration updated: $cachedDuration ms")
                     }
-                    State.PAUSED -> {
-                        // Only transition to READY if we were actually playing
-                        if (internalState == InternalState.PLAYING) {
-                            transitionToState(InternalState.READY)
+                }
+            }
+
+        val errorListener =
+            Bus.ERROR { _, code, message ->
+                coroutineScope.launch {
+                    val error =
+                        PlayerError(
+                            errorCode = PlayerConstants.ERROR_CODE_TIMEOUT,
+                            errorCodeName = "GSTREAMER_ERROR",
+                            message = message ?: "Playback error (code: $code)",
+                        )
+                    Logger.e(TAG, "Playback error: $message")
+                    listeners.forEach { it.onPlayerError(error) }
+                    transitionToState(InternalState.ERROR)
+                }
+            }
+
+        val warningListener =
+            Bus.WARNING { _, code, message ->
+                Logger.w(TAG, "Warning (code: $code): $message")
+            }
+
+        val stateChangedListener =
+            Bus.STATE_CHANGED { _, oldState, newState, pending ->
+                // Filter out intermediate state transitions to prevent flickering
+                // Only react to meaningful PAUSED <-> PLAYING transitions
+                if (oldState == newState) return@STATE_CHANGED
+
+                // Ignore transitions to/from READY state (intermediate)
+                if (newState == State.READY || oldState == State.READY) return@STATE_CHANGED
+
+                coroutineScope.launch {
+                    // Debounce rapid state changes
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastStateChangeTime < stateChangeDebounceMs) {
+                        Logger.d(TAG, "State change debounced: $oldState -> $newState")
+                        return@launch
+                    }
+                    lastStateChangeTime = currentTime
+
+                    Logger.d(TAG, "State changed: $oldState -> $newState (internal: $internalState)")
+
+                    when (newState) {
+                        State.PLAYING -> {
+                            if (internalState != InternalState.PLAYING) {
+                                transitionToState(InternalState.PLAYING)
+                                notifyEqualizerIntent(true)
+                            }
+                            isTransitioning = false
+                        }
+
+                        State.PAUSED -> {
+                            // Only transition to READY if we were actually playing
+                            if (internalState == InternalState.PLAYING) {
+                                transitionToState(InternalState.READY)
+                                notifyEqualizerIntent(false)
+                            }
+                            isTransitioning = false
+                        }
+
+                        State.NULL -> {
                             notifyEqualizerIntent(false)
+                            isTransitioning = false
                         }
-                        isTransitioning = false
-                    }
-                    State.NULL -> {
-                        notifyEqualizerIntent(false)
-                        isTransitioning = false
-                    }
-                    else -> {
-                        isTransitioning = false
+
+                        else -> {
+                            isTransitioning = false
+                        }
                     }
                 }
             }
-        }
 
-        val bufferingListener = Bus.BUFFERING { _, percent ->
-            if (percent in 1..100) {
-                Logger.d(TAG, "Buffering: $percent%")
-                cachedBufferedPosition = (duration * percent / 100).coerceIn(0, duration)
-            }
-        }
-
-        val asyncDoneListener = Bus.ASYNC_DONE { _ ->
-            coroutineScope.launch {
-                // Pipeline is ready, only auto-play if:
-                // 1. We're in READY state (not already playing)
-                // 2. playWhenReady is true
-                // 3. We're not already transitioning
-                if (internalState == InternalState.READY &&
-                    internalPlayWhenReady &&
-                    !isTransitioning) {
-                    isTransitioning = true
-                    Logger.d(TAG, "ASYNC_DONE: Auto-starting playback")
-                    currentPlayer?.state = State.PLAYING
-                    // isTransitioning will be reset by state change listener
+        val bufferingListener =
+            Bus.BUFFERING { _, percent ->
+                if (percent in 1..100) {
+                    Logger.d(TAG, "Buffering: $percent%")
+                    cachedBufferedPosition = (duration * percent / 100).coerceIn(0, duration)
                 }
             }
-        }
+
+        val asyncDoneListener =
+            Bus.ASYNC_DONE { _ ->
+                coroutineScope.launch {
+                    // Pipeline is ready, only auto-play if:
+                    // 1. We're in READY state (not already playing)
+                    // 2. playWhenReady is true
+                    // 3. We're not already transitioning
+                    if (internalState == InternalState.READY &&
+                        internalPlayWhenReady &&
+                        !isTransitioning
+                    ) {
+                        isTransitioning = true
+                        Logger.d(TAG, "ASYNC_DONE: Auto-starting playback")
+                        currentPlayer?.state = State.PLAYING
+                        // isTransitioning will be reset by state change listener
+                    }
+                }
+            }
 
         // Connect listeners
         bus.connect(eosListener)
@@ -915,15 +964,16 @@ class GstreamerPlayerAdapter(
         bus.connect(durationListener)
 
         // Store references
-        activeBusListeners = BusListeners(
-            eos = eosListener,
-            durationChanged = durationListener,
-            error = errorListener,
-            warning = warningListener,
-            stateChanged = stateChangedListener,
-            buffering = bufferingListener,
-            asyncDone = asyncDoneListener
-        )
+        activeBusListeners =
+            BusListeners(
+                eos = eosListener,
+                durationChanged = durationListener,
+                error = errorListener,
+                warning = warningListener,
+                stateChanged = stateChangedListener,
+                buffering = bufferingListener,
+                asyncDone = asyncDoneListener,
+            )
     }
 
     /**
@@ -978,11 +1028,13 @@ class GstreamerPlayerAdapter(
             PlayerConstants.REPEAT_MODE_ONE -> {
                 seekTo(localCurrentMediaItemIndex, 0)
             }
+
             PlayerConstants.REPEAT_MODE_ALL -> {
                 if (hasNextMediaItem()) {
                     seekToNext()
                 }
             }
+
             else -> {
                 if (localCurrentMediaItemIndex < playlist.size - 1) {
                     seekToNext()
@@ -999,30 +1051,32 @@ class GstreamerPlayerAdapter(
     private fun startPositionUpdates() {
         stopPositionUpdates()
 
-        positionUpdateJob = coroutineScope.launch {
-            while (isActive && currentPlayer != null) {
-                try {
-                    // Skip position queries during transitions to prevent flicker
-                    if (!isTransitioning) {
-                        currentPlayer?.let { player ->
-                            // Only query position when in PLAYING or READY states
-                            if (internalState == InternalState.PLAYING ||
-                                internalState == InternalState.READY) {
-                                val pos = player.queryPosition(TimeUnit.MILLISECONDS)
-                                val dur = player.queryDuration(TimeUnit.MILLISECONDS)
+        positionUpdateJob =
+            coroutineScope.launch {
+                while (isActive && currentPlayer != null) {
+                    try {
+                        // Skip position queries during transitions to prevent flicker
+                        if (!isTransitioning) {
+                            currentPlayer?.let { player ->
+                                // Only query position when in PLAYING or READY states
+                                if (internalState == InternalState.PLAYING ||
+                                    internalState == InternalState.READY
+                                ) {
+                                    val pos = player.queryPosition(TimeUnit.MILLISECONDS)
+                                    val dur = player.queryDuration(TimeUnit.MILLISECONDS)
 
-                                if (pos >= 0) cachedPosition = pos
-                                if (dur >= 0) cachedDuration = dur
+                                    if (pos >= 0) cachedPosition = pos
+                                    if (dur >= 0) cachedDuration = dur
+                                }
                             }
                         }
+                    } catch (e: Exception) {
+                        // Ignore query errors - don't log to avoid spam
                     }
-                } catch (e: Exception) {
-                    // Ignore query errors - don't log to avoid spam
-                }
 
-                delay(200) // Update every 200ms
+                    delay(200) // Update every 200ms
+                }
             }
-        }
     }
 
     /**
@@ -1041,56 +1095,59 @@ class GstreamerPlayerAdapter(
 
         cancelPrecaching()
         Logger.d(TAG, "Trigger precache")
-        precacheJob = coroutineScope.launch {
-            try {
-                val indicesToPrecache = mutableListOf<Int>()
+        precacheJob =
+            coroutineScope.launch {
+                try {
+                    val indicesToPrecache = mutableListOf<Int>()
 
-                val index = localCurrentMediaItemIndex
-                for (i in 1..maxPrecacheCount) {
-                    val nextIndex = when (internalRepeatMode) {
-                        PlayerConstants.REPEAT_MODE_ALL -> (index + i) % playlist.size
-                        else -> {
-                            val next = index + i
-                            if (next < playlist.size) next else break
+                    val index = localCurrentMediaItemIndex
+                    for (i in 1..maxPrecacheCount) {
+                        val nextIndex =
+                            when (internalRepeatMode) {
+                                PlayerConstants.REPEAT_MODE_ALL -> (index + i) % playlist.size
+                                else -> {
+                                    val next = index + i
+                                    if (next < playlist.size) next else break
+                                }
+                            }
+
+                        if (nextIndex != localCurrentMediaItemIndex &&
+                            !precachedPlayers.containsKey(nextIndex)
+                        ) {
+                            indicesToPrecache.add(nextIndex)
                         }
                     }
 
-                    if (nextIndex != localCurrentMediaItemIndex &&
-                        !precachedPlayers.containsKey(nextIndex)
-                    ) {
-                        indicesToPrecache.add(nextIndex)
-                    }
-                }
+                    for (idx in indicesToPrecache) {
+                        if (!isActive) break
 
-                for (idx in indicesToPrecache) {
-                    if (!isActive) break
+                        val mediaItem = playlist.getOrNull(idx) ?: continue
+                        val videoId = mediaItem.mediaId
 
-                    val mediaItem = playlist.getOrNull(idx) ?: continue
-                    val videoId = mediaItem.mediaId
+                        val playableUrl =
+                            withContext(coroutineScope.coroutineContext) {
+                                extractPlayableUrl(videoId)
+                            }
 
-                    val playableUrl = withContext(coroutineScope.coroutineContext) {
-                        extractPlayableUrl(videoId)
-                    }
-
-                    if (!playableUrl.isNullOrEmpty()) {
-                        try {
-                            val player = createMediaPlayerInternal(playableUrl)
-                            player.state = State.READY
-                            precachedPlayers[idx] = PrecachedPlayer(player, mediaItem, playableUrl)
-                            Logger.d(TAG, "Precached player for index $idx")
-                        } catch (e: Exception) {
-                            Logger.e(TAG, "Precaching error for $idx: ${e.message}")
+                        if (!playableUrl.isNullOrEmpty()) {
+                            try {
+                                val player = createMediaPlayerInternal(playableUrl)
+                                player.state = State.READY
+                                precachedPlayers[idx] = PrecachedPlayer(player, mediaItem, playableUrl)
+                                Logger.d(TAG, "Precached player for index $idx")
+                            } catch (e: Exception) {
+                                Logger.e(TAG, "Precaching error for $idx: ${e.message}")
+                            }
                         }
-                    }
 
-                    delay(100)
-                }
-            } catch (e: Exception) {
-                if (e !is kotlinx.coroutines.CancellationException) {
-                    Logger.e(TAG, "Precaching error: ${e.message}")
+                        delay(100)
+                    }
+                } catch (e: Exception) {
+                    if (e !is kotlinx.coroutines.CancellationException) {
+                        Logger.e(TAG, "Precaching error: ${e.message}")
+                    }
                 }
             }
-        }
     }
 
     /**
@@ -1125,7 +1182,6 @@ class GstreamerPlayerAdapter(
         precachedPlayers.clear()
     }
 
-
     /**
      * Notify equalizer intent
      */
@@ -1154,12 +1210,14 @@ class GstreamerPlayerAdapter(
     }
 
     private suspend fun extractPlayableUrl(videoId: String): String? {
-        if (File(getDownloadPath()).listFiles().any {
-            it.name.contains(videoId)
-            }) {
-            val file = File(getDownloadPath()).listFiles().first {
+        if (File(getDownloadPath()).listFiles().takeIf { it != null }?.any {
                 it.name.contains(videoId)
-            }
+            } ?: false
+        ) {
+            val file =
+                File(getDownloadPath()).listFiles().first {
+                    it.name.contains(videoId)
+                }
             return file.toURI().toString()
         } else {
             streamRepository.getNewFormat(videoId).lastOrNull()?.let {

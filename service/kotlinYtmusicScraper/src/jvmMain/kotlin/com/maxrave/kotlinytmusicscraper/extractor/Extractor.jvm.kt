@@ -7,6 +7,7 @@ import org.schabi.newpipe.extractor.stream.StreamInfo
 
 actual class Extractor {
     private var newPipeDownloader = NewPipeDownloaderImpl(proxy = null)
+
     actual fun init() {
         NewPipe.init(newPipeDownloader)
     }
@@ -18,7 +19,7 @@ actual class Extractor {
         videoId: String,
         poToken: String?,
         clientName: String,
-        cookiePath: String?
+        cookiePath: String?,
     ): String? = null
 
     actual fun smartTubePlayer(videoId: String): List<Pair<Int, String>> = emptyList()
@@ -31,11 +32,10 @@ actual class Extractor {
         }
     }
 
-    actual fun mergeAudioVideoDownload(filePath: String): DownloadProgress {
-        return DownloadProgress.failed("Not supported on JVM")
-    }
+    actual fun mergeAudioVideoDownload(filePath: String): DownloadProgress = DownloadProgress.failed("Not supported on JVM")
 
-    actual fun saveAudioWithThumbnail(filePath: String, track: SongItem): DownloadProgress {
-        return DownloadProgress.AUDIO_DONE
-    }
+    actual fun saveAudioWithThumbnail(
+        filePath: String,
+        track: SongItem,
+    ): DownloadProgress = DownloadProgress.AUDIO_DONE
 }

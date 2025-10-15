@@ -2,12 +2,26 @@ package com.maxrave.kotlinytmusicscraper
 
 import com.maxrave.domain.extension.now
 import com.maxrave.kotlinytmusicscraper.extractor.Extractor
-import com.maxrave.kotlinytmusicscraper.models.*
+import com.maxrave.kotlinytmusicscraper.models.Context
+import com.maxrave.kotlinytmusicscraper.models.SongItem
+import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID_MUSIC
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.IOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB_REMIX
-import com.maxrave.kotlinytmusicscraper.models.body.*
+import com.maxrave.kotlinytmusicscraper.models.YouTubeLocale
+import com.maxrave.kotlinytmusicscraper.models.body.AccountMenuBody
+import com.maxrave.kotlinytmusicscraper.models.body.BrowseBody
+import com.maxrave.kotlinytmusicscraper.models.body.CreatePlaylistBody
+import com.maxrave.kotlinytmusicscraper.models.body.EditPlaylistBody
+import com.maxrave.kotlinytmusicscraper.models.body.FormData
+import com.maxrave.kotlinytmusicscraper.models.body.GetQueueBody
+import com.maxrave.kotlinytmusicscraper.models.body.GetSearchSuggestionsBody
+import com.maxrave.kotlinytmusicscraper.models.body.LikeBody
+import com.maxrave.kotlinytmusicscraper.models.body.NextBody
+import com.maxrave.kotlinytmusicscraper.models.body.PlayerBody
+import com.maxrave.kotlinytmusicscraper.models.body.SearchBody
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
 import com.maxrave.kotlinytmusicscraper.models.ytdlp.YtdlpVideoInfo
 import com.maxrave.kotlinytmusicscraper.utils.parseCookieString
@@ -15,24 +29,44 @@ import com.maxrave.kotlinytmusicscraper.utils.sha1
 import com.maxrave.ktorext.encoding.brotli
 import com.maxrave.ktorext.getEngine
 import com.maxrave.logger.Logger
-import io.ktor.client.*
-import io.ktor.client.engine.*
-import io.ktor.client.plugins.*
-import io.ktor.client.plugins.compression.*
-import io.ktor.client.plugins.contentnegotiation.*
-import io.ktor.client.plugins.logging.*
-import io.ktor.client.request.*
-import io.ktor.client.statement.*
-import io.ktor.client.utils.*
-import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
-import io.ktor.serialization.kotlinx.protobuf.*
-import io.ktor.serialization.kotlinx.xml.*
-import io.ktor.utils.io.*
-import kotlinx.coroutines.*
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.ProxyConfig
+import io.ktor.client.plugins.compression.ContentEncoding
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.plugins.logging.DEFAULT
+import io.ktor.client.plugins.logging.LogLevel
+import io.ktor.client.plugins.logging.Logging
+import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.accept
+import io.ktor.client.request.get
+import io.ktor.client.request.head
+import io.ktor.client.request.header
+import io.ktor.client.request.headers
+import io.ktor.client.request.parameter
+import io.ktor.client.request.post
+import io.ktor.client.request.prepareRequest
+import io.ktor.client.request.setBody
+import io.ktor.client.request.url
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.client.utils.DEFAULT_HTTP_BUFFER_SIZE
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.contentType
+import io.ktor.http.userAgent
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.serialization.kotlinx.protobuf.protobuf
+import io.ktor.serialization.kotlinx.xml.xml
+import io.ktor.utils.io.readRemaining
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.channels.onFailure
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.io.readByteArray
@@ -40,8 +74,13 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import nl.adaptivity.xmlutil.XmlDeclMode
 import nl.adaptivity.xmlutil.serialization.XML
-import okio.*
+import okio.FileSystem
+import okio.IOException
+import okio.Path
 import okio.Path.Companion.toPath
+import okio.SYSTEM
+import okio.buffer
+import okio.use
 import kotlin.time.ExperimentalTime
 
 private const val TAG = "YouTubeScraperClient"
@@ -191,20 +230,15 @@ class Ytmusic {
             "SAPISIDHASH ${currentTime}_$sapisidHash"
         }
 
-    fun getSmartTubePlayer(videoId: String): List<Pair<Int, String>> {
-        return extractor.smartTubePlayer(videoId)
-    }
+    fun getSmartTubePlayer(videoId: String): List<Pair<Int, String>> = extractor.smartTubePlayer(videoId)
 
-    fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> {
-        return extractor.newPipePlayer(videoId)
-    }
+    fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
 
-    fun mergeAudioVideoDownload(
-        filePath: String,
-    ): DownloadProgress = extractor.mergeAudioVideoDownload(filePath)
+    fun mergeAudioVideoDownload(filePath: String): DownloadProgress = extractor.mergeAudioVideoDownload(filePath)
+
     fun saveAudioWithThumbnail(
         filePath: String,
-        track: SongItem
+        track: SongItem,
     ) = extractor.saveAudioWithThumbnail(filePath, track)
 
     suspend fun search(
@@ -353,12 +387,13 @@ class Ytmusic {
     ): YtdlpVideoInfo? =
         withContext(Dispatchers.IO) {
             Logger.d(TAG, "ytdlpGetStreamUrl: videoId: $videoId, poToken: $poToken, clientName: $clientName")
-            val result = extractor.ytdlpGetStreamUrl(
-                videoId = videoId,
-                poToken = poToken,
-                clientName = clientName,
-                cookiePath = cookiePath?.toString(),
-            )
+            val result =
+                extractor.ytdlpGetStreamUrl(
+                    videoId = videoId,
+                    poToken = poToken,
+                    clientName = clientName,
+                    cookiePath = cookiePath?.toString(),
+                )
             val data = result?.let { json.decodeFromString<YtdlpVideoInfo>(it) }
             return@withContext data
         }
@@ -863,6 +898,6 @@ class Ytmusic {
     }
 }
 
-
 expect fun getCountry(): String
+
 expect fun getLanguage(): String
