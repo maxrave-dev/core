@@ -2004,11 +2004,12 @@ class YouTube {
         filePath: String,
         videoId: String,
         isVideo: Boolean = false,
+        shouldYtdlp: Boolean
     ): Flow<DownloadProgress> =
         channelFlow {
             // Video if videoId is not null
             trySend(DownloadProgress(0.00001f))
-            player(videoId = videoId, shouldYtdlp = true)
+            player(videoId = videoId, shouldYtdlp = shouldYtdlp)
                 .onSuccess { playerResponse ->
                     val audioFormat =
                         listOf(

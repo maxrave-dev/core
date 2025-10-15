@@ -1,7 +1,9 @@
 package com.example.media_jvm.di
 
 import com.example.media_jvm.GstreamerPlayerAdapter
+import com.example.media_jvm.download.DownloadUtils
 import com.maxrave.common.Config.SERVICE_SCOPE
+import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.repository.CacheRepository
 import kotlinx.coroutines.CoroutineScope
@@ -31,6 +33,13 @@ private val gstreamerModule =
 
                 override suspend fun getAllCacheKeys(cacheName: String): List<String> = emptyList()
             }
+        }
+        single<DownloadHandler> {
+            DownloadUtils(
+                dataStoreManager = get(),
+                streamRepository = get(),
+                songRepository = get(),
+            )
         }
     }
 

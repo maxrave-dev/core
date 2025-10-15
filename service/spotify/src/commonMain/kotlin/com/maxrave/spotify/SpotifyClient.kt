@@ -5,6 +5,7 @@ import com.maxrave.ktorext.getEngine
 import com.maxrave.spotify.model.body.CanvasBody
 import com.maxrave.spotify.model.body.SpotifyClientBody
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.ProxyConfig
 import io.ktor.client.plugins.HttpSend
 import io.ktor.client.plugins.cache.HttpCache
 import io.ktor.client.plugins.compression.ContentEncoding
@@ -32,7 +33,6 @@ import io.ktor.serialization.kotlinx.protobuf.protobuf
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.protobuf.ProtoBuf
-import java.net.Proxy
 import kotlin.random.Random
 
 class SpotifyClient {
@@ -42,7 +42,7 @@ class SpotifyClient {
             onlyJson = true,
         )
 
-    var proxy: Proxy? = null
+    var proxy: ProxyConfig? = null
         set(value) {
             field = value
             spotifyClient.close()
@@ -114,7 +114,7 @@ class SpotifyClient {
      * Thanks to @Thereallo1026 and @misiektoja for providing the latest TOTP secret
      */
     suspend fun getSpotifyLastestTotpSecret() =
-        spotifyClient.get("https://raw.githubusercontent.com/Thereallo1026/spotify-secrets/refs/heads/main/secrets/secretDict.json") {
+        spotifyClient.get("https://raw.githubusercontent.com/xyloflake/spot-secrets-go/refs/heads/main/secrets/secretDict.json") {
             userAgent(USER_AGENT)
             contentType(ContentType.Application.Json)
         }

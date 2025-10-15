@@ -24,7 +24,7 @@ kotlin {
         implementation(libs.gst1.java.core)
         implementation(libs.gst1.java.fx)
 
-        implementation("net.java.dev.jna:jna:5.18.1")
-        implementation("net.java.dev.jna:jna-platform:5.18.1")
+        implementation(libs.jna)
+        implementation(libs.jna.platform)
     }
 }

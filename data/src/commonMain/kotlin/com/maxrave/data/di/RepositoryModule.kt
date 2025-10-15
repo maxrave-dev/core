@@ -76,7 +76,7 @@ val repositoryModule =
         }
 
         single<SongRepository> {
-            SongRepositoryImpl(get(), get())
+            SongRepositoryImpl(get(), get(), get())
         }
 
         single<StreamRepository> {

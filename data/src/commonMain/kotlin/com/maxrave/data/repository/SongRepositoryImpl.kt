@@ -1,6 +1,7 @@
 package com.maxrave.data.repository
 
 import com.maxrave.common.MERGING_DATA_TYPE
+import com.maxrave.common.QUALITY
 import com.maxrave.data.db.LocalDataSource
 import com.maxrave.data.extension.getFullDataFromDB
 import com.maxrave.data.mapping.toListTrack
@@ -12,6 +13,7 @@ import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
+import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
@@ -24,16 +26,19 @@ import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.LocalDateTime
 
 private const val TAG = "SongRepositoryImpl"
 
 internal class SongRepositoryImpl(
+    private val dataStoreManager: DataStoreManager,
     private val localDataSource: LocalDataSource,
     private val youTube: YouTube,
 ) : SongRepository {
@@ -335,9 +340,10 @@ internal class SongRepositoryImpl(
         path: String,
         videoId: String,
         isVideo: Boolean,
-    ): Flow<DownloadProgress> =
-        youTube
-            .download(track.toSongItemForDownload(), path, videoId, isVideo)
+    ): Flow<DownloadProgress> {
+        val shouldYtdlp = runBlocking { dataStoreManager.quality.first() } == QUALITY.items.last().toString()
+        return youTube
+            .download(track.toSongItemForDownload(), path, videoId, isVideo, shouldYtdlp)
             .map {
                 DownloadProgress(
                     audioDownloadProgress = it.audioDownloadProgress,
@@ -349,6 +355,7 @@ internal class SongRepositoryImpl(
                     isDone = it.isDone,
                 )
             }
+    }
 
     override fun getRelatedData(videoId: String): Flow<Resource<Pair<List<Track>, String?>>> =
         flow {

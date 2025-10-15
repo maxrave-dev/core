@@ -20,6 +20,7 @@ import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.searchResult.songs.SongsResult
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
 import com.maxrave.domain.data.model.searchResult.videos.VideosResult
+import kotlin.jvm.JvmName
 
 fun SearchHistory.toQuery(): String = this.query
 

@@ -8,4 +8,4 @@ actual fun fileSystem(): FileSystem {
     return FileSystem.SYSTEM
 }
 
-actual fun fileDir(): String = File(System.getProperty("java.io.tmpdir"), "SimpMusic").absolutePath
+actual fun fileDir(): String = File(getHomeFolderPath(listOf(".simpmusic")), "SimpMusic").absolutePath

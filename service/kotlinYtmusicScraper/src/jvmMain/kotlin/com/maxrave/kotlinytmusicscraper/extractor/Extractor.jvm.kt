@@ -36,6 +36,6 @@ actual class Extractor {
     }
 
     actual fun saveAudioWithThumbnail(filePath: String, track: SongItem): DownloadProgress {
-        return DownloadProgress.failed("Not supported on JVM")
+        return DownloadProgress.AUDIO_DONE
     }
 }
