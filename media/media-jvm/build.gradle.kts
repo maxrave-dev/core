@@ -23,6 +23,7 @@ kotlin {
         // Gstreamer
         implementation(libs.gst1.java.core)
         implementation(libs.gst1.java.fx)
+        implementation(libs.gst1.java.swing)
 
         implementation(libs.jna)
         implementation(libs.jna.platform)
