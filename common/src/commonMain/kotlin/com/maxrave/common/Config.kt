@@ -491,7 +491,7 @@ object MEDIA_NOTIFICATION {
     const val NOTIFICATION_CHANNEL_ID = "SimpMusic Playback Notification ID"
 }
 
-const val SETTINGS_FILENAME = "settings.preferences_pb"
+const val SETTINGS_FILENAME = "settings"
 
 const val DOWNLOAD_EXOPLAYER_FOLDER = "download"
 

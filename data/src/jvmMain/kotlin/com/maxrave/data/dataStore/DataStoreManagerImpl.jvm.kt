@@ -9,7 +9,7 @@ import java.io.File
 
 actual fun createDataStoreInstance(): DataStore<Preferences> = createDataStore(
     producePath = {
-        val file = File(getHomeFolderPath(listOf(".simpmusic")), SETTINGS_FILENAME)
+        val file = File(getHomeFolderPath(listOf(".simpmusic")), "$SETTINGS_FILENAME.preferences_pb")
         file.absolutePath
     }
 )

@@ -20,6 +20,6 @@ producePath = {
         create = false,
         error = null,
     )
-    requireNotNull(documentDirectory).path + "/$SETTINGS_FILENAME"
+    requireNotNull(documentDirectory).path + "/$SETTINGS_FILENAME.preferences_pb"
 }
 )

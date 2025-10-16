@@ -9,6 +9,6 @@ import org.koin.mp.KoinPlatform.getKoin
 
 actual fun createDataStoreInstance(): DataStore<Preferences> {
     return createDataStore(
-        producePath = { getKoin().get<Context>().filesDir.resolve("datastore/$SETTINGS_FILENAME").absolutePath }
+        producePath = { getKoin().get<Context>().filesDir.resolve("datastore/$SETTINGS_FILENAME.preferences_pb").absolutePath }
     )
 }
