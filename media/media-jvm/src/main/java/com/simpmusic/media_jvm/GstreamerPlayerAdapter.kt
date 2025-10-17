@@ -5,6 +5,7 @@ import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
+import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
@@ -27,6 +28,7 @@ import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.freedesktop.gstreamer.Bin
 import org.freedesktop.gstreamer.Bus
 import org.freedesktop.gstreamer.Format
 import org.freedesktop.gstreamer.Gst
@@ -740,7 +742,7 @@ class GstreamerPlayerAdapter(
                             cachedPlayer.player
                         } else {
                             // Extract URL outside GStreamer thread
-                            val (audioUri, videoUri) = extractPlayableUrl(videoId)
+                            val (audioUri, videoUri) = extractPlayableUrl(mediaItem)
 
                             if (audioUri.isNullOrEmpty()) {
                                 Logger.e(TAG, "Failed to extract playable URL for $videoId")
@@ -845,7 +847,8 @@ class GstreamerPlayerAdapter(
         videoPlayer?.let { vp -> vp["mute"] = true }
 
         videoPlayer?.let {
-            audioPlayer.add(it)
+            audioPlayer.add(videoPlayer)
+            audioPlayer.link(videoPlayer)
         }
 
         return GstreamerPlayer(
@@ -856,7 +859,7 @@ class GstreamerPlayerAdapter(
     /**
      * Setup bus listeners - MUST be called on gstreamerDispatcher
      */
-    private fun setupPlayerListenersInternal(player: PlayBin) {
+    private fun setupPlayerListenersInternal(player: Bin) {
         // Clean up old listeners first
         cleanupBusListenersInternal()
 
@@ -1149,11 +1152,10 @@ class GstreamerPlayerAdapter(
                         if (!isActive) break
 
                         val mediaItem = playlist.getOrNull(idx) ?: continue
-                        val videoId = mediaItem.mediaId
 
                         val (audioUri, videoUri) =
                             withContext(coroutineScope.coroutineContext) {
-                                extractPlayableUrl(videoId)
+                                extractPlayableUrl(mediaItem)
                             }
 
                         if (!audioUri.isNullOrEmpty()) {
@@ -1240,11 +1242,12 @@ class GstreamerPlayerAdapter(
      * Extract playable URL for a video ID
      * Audio -> Video
      */
-    private suspend fun extractPlayableUrl(videoId: String): Pair<String?, String?> {
+    private suspend fun extractPlayableUrl(mediaItem: GenericMediaItem): Pair<String?, String?> {
+        Logger.w(TAG, "Extracting playable URL for ${mediaItem.mediaId}")
         val shouldFindVideo =
-            videoId.contains(MERGING_DATA_TYPE.VIDEO) &&
+            mediaItem.isVideo() &&
                 dataStoreManager.watchVideoInsteadOfPlayingAudio.first() == DataStoreManager.TRUE
-        val videoId = videoId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+        val videoId = mediaItem.mediaId
         if (File(getDownloadPath()).listFiles().takeIf { it != null }?.any {
                 it.name.contains(videoId)
             } ?: false
