@@ -14,6 +14,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -38,8 +39,7 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.streams.TimeLine
-import com.maxrave.domain.data.player.GenericMediaItem
-import com.maxrave.domain.mediaservice.player.MediaPlayerListener
+import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.simpmusic.media_jvm.GstreamerPlayerAdapter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -117,8 +117,11 @@ fun MediaPlayerViewWithSubtitleJvm(
     translatedLyricsData: Lyrics?,
     mainTextStyle: TextStyle,
     translatedTextStyle: TextStyle,
+    mediaPlayerHandler: MediaPlayerHandler = koinInject(),
 ) {
     val player: GstreamerPlayerAdapter = koinInject<GstreamerPlayerAdapter>()
+
+    val state by mediaPlayerHandler.simpleMediaState.collectAsState()
 
     val scope = rememberCoroutineScope()
     var sizePx by remember {
@@ -143,23 +146,15 @@ fun MediaPlayerViewWithSubtitleJvm(
         mutableIntStateOf(-1)
     }
 
-    DisposableEffect(true) {
-        val listener = object: MediaPlayerListener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                gsVideoComponent = player.getCurrentPlayer()?.videoComponent
-            }
-
-            override fun onMediaItemTransition(mediaItem: GenericMediaItem?, reason: Int) {
-                gsVideoComponent = null
-            }
-        }
+    LaunchedEffect(state) {
         scope.launch(Dispatchers.Swing) {
             gsVideoComponent = player.getCurrentPlayer()?.videoComponent
-            player.addListener(listener)
         }
+    }
+
+    DisposableEffect(true) {
         onDispose {
             scope.launch(Dispatchers.Swing) {
-                player.removeListener(listener)
                 gsVideoComponent = null
             }
         }
@@ -221,12 +216,14 @@ fun MediaPlayerViewWithSubtitleJvm(
     }
 
     Box(
-        modifier = modifier.graphicsLayer { clip = true }
-            .onGloballyPositioned {
-                val width = it.size.width
-                val height = it.size.height
-                sizePx = width to height
-            },
+        modifier =
+            modifier
+                .graphicsLayer { clip = true }
+                .onGloballyPositioned {
+                    val width = it.size.width
+                    val height = it.size.height
+                    sizePx = width to height
+                },
         contentAlignment = Alignment.Center,
     ) {
         Crossfade(showArtwork) {
