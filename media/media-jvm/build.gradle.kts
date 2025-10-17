@@ -28,5 +28,7 @@ kotlin {
 
         implementation(libs.jna)
         implementation(libs.jna.platform)
+
+        implementation(libs.mediasession.jvm)
     }
 }

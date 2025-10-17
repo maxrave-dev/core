@@ -8,24 +8,24 @@ import com.maxrave.domain.data.player.PlayerError
  * Listener interface for media player events
  */
 interface MediaPlayerListener {
-    fun onPlaybackStateChanged(playbackState: Int)
+    fun onPlaybackStateChanged(playbackState: Int) {}
 
-    fun onIsPlayingChanged(isPlaying: Boolean)
+    fun onIsPlayingChanged(isPlaying: Boolean) {}
 
     fun onMediaItemTransition(
         mediaItem: GenericMediaItem?,
         reason: Int,
-    )
+    ) {}
 
-    fun onTracksChanged(tracks: GenericTracks)
+    fun onTracksChanged(tracks: GenericTracks) {}
 
-    fun onPlayerError(error: PlayerError)
+    fun onPlayerError(error: PlayerError) {}
 
-    fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean)
+    fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {}
 
-    fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean)
+    fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {}
 
-    fun onRepeatModeChanged(repeatMode: Int)
+    fun onRepeatModeChanged(repeatMode: Int) {}
 
-    fun onIsLoadingChanged(isLoading: Boolean)
+    fun onIsLoadingChanged(isLoading: Boolean) {}
 }

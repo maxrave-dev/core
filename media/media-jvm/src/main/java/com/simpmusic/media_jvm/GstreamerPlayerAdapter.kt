@@ -15,8 +15,12 @@ import com.maxrave.logger.Logger
 import com.simpmusic.media_jvm.download.getDownloadPath
 import com.sun.jna.Platform
 import com.sun.jna.platform.win32.Kernel32
+import dev.toastbits.mediasession.MediaSession
+import dev.toastbits.mediasession.MediaSessionLoopMode
+import dev.toastbits.mediasession.MediaSessionMetadata
+import dev.toastbits.mediasession.MediaSessionPlaybackStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -27,6 +31,7 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.freedesktop.gstreamer.Bin
 import org.freedesktop.gstreamer.Bus
@@ -44,6 +49,7 @@ import java.util.EnumSet
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.stream.Stream
+import kotlin.time.TimeSource
 
 private const val TAG = "GstreamerPlayerAdapter"
 
@@ -58,11 +64,12 @@ private const val TAG = "GstreamerPlayerAdapter"
  * - Proper state machine like ExoPlayer
  */
 class GstreamerPlayerAdapter(
-    private val videoComponent: Deferred<GstVideoComponent>,
     private val coroutineScope: CoroutineScope,
     private val dataStoreManager: DataStoreManager,
     private val streamRepository: StreamRepository,
 ) : MediaPlayerInterface {
+    private var session: MediaSession? = null
+
     // Internal state enum for proper state machine
     private enum class InternalState {
         IDLE, // No media loaded
@@ -592,7 +599,7 @@ class GstreamerPlayerAdapter(
 
                     // Use seek with rate parameter for playback speed control
                     val seekFlags =
-                        java.util.EnumSet.of(
+                        EnumSet.of(
                             SeekFlags.FLUSH,
                             SeekFlags.ACCURATE,
                         )
@@ -673,14 +680,17 @@ class GstreamerPlayerAdapter(
             InternalState.IDLE -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_IDLE) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
+                session?.setPlaybackStatus(MediaSessionPlaybackStatus.PAUSED)
             }
 
             InternalState.PREPARING -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_BUFFERING) }
                 listeners.forEach { it.onIsLoadingChanged(true) }
+                session?.setPlaybackStatus(MediaSessionPlaybackStatus.PAUSED)
             }
 
             InternalState.READY -> {
+                session?.setPlaybackStatus(MediaSessionPlaybackStatus.PAUSED)
                 if (internalPlayWhenReady) {
                     play()
                 } else {
@@ -693,16 +703,19 @@ class GstreamerPlayerAdapter(
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_READY) }
                 listeners.forEach { it.onIsLoadingChanged(false) }
                 listeners.forEach { it.onIsPlayingChanged(true) }
+                session?.setPlaybackStatus(MediaSessionPlaybackStatus.PLAYING)
             }
 
             InternalState.ENDED -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_ENDED) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
+                session?.setPlaybackStatus(MediaSessionPlaybackStatus.PAUSED)
             }
 
             InternalState.ERROR -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_IDLE) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
+                session?.setPlaybackStatus(MediaSessionPlaybackStatus.PAUSED)
             }
         }
     }
@@ -735,6 +748,68 @@ class GstreamerPlayerAdapter(
                             PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO,
                         )
                     }
+                    if (session == null) {
+                        var time = TimeSource.Monotonic.markNow()
+                        session = MediaSession.create(
+                            getPositionMs = { time.elapsedNow().inWholeMilliseconds }
+                        )
+                        if (session == null) {
+                            Logger.e(TAG, "Failed to create MediaSession")
+                        }
+                        session?.onPlayPause = {
+                            if (internalState == InternalState.PLAYING) {
+                                pause()
+                            } else {
+                                play()
+                            }
+                        }
+                        session?.onPlay = {
+                            play()
+                        }
+                        session?.onPause = {
+                            pause()
+                        }
+                        session?.onNext = {
+                            seekToNext()
+                        }
+                        session?.onPrevious = {
+                            seekToPrevious()
+                        }
+                        session?.onSeek = { by_ms ->
+                            seekTo(currentPosition + by_ms)
+                        }
+                        session?.onSetPosition = { to_ms ->
+                            seekTo(to_ms)
+                        }
+                        session?.setIdentity("com.maxrave.simpmusic")
+                        session?.setDesktopEntry("mediasession")
+                        session?.setLoopMode(
+                            when (internalRepeatMode) {
+                                PlayerConstants.REPEAT_MODE_OFF -> MediaSessionLoopMode.NONE
+                                PlayerConstants.REPEAT_MODE_ONE -> MediaSessionLoopMode.ONE
+                                PlayerConstants.REPEAT_MODE_ALL -> MediaSessionLoopMode.ALL
+                                else -> MediaSessionLoopMode.NONE
+                            }
+                        )
+                        session?.setShuffle(
+                            internalShuffleModeEnabled
+                        )
+                        session?.setEnabled(true)
+                    }
+                    session?.setMetadata(
+                        MediaSessionMetadata(
+                            track_id = "/$videoId",
+                            length_ms = 5000,
+                            art_url = "${mediaItem.metadata.artworkUri}",
+                            album = "${mediaItem.metadata.albumTitle}",
+                            album_artists = listOf("${mediaItem.metadata.artist}"),
+                            artist = mediaItem.metadata.artist,
+                            title = mediaItem.metadata.title,
+                            custom_metadata = mapOf(
+                                "xesam:artist" to "[${mediaItem.metadata.artist}]",
+                            )
+                        )
+                    )
                     // Use precached player if available
                     val cachedPlayer = precachedPlayers.remove(index)
                     val player =
@@ -808,17 +883,18 @@ class GstreamerPlayerAdapter(
                 autoFlushBus = true
             }
 
-        val videoPlayer =
+        val (videoPlayer, videoComponent) =
             if (!videoUri.isNullOrEmpty()) {
+                val vc = GstVideoComponent()
                 val bin =
                     PlayBin("videoPlayer-${System.currentTimeMillis()}").apply {
                         setURI(URI(videoUri))
-                        setVideoSink(videoComponent.await().element)
+                        setVideoSink(vc.element)
                         autoFlushBus = true
                     }
-                bin
+                bin to vc
             } else {
-                null
+                null to null
             }
 
 //        // Disable video, enable audio
@@ -853,6 +929,7 @@ class GstreamerPlayerAdapter(
 
         return GstreamerPlayer(
             playerBin = audioPlayer,
+            videoComponent = videoComponent,
         )
     }
 
@@ -871,7 +948,7 @@ class GstreamerPlayerAdapter(
                 coroutineScope.launch {
                     Logger.d(TAG, "End of stream reached")
                     transitionToState(InternalState.ENDED)
-                    currentPlayer?.pause()
+                    runBlocking { pause() }
                     handleTrackEndInternal()
                 }
             }
@@ -1172,7 +1249,7 @@ class GstreamerPlayerAdapter(
                         delay(100)
                     }
                 } catch (e: Exception) {
-                    if (e !is kotlinx.coroutines.CancellationException) {
+                    if (e !is CancellationException) {
                         Logger.e(TAG, "Precaching error: ${e.message}")
                     }
                 }
@@ -1371,6 +1448,7 @@ class GstreamerPlayerAdapter(
 
 data class GstreamerPlayer(
     val playerBin: PlayBin,
+    val videoComponent: GstVideoComponent? = null,
 ) {
     fun setState(state: State) {
         playerBin.state = state
