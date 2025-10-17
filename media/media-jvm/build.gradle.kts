@@ -19,6 +19,7 @@ kotlin {
         implementation(platform(libs.koin.bom))
         implementation(libs.koin.jvm)
         implementation(libs.kotlinx.serialization.json)
+        implementation(libs.kotlinx.coroutinesSwing)
 
         // Gstreamer
         implementation(libs.gst1.java.core)

@@ -1,6 +1,6 @@
-package com.example.media_jvm
+package com.simpmusic.media_jvm
 
-import com.example.media_jvm.download.getDownloadPath
+import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
@@ -11,19 +11,23 @@ import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
+import com.simpmusic.media_jvm.download.getDownloadPath
 import com.sun.jna.Platform
 import com.sun.jna.platform.win32.Kernel32
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.freedesktop.gstreamer.Bus
-import org.freedesktop.gstreamer.ElementFactory
 import org.freedesktop.gstreamer.Format
 import org.freedesktop.gstreamer.Gst
 import org.freedesktop.gstreamer.State
@@ -31,8 +35,10 @@ import org.freedesktop.gstreamer.Version
 import org.freedesktop.gstreamer.elements.PlayBin
 import org.freedesktop.gstreamer.event.SeekFlags
 import org.freedesktop.gstreamer.event.SeekType
+import org.freedesktop.gstreamer.swing.GstVideoComponent
 import java.io.File
 import java.net.URI
+import java.util.EnumSet
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.stream.Stream
@@ -50,6 +56,7 @@ private const val TAG = "GstreamerPlayerAdapter"
  * - Proper state machine like ExoPlayer
  */
 class GstreamerPlayerAdapter(
+    private val videoComponent: Deferred<GstVideoComponent>,
     private val coroutineScope: CoroutineScope,
     private val dataStoreManager: DataStoreManager,
     private val streamRepository: StreamRepository,
@@ -86,7 +93,7 @@ class GstreamerPlayerAdapter(
     private val listeners = mutableListOf<MediaPlayerListener>()
 
     @Volatile
-    private var currentPlayer: PlayBin? = null
+    private var currentPlayer: GstreamerPlayer? = null
 
     @Volatile
     private var internalState = InternalState.IDLE
@@ -143,9 +150,9 @@ class GstreamerPlayerAdapter(
 
     // Precaching system
     private data class PrecachedPlayer(
-        val player: PlayBin,
+        val player: GstreamerPlayer,
         val mediaItem: GenericMediaItem,
-        val url: String,
+        val url: Pair<String, String?>,
     )
 
     private val precachedPlayers = ConcurrentHashMap<Int, PrecachedPlayer>()
@@ -160,7 +167,7 @@ class GstreamerPlayerAdapter(
     // Loading management
     private var currentLoadJob: Job? = null
 
-    fun getCurrentPlayer(): PlayBin? = currentPlayer
+    fun getCurrentPlayer(): GstreamerPlayer? = currentPlayer
 
     // ========== Playback Control ==========
 
@@ -172,7 +179,7 @@ class GstreamerPlayerAdapter(
                     currentPlayer?.let { player ->
                         Logger.d(TAG, "▶️ Play: Setting GStreamer state to PLAYING")
                         isTransitioning = true
-                        player.state = State.PLAYING
+                        player.setState(State.PLAYING)
                         internalPlayWhenReady = true
                         // State change will be handled by stateChangedListener
                     } ?: Logger.w(TAG, "Play called but currentPlayer is null")
@@ -180,16 +187,17 @@ class GstreamerPlayerAdapter(
 
                 InternalState.PREPARING -> {
                     // Just set playWhenReady, will auto-play when ready
-                    cachedIsLoading = true
-                    listeners.forEach { it.onIsLoadingChanged(true) }
+                    if (!cachedIsLoading) {
+                        cachedIsLoading = true
+                        listeners.forEach { it.onIsLoadingChanged(true) }
+                    }
                     Logger.d(TAG, "▶️ Play: During PREPARING - will auto-play when ready")
                 }
 
                 InternalState.PLAYING -> {
                     // Already playing, update flag
                     internalPlayWhenReady = true
-                    cachedIsLoading = true
-                    listeners.forEach { it.onIsLoadingChanged(true) }
+                    cachedIsLoading = false
                     Logger.d(TAG, "▶️ Play: Already playing")
                 }
 
@@ -208,7 +216,7 @@ class GstreamerPlayerAdapter(
                     currentPlayer?.let { player ->
                         Logger.d(TAG, "⏸️ Pause: Setting GStreamer state to PAUSED")
                         isTransitioning = true
-                        player.state = State.PAUSED
+                        player.setState(State.PAUSED)
                         internalPlayWhenReady = false
                         // State change will be handled by stateChangedListener
                     }
@@ -231,7 +239,7 @@ class GstreamerPlayerAdapter(
         coroutineScope.launch {
             currentPlayer?.let { player ->
                 Logger.d(TAG, "Stop called")
-                player.state = State.NULL
+                player.setState(State.NULL)
                 transitionToState(InternalState.IDLE)
                 stopPositionUpdates()
                 notifyEqualizerIntent(false)
@@ -675,7 +683,6 @@ class GstreamerPlayerAdapter(
                     play()
                 } else {
                     listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_READY) }
-                    listeners.forEach { it.onIsLoadingChanged(false) }
                     listeners.forEach { it.onIsPlayingChanged(false) }
                 }
             }
@@ -733,14 +740,14 @@ class GstreamerPlayerAdapter(
                             cachedPlayer.player
                         } else {
                             // Extract URL outside GStreamer thread
-                            val playableUrl = extractPlayableUrl(videoId)
+                            val (audioUri, videoUri) = extractPlayableUrl(videoId)
 
-                            if (playableUrl.isNullOrEmpty()) {
+                            if (audioUri.isNullOrEmpty()) {
                                 Logger.e(TAG, "Failed to extract playable URL for $videoId")
                                 transitionToState(InternalState.ERROR)
                                 return@launch
                             }
-                            createMediaPlayerInternal(playableUrl)
+                            createMediaPlayerInternal(audioUri to videoUri)
                         }
 
                     // Cleanup current
@@ -748,14 +755,16 @@ class GstreamerPlayerAdapter(
 
                     // Set as current
                     currentPlayer = player
-                    setupPlayerListenersInternal(player)
+                    setupPlayerListenersInternal(player.playerBin)
 
                     // Apply settings
-                    player.volume = internalVolume.toDouble()
-                    player["mute"] = false
+                    player.setVolume(internalVolume.toDouble())
+                    player.apply {
+                        playerBin["mute"] = false
+                    }
 
                     // Set to PAUSED to load pipeline
-                    player.state = State.PAUSED
+                    player.setState(State.PAUSED)
 
                     transitionToState(InternalState.READY)
 
@@ -767,9 +776,9 @@ class GstreamerPlayerAdapter(
 
                     // Auto-play if requested
                     if (shouldPlay) {
-                        player.state = State.PLAYING
+                        player.setState(State.PLAYING)
                     } else {
-                        player.state = State.READY
+                        player.setState(State.READY)
                     }
 
                     // Start position updates
@@ -787,44 +796,61 @@ class GstreamerPlayerAdapter(
     /**
      * Create player - MUST be called on gstreamerDispatcher
      */
-    private fun createMediaPlayerInternal(uri: String): PlayBin {
-        val player = PlayBin("player-${System.currentTimeMillis()}")
-        player.setURI(URI(uri))
+    private suspend fun createMediaPlayerInternal(uris: Pair<String, String?>): GstreamerPlayer {
+        val audioUri = uris.first
+        val videoUri = uris.second
 
-        // Disable video, enable audio
-        try {
-            val currentFlags = player["flags"] as? Int ?: 0x00000617
-            val audioOnlyFlags = (currentFlags and 0x01.inv()) or 0x02 or 0x20
-            player["flags"] = audioOnlyFlags
-            Logger.d(TAG, "PlayBin flags set to audio-only: $audioOnlyFlags")
-        } catch (e: Exception) {
-            Logger.e(TAG, "Failed to set playbin flags: ${e.message}", e)
-        }
-
-        // Disable video sink
-        try {
-            val fakeSink = ElementFactory.make("fakesink", "video-sink")
-            if (fakeSink != null) {
-                player.setVideoSink(fakeSink)
+        val audioPlayer =
+            PlayBin("audioPlayer-${System.currentTimeMillis()}").apply {
+                setURI(URI(audioUri))
+                autoFlushBus = true
             }
-        } catch (e: Exception) {
-            Logger.e(TAG, "Failed to disable video sink: ${e.message}", e)
-        }
 
-        // Configure audio sink
-        try {
-            val audioSink = ElementFactory.make("autoaudiosink", "audio-sink")
-            if (audioSink != null) {
-                player.setAudioSink(audioSink)
+        val videoPlayer =
+            if (!videoUri.isNullOrEmpty()) {
+                val bin =
+                    PlayBin("videoPlayer-${System.currentTimeMillis()}").apply {
+                        setURI(URI(videoUri))
+                        setVideoSink(videoComponent.await().element)
+                        autoFlushBus = true
+                    }
+                bin
+            } else {
+                null
             }
-        } catch (e: Exception) {
-            Logger.e(TAG, "Failed to set audio sink: ${e.message}", e)
+
+//        // Disable video, enable audio
+//        try {
+//            val currentFlags = player["flags"] as? Int ?: 0x00000617
+//            val audioOnlyFlags = (currentFlags and 0x01.inv()) or 0x02 or 0x20
+//            player["flags"] = audioOnlyFlags
+//            Logger.d(TAG, "PlayBin flags set to audio-only: $audioOnlyFlags")
+//        } catch (e: Exception) {
+//            Logger.e(TAG, "Failed to set playbin flags: ${e.message}", e)
+//        }
+
+//        // Disable video sink
+//        try {
+//            val fakeSink = ElementFactory.make("fakesink", "video-sink")
+//            if (fakeSink != null) {
+//                player.setVideoSink(fakeSink)
+//            }
+//        } catch (e: Exception) {
+//            Logger.e(TAG, "Failed to disable video sink: ${e.message}", e)
+//        }
+
+        audioPlayer.volume = 1.0
+        videoPlayer?.volume = 0.0
+        audioPlayer["mute"] = false
+        videoPlayer?.let { vp -> vp["mute"] = true }
+
+        videoPlayer?.let {
+            audioPlayer.add(it)
         }
 
-        player.volume = 1.0
-        player["mute"] = false
-
-        return player
+        return GstreamerPlayer(
+            playerBin = audioPlayer,
+        )
     }
 
     /**
@@ -842,6 +868,7 @@ class GstreamerPlayerAdapter(
                 coroutineScope.launch {
                     Logger.d(TAG, "End of stream reached")
                     transitionToState(InternalState.ENDED)
+                    currentPlayer?.pause()
                     handleTrackEndInternal()
                 }
             }
@@ -850,7 +877,7 @@ class GstreamerPlayerAdapter(
             Bus.DURATION_CHANGED { _ ->
                 coroutineScope.launch {
                     currentPlayer?.let { player ->
-                        val dur = player.queryDuration(Format.TIME)
+                        val dur = player.playerBin.queryDuration(Format.TIME)
                         cachedDuration = if (dur != -1L) dur / 1000000 else 0L
                         Logger.d(TAG, "Duration updated: $cachedDuration ms")
                     }
@@ -948,7 +975,7 @@ class GstreamerPlayerAdapter(
                     ) {
                         isTransitioning = true
                         Logger.d(TAG, "ASYNC_DONE: Auto-starting playback")
-                        currentPlayer?.state = State.PLAYING
+                        currentPlayer?.setState(State.PLAYING)
                         // isTransitioning will be reset by state change listener
                     }
                 }
@@ -981,7 +1008,7 @@ class GstreamerPlayerAdapter(
      */
     private fun cleanupBusListenersInternal() {
         activeBusListeners?.let { listeners ->
-            currentPlayer?.bus?.let { bus ->
+            currentPlayer?.playerBin?.bus?.let { bus ->
                 try {
                     bus.disconnect(Bus.EOS::class.java, listeners.eos)
                     bus.disconnect(Bus.DURATION_CHANGED::class.java, listeners.durationChanged)
@@ -1001,9 +1028,9 @@ class GstreamerPlayerAdapter(
     /**
      * Cleanup a player instance
      */
-    private fun cleanupPlayerInternal(player: PlayBin) {
+    private fun cleanupPlayerInternal(player: GstreamerPlayer) {
         try {
-            player.state = State.NULL
+            player.setState(State.NULL)
             player.stop()
         } catch (e: Exception) {
             Logger.w(TAG, "Error cleaning up player: ${e.message}")
@@ -1057,7 +1084,7 @@ class GstreamerPlayerAdapter(
                     try {
                         // Skip position queries during transitions to prevent flicker
                         if (!isTransitioning) {
-                            currentPlayer?.let { player ->
+                            currentPlayer?.playerBin?.let { player ->
                                 // Only query position when in PLAYING or READY states
                                 if (internalState == InternalState.PLAYING ||
                                     internalState == InternalState.READY
@@ -1124,16 +1151,16 @@ class GstreamerPlayerAdapter(
                         val mediaItem = playlist.getOrNull(idx) ?: continue
                         val videoId = mediaItem.mediaId
 
-                        val playableUrl =
+                        val (audioUri, videoUri) =
                             withContext(coroutineScope.coroutineContext) {
                                 extractPlayableUrl(videoId)
                             }
 
-                        if (!playableUrl.isNullOrEmpty()) {
+                        if (!audioUri.isNullOrEmpty()) {
                             try {
-                                val player = createMediaPlayerInternal(playableUrl)
-                                player.state = State.READY
-                                precachedPlayers[idx] = PrecachedPlayer(player, mediaItem, playableUrl)
+                                val player = createMediaPlayerInternal(audioUri to videoUri)
+                                player.setState(State.READY)
+                                precachedPlayers[idx] = PrecachedPlayer(player, mediaItem, audioUri to videoUri)
                                 Logger.d(TAG, "Precached player for index $idx")
                             } catch (e: Exception) {
                                 Logger.e(TAG, "Precaching error for $idx: ${e.message}")
@@ -1209,41 +1236,74 @@ class GstreamerPlayerAdapter(
         // Note: maxPrecacheCount is now val, but you can make it var if needed
     }
 
-    private suspend fun extractPlayableUrl(videoId: String): String? {
+    /**
+     * Extract playable URL for a video ID
+     * Audio -> Video
+     */
+    private suspend fun extractPlayableUrl(videoId: String): Pair<String?, String?> {
+        val shouldFindVideo =
+            videoId.contains(MERGING_DATA_TYPE.VIDEO) &&
+                dataStoreManager.watchVideoInsteadOfPlayingAudio.first() == DataStoreManager.TRUE
+        val videoId = videoId.removePrefix(MERGING_DATA_TYPE.VIDEO)
         if (File(getDownloadPath()).listFiles().takeIf { it != null }?.any {
                 it.name.contains(videoId)
             } ?: false
         ) {
-            val file =
-                File(getDownloadPath()).listFiles().first {
+            val files =
+                File(getDownloadPath()).listFiles().filter {
                     it.name.contains(videoId)
                 }
-            return file.toURI().toString()
+            val audioFile = files.firstOrNull { !it.name.contains(MERGING_DATA_TYPE.VIDEO) }
+            val videoFile = files.firstOrNull { it.name.contains(MERGING_DATA_TYPE.VIDEO) }
+            return audioFile?.toURI().toString() to (if (shouldFindVideo) videoFile?.toURI().toString() else null)
         } else {
             streamRepository.getNewFormat(videoId).lastOrNull()?.let {
-                val videoUrl = it.audioUrl
+                val audioUrl = it.audioUrl
+                val videoUrl = if (shouldFindVideo) it.videoUrl else null
                 if (videoUrl != null && it.expiredTime > now()) {
                     Logger.d("Stream", videoUrl)
                     Logger.w("Stream", "Video from format")
                     val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
                     Logger.d("Stream", "is 403 $is403Url")
                     if (!is403Url) {
-                        return videoUrl
+                        return audioUrl to videoUrl
                     }
                 }
             }
-            streamRepository
-                .getStream(
-                    dataStoreManager,
-                    videoId,
-                    false,
-                ).lastOrNull()
-                ?.let {
-                    Logger.d("Stream", it)
-                    Logger.w("Stream", "Audio")
-                    return it
+            val audioUrl =
+                coroutineScope.async {
+                    streamRepository
+                        .getStream(
+                            dataStoreManager,
+                            videoId,
+                            false,
+                        ).lastOrNull()
+                        ?.let {
+                            Logger.d("Stream", it)
+                            Logger.w("Stream", "Audio")
+                            it
+                        }
                 }
-            return null
+            val videoUrl =
+                coroutineScope.async {
+                    if (shouldFindVideo) {
+                        streamRepository
+                            .getStream(
+                                dataStoreManager,
+                                videoId,
+                                true,
+                            ).lastOrNull()
+                            ?.let {
+                                Logger.d("Stream", it)
+                                Logger.w("Stream", "Audio")
+                                it
+                            }
+                    } else {
+                        null
+                    }
+                }
+            listOf(audioUrl, videoUrl).awaitAll()
+            return audioUrl.await() to videoUrl.await()
         }
     }
 
@@ -1303,5 +1363,40 @@ class GstreamerPlayerAdapter(
         } else {
             return ""
         }
+    }
+}
+
+data class GstreamerPlayer(
+    val playerBin: PlayBin,
+) {
+    fun setState(state: State) {
+        playerBin.state = state
+    }
+
+    fun seek(
+        position: Long,
+        unit: TimeUnit,
+    ): Boolean = playerBin.seek(position, unit)
+
+    fun seek(
+        rate: Double,
+        format: Format,
+        flags: EnumSet<SeekFlags>,
+        startType: SeekType,
+        start: Long,
+        stopType: SeekType,
+        stop: Long,
+    ): Boolean = playerBin.seek(rate, format, flags, startType, start, stopType, stop)
+
+    fun pause() {
+        playerBin.state = State.PAUSED
+    }
+
+    fun stop() {
+        playerBin.stop()
+    }
+
+    fun setVolume(volume: Double) {
+        playerBin.volume = volume
     }
 }

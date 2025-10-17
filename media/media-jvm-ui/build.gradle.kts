@@ -20,8 +20,12 @@ kotlin {
         implementation(libs.compose.ui)
         implementation(libs.compose.material3)
 
+        implementation(libs.coil.compose)
+        implementation(libs.coil.network.okhttp)
+
         implementation(platform(libs.koin.bom))
         implementation(libs.koin.jvm)
+        implementation(libs.koin.compose)
 
         // Gstreamer
         implementation(libs.gst1.java.core)

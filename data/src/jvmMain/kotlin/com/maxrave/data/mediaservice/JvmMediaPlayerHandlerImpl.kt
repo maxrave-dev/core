@@ -82,14 +82,16 @@ import kotlinx.serialization.json.Json
 import org.koin.mp.KoinPlatform.getKoin
 import kotlin.math.pow
 
-private val TAG = "VlcjMediaPlayerHandler"
-class VlcjMediaPlayerHandlerImpl(
+private val TAG = "JvmMediaPlayerHandler"
+
+class JvmMediaPlayerHandlerImpl(
     private val dataStoreManager: DataStoreManager,
     private val songRepository: SongRepository,
     private val streamRepository: StreamRepository,
     private val localPlaylistRepository: LocalPlaylistRepository,
     private val coroutineScope: CoroutineScope,
-) : MediaPlayerHandler, MediaPlayerListener {
+) : MediaPlayerHandler,
+    MediaPlayerListener {
     override val player: MediaPlayerInterface = getKoin().get()
 
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
@@ -421,6 +423,7 @@ class VlcjMediaPlayerHandlerImpl(
                     is Resource.Success -> {
                         _skipSegments.value = response.data
                     }
+
                     is Resource.Error -> {
                         Logger.e(TAG, "getSkipSegments: ${response.message}")
                         _skipSegments.value = null
@@ -564,11 +567,9 @@ class VlcjMediaPlayerHandlerImpl(
     }
 
     private fun sendOpenEqualizerIntent() {
-
     }
 
     private fun sendCloseEqualizerIntent() {
-
     }
 
     private fun updateNotification() {
@@ -648,10 +649,12 @@ class VlcjMediaPlayerHandlerImpl(
                 resetCrossfade()
                 player.seekToNext()
             }
+
             PlayerEvent.Previous -> {
                 resetCrossfade()
                 player.seekToPrevious()
             }
+
             PlayerEvent.Stop -> {
                 stopProgressUpdate()
                 player.stop()
@@ -744,6 +747,7 @@ class VlcjMediaPlayerHandlerImpl(
                             addMediaItem(currentSong.toGenericMediaItem(), playWhenReady = true)
                             loadPlaylistOrAlbum(0)
                         }
+
                         else -> {
                             Logger.e(TAG, "toggleRadio: ${res.message}")
                         }
@@ -1118,6 +1122,7 @@ class VlcjMediaPlayerHandlerImpl(
                             )
                         }
                     }
+
                     is Resource.Error -> {
                         Logger.d("Check Related", "getRelated: ${response.message}")
                         _queueData.update {
@@ -1232,14 +1237,14 @@ class VlcjMediaPlayerHandlerImpl(
                     track.thumbnails?.lastOrNull()?.height != 0 &&
                         track.thumbnails?.lastOrNull()?.height == track.thumbnails?.lastOrNull()?.width &&
                         track.thumbnails?.lastOrNull()?.height != null
-                    ) &&
+                ) &&
                     (
                         !thumbUrl
                             .contains("hq720") &&
                             !thumbUrl
                                 .contains("maxresdefault") &&
                             !thumbUrl.contains("sddefault")
-                        )
+                    )
             if (track.artists.isNullOrEmpty()) {
                 songRepository
                     .getSongInfo(track.videoId)
@@ -1370,14 +1375,14 @@ class VlcjMediaPlayerHandlerImpl(
                         track.thumbnails?.lastOrNull()?.height != 0 &&
                             track.thumbnails?.lastOrNull()?.height == track.thumbnails?.lastOrNull()?.width &&
                             track.thumbnails?.lastOrNull()?.height != null
-                        ) &&
+                    ) &&
                         (
                             !thumbUrl
                                 .contains("hq720") &&
                                 !thumbUrl
                                     .contains("maxresdefault") &&
                                 !thumbUrl.contains("sddefault")
-                            )
+                        )
                 if (downloaded == 1) {
                     if (track.artists.isNullOrEmpty()) {
                         songRepository.getSongInfo(track.videoId).lastOrNull().let { songInfo ->
@@ -1588,14 +1593,14 @@ class VlcjMediaPlayerHandlerImpl(
                 track.thumbnails?.lastOrNull()?.height != 0 &&
                     track.thumbnails?.lastOrNull()?.height == track.thumbnails?.lastOrNull()?.width &&
                     track.thumbnails?.lastOrNull()?.height != null
-                ) &&
+            ) &&
                 (
                     !thumbUrl
                         .contains("hq720") &&
                         !thumbUrl
                             .contains("maxresdefault") &&
                         !thumbUrl.contains("sddefault")
-                    )
+                )
         if ((player.currentMediaItemIndex + 1 in 0..queueData.value.data.listTracks.size)) {
             if (track.artists.isNullOrEmpty()) {
                 songRepository.getSongInfo(track.videoId).cancellable().lastOrNull().let { songInfo ->
@@ -1712,6 +1717,7 @@ class VlcjMediaPlayerHandlerImpl(
             SONG_CLICK, VIDEO_CLICK, SHARE -> {
                 getRelated(track.videoId)
             }
+
             PLAYLIST_CLICK, ALBUM_CLICK, RADIO_CLICK -> {
                 loadPlaylistOrAlbum(index)
             }
@@ -1954,14 +1960,17 @@ class VlcjMediaPlayerHandlerImpl(
                 _simpleMediaState.value = SimpleMediaState.Initial
                 Logger.d(TAG, "onPlaybackStateChanged: Idle")
             }
+
             PlayerConstants.STATE_ENDED -> {
                 _simpleMediaState.value = SimpleMediaState.Ended
                 Logger.d(TAG, "onPlaybackStateChanged: Ended")
             }
+
             PlayerConstants.STATE_READY -> {
                 Logger.d(TAG, "onPlaybackStateChanged: Ready")
                 _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
             }
+
             else -> {
                 if (current >= loaded) {
                     _simpleMediaState.value = SimpleMediaState.Buffering(player.currentPosition)
@@ -2031,7 +2040,7 @@ class VlcjMediaPlayerHandlerImpl(
             PlayerConstants.ERROR_CODE_TIMEOUT -> {
                 Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
 //                if (isAppInForeground()) {
-                    showToast(ToastType.PlayerError(error.errorCodeName))
+                showToast(ToastType.PlayerError(error.errorCodeName))
 //                } else {
 //                    Logger.w("Player Error", "App is not in foreground, skipping toast")
 //                }
@@ -2042,7 +2051,7 @@ class VlcjMediaPlayerHandlerImpl(
                 Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
                 pushPlayerError(error)
 //                if (isAppInForeground()) {
-                    showToast(ToastType.PlayerError(error.errorCodeName))
+                showToast(ToastType.PlayerError(error.errorCodeName))
 //                } else {
 //                    Logger.w("Player Error", "App is not in foreground, skipping toast")
 //                }
@@ -2074,9 +2083,11 @@ class VlcjMediaPlayerHandlerImpl(
             PlayerConstants.REPEAT_MODE_OFF ->
                 _controlState.value =
                     _controlState.value.copy(repeatState = RepeatState.None)
+
             PlayerConstants.REPEAT_MODE_ONE ->
                 _controlState.value =
                     _controlState.value.copy(repeatState = RepeatState.One)
+
             PlayerConstants.REPEAT_MODE_ALL ->
                 _controlState.value =
                     _controlState.value.copy(repeatState = RepeatState.All)

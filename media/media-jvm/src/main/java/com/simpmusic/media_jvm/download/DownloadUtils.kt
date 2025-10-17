@@ -1,4 +1,4 @@
-package com.example.media_jvm.download
+package com.simpmusic.media_jvm.download
 
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.entities.DownloadState
@@ -20,7 +20,7 @@ internal class DownloadUtils(
     private val dataStoreManager: DataStoreManager,
     private val streamRepository: StreamRepository,
     private val songRepository: SongRepository,
-): DownloadHandler {
+) : DownloadHandler {
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private var _downloads = MutableStateFlow<Map<String, Pair<DownloadHandler.Download?, DownloadHandler.Download?>>>(emptyMap())
@@ -34,52 +34,58 @@ internal class DownloadUtils(
     val downloadingVideoIds = MutableStateFlow<MutableSet<String>>(mutableSetOf())
 
     init {
-
     }
 
-    override suspend fun downloadTrack(videoId: String, title: String, thumbnail: String) {
+    override suspend fun downloadTrack(
+        videoId: String,
+        title: String,
+        thumbnail: String,
+    ) {
         val song = songRepository.getSongById(videoId).lastOrNull()
         if (song != null) {
             songRepository.updateDownloadState(
                 videoId,
-                DownloadState.STATE_DOWNLOADING
+                DownloadState.STATE_DOWNLOADING,
             )
             if (!File(getDownloadPath()).exists()) {
                 File(getDownloadPath()).mkdirs()
             }
-            songRepository.downloadToFile(
-                song.toTrack(),
-                path = getDownloadPath() + File.separator + videoId,
-                videoId = videoId,
-                isVideo = false
-            ).collect { state ->
-                if (state.isError) {
-                    songRepository.updateDownloadState(
-                        videoId,
-                        DownloadState.STATE_NOT_DOWNLOADED
-                    )
-                } else if (state.isDone) {
-                    songRepository.updateDownloadState(
-                        videoId,
-                        DownloadState.STATE_DOWNLOADED
-                    )
+            songRepository
+                .downloadToFile(
+                    song.toTrack(),
+                    path = getDownloadPath() + File.separator + videoId,
+                    videoId = videoId,
+                    isVideo = false,
+                ).collect { state ->
+                    if (state.isError) {
+                        songRepository.updateDownloadState(
+                            videoId,
+                            DownloadState.STATE_NOT_DOWNLOADED,
+                        )
+                    } else if (state.isDone) {
+                        songRepository.updateDownloadState(
+                            videoId,
+                            DownloadState.STATE_DOWNLOADED,
+                        )
+                    }
                 }
-            }
         }
     }
 
     override fun removeDownload(videoId: String) {
-        File(getDownloadPath()).listFiles().filter {
-            it.name.contains(videoId)
-        }.forEach {
-            it.delete()
-            coroutineScope.launch {
-                songRepository.updateDownloadState(
-                    videoId,
-                    DownloadState.STATE_NOT_DOWNLOADED
-                )
+        File(getDownloadPath())
+            .listFiles()
+            .filter {
+                it.name.contains(videoId)
+            }.forEach {
+                it.delete()
+                coroutineScope.launch {
+                    songRepository.updateDownloadState(
+                        videoId,
+                        DownloadState.STATE_NOT_DOWNLOADED,
+                    )
+                }
             }
-        }
     }
 
     override fun removeAllDownloads() {
@@ -88,14 +94,13 @@ internal class DownloadUtils(
             coroutineScope.launch {
                 songRepository.updateDownloadState(
                     it.name.split(".").first().removePrefix(
-                        MERGING_DATA_TYPE.VIDEO
+                        MERGING_DATA_TYPE.VIDEO,
                     ),
-                    DownloadState.STATE_NOT_DOWNLOADED
+                    DownloadState.STATE_NOT_DOWNLOADED,
                 )
             }
         }
     }
-
 }
 
 fun getDownloadPath(): String = System.getProperty("user.home") + File.separator + ".simpmusic" + File.separator + "downloads"
