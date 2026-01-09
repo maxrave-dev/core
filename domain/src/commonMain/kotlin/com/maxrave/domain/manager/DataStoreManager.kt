@@ -303,9 +303,9 @@ interface DataStoreManager {
 
     suspend fun setRichPresenceEnabled(enabled: Boolean)
 
-    val localTrackingEnabled: Flow<String>
+    val smartQueueEnabled: Flow<String>
 
-    suspend fun setLocalTrackingEnabled(enabled: Boolean)
+    suspend fun setSmartQueueEnabled(enabled: Boolean)
 
     enum class ProxyType {
         PROXY_TYPE_HTTP,

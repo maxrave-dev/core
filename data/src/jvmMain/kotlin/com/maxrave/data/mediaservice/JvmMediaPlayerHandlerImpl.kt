@@ -64,6 +64,7 @@ import com.maxrave.logger.Logger
 import com.my.kizzy.DiscordRPC
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -195,6 +196,9 @@ class JvmMediaPlayerHandlerImpl(
 
     private val _currentSongIndex: MutableStateFlow<Int> = MutableStateFlow(player.currentMediaItemIndex)
     override val currentSongIndex: StateFlow<Int> = _currentSongIndex.asStateFlow()
+
+    private var manualQueueOffset = 0
+    private var lastCurrentIndex = -1
 
     // List of Specific variables
 
@@ -797,12 +801,48 @@ class JvmMediaPlayerHandlerImpl(
             }
 
             PlayerEvent.Shuffle -> {
-                if (player.shuffleModeEnabled) {
-                    player.shuffleModeEnabled = false
-                    _controlState.value = _controlState.value.copy(isShuffle = false)
+                val isSmartQueue = runBlocking { dataStoreManager.smartQueueEnabled.first() == TRUE }
+                if (isSmartQueue) {
+                    if (_controlState.value.isShuffle) {
+                        _controlState.value = _controlState.value.copy(isShuffle = false)
+                        player.shuffleModeEnabled = false
+                    } else {
+                        if (player.shuffleModeEnabled) {
+                            player.shuffleModeEnabled = false
+                        }
+                        
+                        val currentIndex = player.currentMediaItemIndex
+                        val listTrack = queueData.value.data.listTracks
+                        val shuffleStartIndex = (currentIndex + 1 + manualQueueOffset).coerceAtMost(listTrack.size)
+                        
+                        if (shuffleStartIndex < listTrack.size - 1) {
+                            val originalTail = listTrack.subList(shuffleStartIndex, listTrack.size)
+                            val targetTail = originalTail.shuffled()
+                            
+                            targetTail.forEachIndexed { index, track ->
+                                val targetPos = shuffleStartIndex + index
+                                val currentPos = (targetPos until player.mediaItemCount).firstOrNull { 
+                                     val item = player.getMediaItemAt(it)
+                                     val itemId = item?.mediaId?.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                                     itemId == track.videoId
+                                } ?: -1
+                                
+                                if (currentPos != -1 && currentPos != targetPos) {
+                                    player.moveMediaItem(currentPos, targetPos)
+                                }
+                            }
+                        }
+                        
+                        _controlState.value = _controlState.value.copy(isShuffle = true)
+                    }
                 } else {
-                    player.shuffleModeEnabled = true
-                    _controlState.value = _controlState.value.copy(isShuffle = true)
+                    if (player.shuffleModeEnabled) {
+                        player.shuffleModeEnabled = false
+                        _controlState.value = _controlState.value.copy(isShuffle = false)
+                    } else {
+                        player.shuffleModeEnabled = true
+                        _controlState.value = _controlState.value.copy(isShuffle = true)
+                    }
                 }
             }
 
@@ -1911,6 +1951,135 @@ class JvmMediaPlayerHandlerImpl(
         }
     }
 
+    override suspend fun addToQueue(track: Track) = withContext(Dispatchers.Main) {
+        val smartQueueEnabled = dataStoreManager.smartQueueEnabled.first() == TRUE
+        if (!smartQueueEnabled) {
+            loadMoreCatalog(arrayListOf(track), isAddToQueue = true)
+            return@withContext
+        }
+        
+        _queueData.update {
+            it.copy(
+                queueState = QueueData.StateSource.STATE_INITIALIZING,
+            )
+        }
+        
+        val catalogMetadata: ArrayList<Track> =
+            queueData.value.data.listTracks.toCollection(arrayListOf())
+        
+        var thumbUrl =
+            track.thumbnails?.lastOrNull()?.url
+                ?: "http://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg"
+        if (thumbUrl.contains("w120")) {
+            thumbUrl = Regex("([wh])120").replace(thumbUrl, "$1544")
+        }
+        val artistName: String = track.artists.toListName().connectArtists()
+        val isSong =
+            (
+                track.thumbnails?.lastOrNull()?.height != 0 &&
+                    track.thumbnails?.lastOrNull()?.height == track.thumbnails?.lastOrNull()?.width &&
+                    track.thumbnails?.lastOrNull()?.height != null
+            ) &&
+                (
+                    !thumbUrl.contains("hq720") &&
+                        !thumbUrl.contains("maxresdefault") &&
+                        !thumbUrl.contains("sddefault")
+                )
+        val currentIndex = player.currentMediaItemIndex
+        if (lastCurrentIndex == -1) {
+            lastCurrentIndex = currentIndex
+        }
+        
+        val insertIndex = (currentIndex + 1 + manualQueueOffset).coerceAtMost(player.mediaItemCount)
+        
+        if (track.artists.isNullOrEmpty()) {
+            songRepository.getSongInfo(track.videoId).cancellable().lastOrNull().let { songInfo ->
+                if (songInfo != null) {
+                    catalogMetadata.add(
+                        insertIndex,
+                        track.copy(
+                            artists =
+                                listOf(
+                                    Artist(
+                                        songInfo.authorId,
+                                        songInfo.author ?: "",
+                                    ),
+                                ),
+                        ),
+                    )
+                    addMediaItemNotSet(
+                        GenericMediaItem(
+                            mediaId = track.videoId,
+                            uri = track.videoId,
+                            metadata =
+                                GenericMediaMetadata(
+                                    title = track.title,
+                                    artist = songInfo.author ?: "",
+                                    albumTitle = track.album?.name,
+                                    artworkUri = thumbUrl,
+                                    description = if (isSong) MERGING_DATA_TYPE.SONG else MERGING_DATA_TYPE.VIDEO,
+                                ),
+                            customCacheKey = track.videoId,
+                        ),
+                        insertIndex,
+                    )
+                } else {
+                    val mediaItem =
+                        GenericMediaItem(
+                            mediaId = track.videoId,
+                            uri = track.videoId,
+                            metadata =
+                                GenericMediaMetadata(
+                                    title = track.title,
+                                    artist = "Various Artists",
+                                    albumTitle = track.album?.name,
+                                    artworkUri = thumbUrl,
+                                    description = if (isSong) MERGING_DATA_TYPE.SONG else MERGING_DATA_TYPE.VIDEO,
+                                ),
+                            customCacheKey = track.videoId,
+                        )
+                    addMediaItemNotSet(mediaItem, insertIndex)
+                    catalogMetadata.add(
+                        insertIndex,
+                        track.copy(
+                            artists = listOf(Artist("", "Various Artists")),
+                        ),
+                    )
+                }
+            }
+        } else {
+            addMediaItemNotSet(
+                GenericMediaItem(
+                    mediaId = track.videoId,
+                    uri = track.videoId,
+                    metadata =
+                        GenericMediaMetadata(
+                            title = track.title,
+                            artist = artistName,
+                            albumTitle = track.album?.name,
+                            artworkUri = thumbUrl,
+                            description = if (isSong) MERGING_DATA_TYPE.SONG else MERGING_DATA_TYPE.VIDEO,
+                        ),
+                    customCacheKey = track.videoId,
+                ),
+                insertIndex,
+            )
+            catalogMetadata.add(insertIndex, track)
+        }
+        
+        Logger.d("MusicSource", "addToQueue (smart FIFO): ${track.title} at index $insertIndex")
+        
+        manualQueueOffset++
+        
+        _queueData.update {
+            it.copy(
+                queueState = QueueData.StateSource.STATE_INITIALIZED,
+                data = it.data.copy(listTracks = catalogMetadata),
+            )
+        }
+        reorderShuffledQueue(player.getCurrentMediaTimeLine())
+    }
+
     override suspend fun <T> loadMediaItem(
         anyTrack: T,
         type: String,
@@ -2272,6 +2441,15 @@ class JvmMediaPlayerHandlerImpl(
         if (player.currentMediaItemIndex == 0) {
             resetCrossfade()
         }
+        
+        if (player.currentMediaItemIndex == lastCurrentIndex + 1) {
+            manualQueueOffset = (manualQueueOffset - 1).coerceAtLeast(0)
+        } else {
+            if (lastCurrentIndex != -1) {
+                 manualQueueOffset = 0
+            }
+        }
+        lastCurrentIndex = player.currentMediaItemIndex
     }
 
     private fun updateDiscordRpc(song: SongEntity) {
@@ -2317,13 +2495,21 @@ class JvmMediaPlayerHandlerImpl(
         shuffleModeEnabled: Boolean,
         list: List<GenericMediaItem>,
     ) {
-        when (shuffleModeEnabled) {
-            true -> {
-                _controlState.value = _controlState.value.copy(isShuffle = true)
+         val isSmartQueue = runBlocking { dataStoreManager.smartQueueEnabled.first() == TRUE }
+        if (isSmartQueue) {
+            if (!shuffleModeEnabled && _controlState.value.isShuffle) {
+            } else {
+                 _controlState.value = _controlState.value.copy(isShuffle = shuffleModeEnabled)
             }
+        } else {
+            when (shuffleModeEnabled) {
+                true -> {
+                    _controlState.value = _controlState.value.copy(isShuffle = true)
+                }
 
-            false -> {
-                _controlState.value = _controlState.value.copy(isShuffle = false)
+                false -> {
+                    _controlState.value = _controlState.value.copy(isShuffle = false)
+                }
             }
         }
         reorderShuffledQueue(list)
