@@ -72,8 +72,7 @@ class GstreamerPlayerAdapter(
         ERROR, // Error state
     }
 
-    private fun InternalState.isInReadyState(): Boolean =
-        this == InternalState.READY || this == InternalState.PLAYING || this == InternalState.PAUSED
+    private fun InternalState.isInReadyState(): Boolean = this == InternalState.READY || this == InternalState.PLAYING || this == InternalState.PAUSED
 
     init {
         /**
@@ -89,6 +88,21 @@ class GstreamerPlayerAdapter(
          * is a higher version.
          */
         Gst.init(Version.of(1, 20), "FXPlayer", "--gapless")
+
+        // Load crossfade settings
+        coroutineScope.launch {
+            dataStoreManager.crossfadeEnabled.collect { enabled ->
+                crossfadeEnabled = (enabled == DataStoreManager.TRUE)
+                Logger.d(TAG, "Crossfade enabled: $crossfadeEnabled")
+            }
+        }
+
+        coroutineScope.launch {
+            dataStoreManager.crossfadeDuration.collect { duration ->
+                crossfadeDurationMs = duration
+                Logger.d(TAG, "Crossfade duration: $crossfadeDurationMs ms")
+            }
+        }
     }
 
     // ========== Threading Model ==========
@@ -176,6 +190,22 @@ class GstreamerPlayerAdapter(
     private val maxPrecacheCount = 2
     private var precacheJob: Job? = null
 
+    // Crossfade system
+    @Volatile
+    private var crossfadeEnabled = false
+
+    @Volatile
+    private var crossfadeDurationMs = 5000
+
+    @Volatile
+    private var secondaryPlayer: GstreamerPlayer? = null
+
+    @Volatile
+    private var crossfadeJob: Job? = null
+
+    @Volatile
+    private var isCrossfading = false
+
     // Playlist management
     private val playlist = mutableListOf<GenericMediaItem>()
     private var localCurrentMediaItemIndex = -1
@@ -183,6 +213,7 @@ class GstreamerPlayerAdapter(
     // Shuffle management
     // Maps original playlist index -> shuffled position
     private var shuffleIndices = mutableListOf<Int>()
+
     // Maps shuffled position -> original playlist index
     private var shuffleOrder = mutableListOf<Int>()
 
@@ -485,14 +516,20 @@ class GstreamerPlayerAdapter(
             // Update current index
             localCurrentMediaItemIndex =
                 when {
-                    localCurrentMediaItemIndex == fromIndex -> toIndex
-                    fromIndex < localCurrentMediaItemIndex && toIndex >= localCurrentMediaItemIndex ->
+                    localCurrentMediaItemIndex == fromIndex -> {
+                        toIndex
+                    }
+                    fromIndex < localCurrentMediaItemIndex && toIndex >= localCurrentMediaItemIndex -> {
                         localCurrentMediaItemIndex - 1
+                    }
 
-                    fromIndex > localCurrentMediaItemIndex && toIndex <= localCurrentMediaItemIndex ->
+                    fromIndex > localCurrentMediaItemIndex && toIndex <= localCurrentMediaItemIndex -> {
                         localCurrentMediaItemIndex + 1
+                    }
 
-                    else -> localCurrentMediaItemIndex
+                    else -> {
+                        localCurrentMediaItemIndex
+                    }
                 }
 
             // Update shuffle order if enabled
@@ -557,21 +594,19 @@ class GstreamerPlayerAdapter(
 
     override fun getMediaItemAt(index: Int): GenericMediaItem? = playlist.getOrNull(index)
 
-    override fun getCurrentMediaTimeLine(): List<GenericMediaItem> {
-        return if (internalShuffleModeEnabled) {
+    override fun getCurrentMediaTimeLine(): List<GenericMediaItem> =
+        if (internalShuffleModeEnabled) {
             shuffleOrder.mapNotNull { shuffledIndex -> playlist.getOrNull(shuffledIndex) }
         } else {
             playlist.toList()
         }
-    }
 
-    override fun getUnshuffledIndex(shuffledIndex: Int): Int {
-        return if (internalShuffleModeEnabled) {
+    override fun getUnshuffledIndex(shuffledIndex: Int): Int =
+        if (internalShuffleModeEnabled) {
             shuffleOrder.getOrNull(shuffledIndex) ?: -1
         } else {
             shuffledIndex
         }
-    }
 
     // ========== Playback State Properties ==========
 
@@ -636,7 +671,9 @@ class GstreamerPlayerAdapter(
 
     private fun getNextMediaItemIndex(): Int =
         when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> localCurrentMediaItemIndex
+            PlayerConstants.REPEAT_MODE_ONE -> {
+                localCurrentMediaItemIndex
+            }
             PlayerConstants.REPEAT_MODE_ALL -> {
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
                     // Find current position in shuffle order
@@ -670,16 +707,19 @@ class GstreamerPlayerAdapter(
 
     private fun getPreviousMediaItemIndex(): Int =
         when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> localCurrentMediaItemIndex
+            PlayerConstants.REPEAT_MODE_ONE -> {
+                localCurrentMediaItemIndex
+            }
             PlayerConstants.REPEAT_MODE_ALL -> {
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
                     // Find current position in shuffle order
                     val currentShufflePos = shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: 0
-                    val prevShufflePos = if (currentShufflePos > 0) {
-                        currentShufflePos - 1
-                    } else {
-                        shuffleOrder.size - 1
-                    }
+                    val prevShufflePos =
+                        if (currentShufflePos > 0) {
+                            currentShufflePos - 1
+                        } else {
+                            shuffleOrder.size - 1
+                        }
                     shuffleOrder.getOrNull(prevShufflePos) ?: localCurrentMediaItemIndex
                 } else {
                     if (localCurrentMediaItemIndex > 0) {
@@ -810,6 +850,12 @@ class GstreamerPlayerAdapter(
         currentLoadJob?.cancel()
         precacheJob?.cancel()
         positionUpdateJob?.cancel()
+
+        // Cancel crossfade
+        crossfadeJob?.cancel()
+        secondaryPlayer?.release()
+        secondaryPlayer = null
+        isCrossfading = false
 
         coroutineScope.cancel()
         cleanupCurrentPlayerInternal()
@@ -1128,7 +1174,6 @@ class GstreamerPlayerAdapter(
 
         val bufferingListener =
             Bus.BUFFERING { _, percent ->
-
             }
 
         val asyncDoneListener =
@@ -1204,6 +1249,12 @@ class GstreamerPlayerAdapter(
     private fun cleanupCurrentPlayerInternal() {
         stopPositionUpdates()
         cleanupBusListenersInternal()
+
+        // Cancel any ongoing crossfade
+        crossfadeJob?.cancel()
+        crossfadeJob = null
+        isCrossfading = false
+
         currentPlayer?.let { cleanupPlayerInternal(it) }
         currentPlayer = null
     }
@@ -1212,25 +1263,179 @@ class GstreamerPlayerAdapter(
      * Handle track end
      */
     private fun handleTrackEndInternal() {
-        when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> {
-                seekTo(localCurrentMediaItemIndex, 0)
-            }
+        // Check if crossfade should be used
+        val shouldCrossfade = crossfadeEnabled &&
+                              hasNextMediaItem() &&
+                              !isCrossfading &&
+                              currentMediaItem?.isVideo() != true // No crossfade for video
 
-            PlayerConstants.REPEAT_MODE_ALL -> {
-                if (hasNextMediaItem()) {
-                    seekToNext()
+        if (shouldCrossfade) {
+            // Trigger crossfade instead of normal transition
+            val nextIndex = getNextMediaItemIndex()
+            triggerCrossfadeTransition(nextIndex)
+        } else {
+            // Original behavior
+            when (internalRepeatMode) {
+                PlayerConstants.REPEAT_MODE_ONE -> {
+                    seekTo(localCurrentMediaItemIndex, 0)
                 }
-            }
 
-            else -> {
-                if (localCurrentMediaItemIndex < playlist.size - 1) {
-                    seekToNext()
-                } else {
-                    notifyEqualizerIntent(false)
+                PlayerConstants.REPEAT_MODE_ALL -> {
+                    if (hasNextMediaItem()) {
+                        seekToNext()
+                    }
+                }
+
+                else -> {
+                    if (localCurrentMediaItemIndex < playlist.size - 1) {
+                        seekToNext()
+                    } else {
+                        notifyEqualizerIntent(false)
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * Trigger crossfade to next track
+     * Called when current track is near end (crossfadeDurationMs before EOS)
+     */
+    private fun triggerCrossfadeTransition(nextIndex: Int) {
+        if (nextIndex !in playlist.indices || isCrossfading) return
+
+        coroutineScope.launch {
+            try {
+                isCrossfading = true
+                val nextMediaItem = playlist[nextIndex]
+                val nextVideoId = nextMediaItem.mediaId
+
+                Logger.d(TAG, "🔀 Starting crossfade to track $nextIndex")
+
+                // Get or create secondary player
+                val cachedPlayer = precachedPlayers.remove(nextVideoId)
+                val nextPlayer = if (cachedPlayer?.player != null) {
+                    cachedPlayer.player
+                } else {
+                    // Extract and create player
+                    val uri = extractPlayableUrl(nextMediaItem)
+                    if (uri == null || uri.second.isEmpty()) {
+                        Logger.e(TAG, "Failed to extract URL for crossfade")
+                        isCrossfading = false
+                        seekTo(nextIndex, 0) // Fallback to normal transition
+                        return@launch
+                    }
+                    createMediaPlayerInternal(uri.first, uri.second)
+                }
+
+                // Setup secondary player
+                secondaryPlayer = nextPlayer
+                setupPlayerListenersInternal(nextPlayer.playerBin)
+                nextPlayer.setVolume(0.0) // Start with volume 0
+                nextPlayer.setState(State.PLAYING)
+
+                // ⚠️ DO NOT update index here - will be done in finalizeCrossfade()
+                // ⚠️ DO NOT notify listeners here - will cause double transition
+
+                // Perform crossfade
+                performCrossfade(nextIndex, nextPlayer)
+
+            } catch (e: Exception) {
+                Logger.e(TAG, "Crossfade error: ${e.message}", e)
+                isCrossfading = false
+                // Fallback to normal transition
+                seekTo(nextIndex, 0)
+            }
+        }
+    }
+
+    /**
+     * Perform the actual crossfade animation
+     */
+    private suspend fun performCrossfade(nextIndex: Int, nextPlayer: GstreamerPlayer) {
+        val steps = 50 // 50 steps for smooth transition
+        val delayPerStep = crossfadeDurationMs / steps
+        val targetVolume = internalVolume.toDouble()
+
+        crossfadeJob?.cancel()
+        crossfadeJob = coroutineScope.launch {
+            try {
+                for (step in 0..steps) {
+                    if (!isActive) break
+
+                    val progress = step.toFloat() / steps
+
+                    // Fade out current player
+                    val fadeOutVolume = targetVolume * (1.0 - progress)
+                    currentPlayer?.setVolume(fadeOutVolume)
+
+                    // Fade in next player
+                    val fadeInVolume = targetVolume * progress
+                    nextPlayer.setVolume(fadeInVolume)
+
+                    delay(delayPerStep.toLong())
+                }
+
+                // Transition complete
+                finalizeCrossfade(nextIndex, nextPlayer)
+
+            } catch (e: CancellationException) {
+                Logger.d(TAG, "Crossfade cancelled")
+                // Cleanup
+                nextPlayer.release()
+                secondaryPlayer = null
+                isCrossfading = false
+            }
+        }
+    }
+
+    /**
+     * Finalize crossfade: swap players and cleanup
+     */
+    private fun finalizeCrossfade(nextIndex: Int, nextPlayer: GstreamerPlayer) {
+        Logger.d(TAG, "🔀 Crossfade complete, swapping players")
+
+        // Cleanup old current player WITHOUT touching bus listeners
+        // (bus listeners are already setup for nextPlayer)
+        stopPositionUpdates()
+
+        // Cleanup the old current player manually
+        currentPlayer?.let { oldPlayer ->
+            try {
+                oldPlayer.playerBin.stop()
+                oldPlayer.videoComponent?.element?.dispose()
+            } catch (e: Exception) {
+                Logger.w(TAG, "Error cleaning up old player: ${e.message}")
+            }
+        }
+
+        // Promote secondary to current
+        currentPlayer = nextPlayer
+        secondaryPlayer = null
+        localCurrentMediaItemIndex = nextIndex
+
+        // Ensure correct volume
+        currentPlayer?.setVolume(internalVolume.toDouble())
+
+        // Reset state
+        isCrossfading = false
+        transitionToState(InternalState.PLAYING)
+
+        // Notify listeners
+        playlist.getOrNull(nextIndex)?.let { mediaItem ->
+            listeners.forEach {
+                it.onMediaItemTransition(
+                    mediaItem,
+                    PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO
+                )
+            }
+        }
+
+        // Start position tracking
+        startPositionUpdates()
+
+        // Trigger next precache
+        triggerPrecachingInternal()
     }
 
     /**
@@ -1254,6 +1459,23 @@ class GstreamerPlayerAdapter(
 
                                 if (pos > 0) cachedPosition = pos
                                 if (dur > 0) cachedDuration = dur
+
+                                // Check if should trigger crossfade
+                                if (crossfadeEnabled &&
+                                    !isCrossfading &&
+                                    dur > 0 &&
+                                    pos > 0 &&
+                                    currentMediaItem?.isVideo() != true) {
+
+                                    val timeRemaining = dur - pos
+                                    if (timeRemaining in 1..crossfadeDurationMs) {
+                                        // Trigger crossfade
+                                        if (hasNextMediaItem()) {
+                                            val nextIndex = getNextMediaItemIndex()
+                                            triggerCrossfadeTransition(nextIndex)
+                                        }
+                                    }
+                                }
                             }
                         }
                     } catch (e: Exception) {
@@ -1290,7 +1512,9 @@ class GstreamerPlayerAdapter(
                     for (i in 1..maxPrecacheCount) {
                         val nextIndex =
                             when (internalRepeatMode) {
-                                PlayerConstants.REPEAT_MODE_ALL -> (index + i) % playlist.size
+                                PlayerConstants.REPEAT_MODE_ALL -> {
+                                    (index + i) % playlist.size
+                                }
                                 else -> {
                                     val next = index + i
                                     if (next < playlist.size) next else break
@@ -1432,7 +1656,10 @@ class GstreamerPlayerAdapter(
      * @param insertedOriginalIndex The index in the original playlist where item was inserted
      * @param afterShufflePos The shuffle position after which to insert (typically current song's position)
      */
-    private fun insertIntoShuffleOrder(insertedOriginalIndex: Int, afterShufflePos: Int) {
+    private fun insertIntoShuffleOrder(
+        insertedOriginalIndex: Int,
+        afterShufflePos: Int,
+    ) {
         if (playlist.isEmpty() || insertedOriginalIndex !in playlist.indices) {
             return
         }
@@ -1576,7 +1803,7 @@ class GstreamerPlayerAdapter(
     private fun configurePaths() {
         if (Platform.isWindows()) {
             val gstPath = System.getProperty("gstreamer.path", findWindowsLocation())
-            if (!gstPath!!.isEmpty()) {
+            if (!gstPath.isNullOrEmpty()) {
                 val systemPath = System.getenv("PATH")
                 if (systemPath == null || systemPath.trim { it <= ' ' }.isEmpty()) {
                     Kernel32.INSTANCE.SetEnvironmentVariable("PATH", gstPath)
@@ -1596,12 +1823,19 @@ class GstreamerPlayerAdapter(
                     "gstreamer.path",
                     "/Library/Frameworks/GStreamer.framework/Libraries/",
                 )
-            if (!gstPath!!.isEmpty()) {
+            if (!gstPath.isNullOrEmpty()) {
                 val jnaPath = System.getProperty("jna.library.path", "").trim { it <= ' ' }
                 if (jnaPath.isEmpty()) {
                     System.setProperty("jna.library.path", gstPath)
                 } else {
                     System.setProperty("jna.library.path", jnaPath + File.pathSeparator + gstPath)
+                }
+            } else {
+                val appleSiliconPath = File("/opt/homebrew/lib")
+                if (appleSiliconPath.exists()) {
+                    System.setProperty("jna.library.path", "/opt/homebrew/lib")
+                } else {
+                    System.setProperty("jna.library.path", "/usr/local/lib")
                 }
             }
         }
@@ -1609,26 +1843,125 @@ class GstreamerPlayerAdapter(
 
     /**
      * Query over a stream of possible environment variables for GStreamer
-     * location, filtering on the first non-null result, and adding \bin\ to the
+     * location, filtering on the first non-null result, and adding \\bin\\ to the
      * value.
+     *
+     * Also searches common installation directories and automatically sets
+     * environment variables for all found GStreamer variants.
      *
      * @return location or empty string
      */
     private fun findWindowsLocation(): String? {
-        if (Platform.is64Bit()) {
-            return Stream
-                .of<String?>(
+        // Define all possible GStreamer variants and their paths
+        val gstreamerVariants =
+            listOf(
+                Triple(
                     "GSTREAMER_1_0_ROOT_MSVC_X86_64",
+                    "msvc_x86_64",
+                    listOf(
+                        "C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64",
+                        "C:\\gstreamer\\1.0\\msvc_x86_64",
+                        System.getenv("GSTREAMER_1_0_ROOT_MSVC_X86_64"),
+                    ),
+                ),
+                Triple(
+                    "GSTREAMER_1_0_ROOT_MSVC_X86",
+                    "msvc_x86",
+                    listOf(
+                        "C:\\Program Files (x86)\\gstreamer\\1.0\\msvc_x86",
+                        "C:\\Program Files\\gstreamer\\1.0\\msvc_x86",
+                        "C:\\gstreamer\\1.0\\msvc_x86",
+                        System.getenv("GSTREAMER_1_0_ROOT_MSVC_X86"),
+                    ),
+                ),
+                Triple(
+                    "GSTREAMER_1_0_ROOT_MSVC_ARM64",
+                    "msvc_arm64",
+                    listOf(
+                        "C:\\Program Files\\gstreamer\\1.0\\msvc_arm64",
+                        "C:\\gstreamer\\1.0\\msvc_arm64",
+                        System.getenv("GSTREAMER_1_0_ROOT_MSVC_ARM64"),
+                    ),
+                ),
+                Triple(
                     "GSTREAMER_1_0_ROOT_MINGW_X86_64",
-                    "GSTREAMER_1_0_ROOT_X86_64",
-                ).map<String?> { name: String? -> System.getenv(name) }
-                .filter { p: String? -> p != null }
-                .map<String?> { p: String? -> if (p!!.endsWith("\\")) p + "bin\\" else p + "\\bin\\" }
-                .findFirst()
-                .orElse("")
-        } else {
-            return ""
+                    "mingw_x86_64",
+                    listOf(
+                        "C:\\Program Files\\gstreamer\\1.0\\mingw_x86_64",
+                        "C:\\gstreamer\\1.0\\mingw_x86_64",
+                        System.getenv("GSTREAMER_1_0_ROOT_MINGW_X86_64"),
+                    ),
+                ),
+                Triple(
+                    "GSTREAMER_1_0_ROOT_MINGW_X86",
+                    "mingw_x86",
+                    listOf(
+                        "C:\\Program Files (x86)\\gstreamer\\1.0\\mingw_x86",
+                        "C:\\Program Files\\gstreamer\\1.0\\mingw_x86",
+                        "C:\\gstreamer\\1.0\\mingw_x86",
+                        System.getenv("GSTREAMER_1_0_ROOT_MINGW_X86"),
+                    ),
+                ),
+            )
+        
+        var firstFoundBinPath: String? = null
+        
+        // Try to find and set GStreamer path for each variant
+        for ((envVar, variant, paths) in gstreamerVariants) {
+            for (path in paths) {
+                if (path != null && File(path).exists()) {
+                    val binPath = if (path.endsWith("\\")) path + "bin\\" else path + "\\bin\\"
+                    
+                    // Set environment variable for this variant
+                    try {
+                        Kernel32.INSTANCE.SetEnvironmentVariable(envVar, path)
+                        Logger.d(TAG, "GStreamer found: $variant at $path")
+                        Logger.d(TAG, "Set environment variable: $envVar=$path")
+                    } catch (e: Exception) {
+                        Logger.w(TAG, "Failed to set environment variable $envVar: ${e.message}")
+                    }
+                    
+                    // Store the first found bin path to return
+                    if (firstFoundBinPath == null) {
+                        firstFoundBinPath = binPath
+                        Logger.d(TAG, "Using GStreamer bin path: $binPath")
+                    }
+                    
+                    break // Found this variant, move to next
+                }
+            }
         }
+        
+        // If no installation found, try legacy environment variable approach
+        if (firstFoundBinPath == null) {
+            Logger.w(TAG, "Warning: GStreamer not found in any common installation paths")
+            Logger.w(TAG, "Attempting to use environment variables...")
+            
+            if (Platform.is64Bit()) {
+                return Stream
+                    .of<String?>(
+                        "GSTREAMER_1_0_ROOT_MSVC_X86_64",
+                        "GSTREAMER_1_0_ROOT_MINGW_X86_64",
+                        "GSTREAMER_1_0_ROOT_X86_64",
+                    ).map<String?> { name: String? -> System.getenv(name) }
+                    .filter { p: String? -> p != null }
+                    .map<String?> { p: String? -> if (p!!.endsWith("\\")) p + "bin\\" else p + "\\bin\\" }
+                    .findFirst()
+                    .orElse("")
+            } else {
+                return Stream
+                    .of<String?>(
+                        "GSTREAMER_1_0_ROOT_MSVC_X86",
+                        "GSTREAMER_1_0_ROOT_MINGW_X86",
+                    ).map<String?> { name: String? -> System.getenv(name) }
+                    .filter { p: String? -> p != null }
+                    .map<String?> { p: String? -> if (p!!.endsWith("\\")) p + "bin\\" else p + "\\bin\\" }
+                    .findFirst()
+                    .orElse("")
+            }
+        }
+        
+        return firstFoundBinPath
     }
 }
 
@@ -1647,9 +1980,22 @@ data class GstreamerPlayer(
     fun seek(
         position: Long,
         unit: TimeUnit,
-    ): Boolean = playerBin.seek(1.0, Format.TIME, EnumSet.of(SeekFlags.FLUSH,
-        SeekFlags.ACCURATE), SeekType.SET, TimeUnit.NANOSECONDS.convert(position,
-        unit), SeekType.NONE, -1)
+    ): Boolean =
+        playerBin.seek(
+            1.0,
+            Format.TIME,
+            EnumSet.of(
+                SeekFlags.FLUSH,
+                SeekFlags.ACCURATE,
+            ),
+            SeekType.SET,
+            TimeUnit.NANOSECONDS.convert(
+                position,
+                unit,
+            ),
+            SeekType.NONE,
+            -1,
+        )
 
     fun seek(
         rate: Double,

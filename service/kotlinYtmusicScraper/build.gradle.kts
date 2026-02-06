@@ -32,12 +32,6 @@ kotlin {
     // https://developer.android.com/kotlin/multiplatform/migrate
     val xcfName = "kotlinytmusicscraperKit"
 
-    iosX64 {
-        binaries.framework {
-            baseName = xcfName
-        }
-    }
-
     iosArm64 {
         binaries.framework {
             baseName = xcfName
@@ -81,8 +75,6 @@ kotlin {
                 implementation(libs.ktor.serialization.kotlinx.json)
                 implementation(libs.ktor.serialization.kotlinx.xml)
                 implementation(libs.ktor.serialization.kotlinx.protobuf)
-
-
 
                 implementation(libs.ksoup.html)
                 implementation(libs.ksoup.entities)

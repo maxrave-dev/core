@@ -136,7 +136,7 @@ class SpotifyClient {
     suspend fun getSpotifyAccessToken(
         spdc: String,
         otpValue: String,
-        reason: String = "transport",
+        reason: String = "init",
         sTime: String,
         cTime: String,
         totpVersion: Int,
@@ -148,14 +148,11 @@ class SpotifyClient {
             "sp_dc=$spdc",
         )
         parameter("reason", reason)
-        parameter("productType", "web-player")
+        parameter("productType", "mobile-web-player")
         parameter("totp", otpValue)
         parameter("totpServer", otpValue)
         parameter("totpVer", totpVersion)
-        parameter("ts", sTime)
         header("Cookie", "sp_dc=$spdc")
-        header("App-platform", "WebPlayer")
-        header("Spotify-App-Version", "1.2.61.20.g3b4cd5b2")
         header("Accept", "application/json")
         header("Origin", "https://open.spotify.com")
         header("Referer", "https://open.spotify.com/")
@@ -224,7 +221,7 @@ class SpotifyClient {
             )
             append(HttpHeaders.Authorization, "Bearer $token")
             append("Client-Token", clientToken)
-            append(HttpHeaders.UserAgent, "Spotify/8.5.49 iOS/Version 13.3.1 (Build 17D50)")
+            append(HttpHeaders.UserAgent, "Spotify/9.0.34.593 iOS/18.4 (iPhone15,3)")
         }
         setBody(
             CanvasBody(

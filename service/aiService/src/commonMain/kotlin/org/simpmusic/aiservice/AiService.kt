@@ -6,6 +6,8 @@ import com.aallam.openai.api.chat.JsonSchema
 import com.aallam.openai.api.chat.chatCompletionRequest
 import com.aallam.openai.api.model.ModelId
 import com.aallam.openai.client.OpenAI
+import com.aallam.openai.client.OpenAIConfig
+import com.aallam.openai.client.OpenAIHost
 import com.aallam.openai.client.OpenAIHost.Companion.Gemini
 import com.maxrave.domain.data.model.metadata.Lyrics
 import kotlinx.serialization.json.Json
@@ -20,6 +22,8 @@ class AiService(
     private val aiHost: AIHost = AIHost.GEMINI,
     private val apiKey: String,
     private val customModelId: String? = null,
+    private val customBaseUrl: String? = null,
+    private val customHeaders: Map<String, String>? = null,
 ) {
     private val json =
         Json {
@@ -29,8 +33,24 @@ class AiService(
         }
     private val openAI: OpenAI by lazy {
         when (aiHost) {
-            AIHost.GEMINI -> OpenAI(host = Gemini, token = apiKey)
-            AIHost.OPENAI -> OpenAI(token = apiKey)
+            AIHost.GEMINI -> {
+                OpenAI(host = Gemini, token = apiKey)
+            }
+
+            AIHost.OPENAI -> {
+                OpenAI(token = apiKey)
+            }
+
+            AIHost.CUSTOM_OPENAI -> {
+                val baseUrl = customBaseUrl ?: "https://api.openai.com/v1/"
+                val config =
+                    OpenAIConfig(
+                        token = apiKey,
+                        host = OpenAIHost(baseUrl = baseUrl),
+                        headers = customHeaders ?: emptyMap(),
+                    )
+                OpenAI(config)
+            }
         }
     }
 
@@ -41,6 +61,7 @@ class AiService(
             when (aiHost) {
                 AIHost.GEMINI -> ModelId("gemini-2.0-flash")
                 AIHost.OPENAI -> ModelId("gpt-4o")
+                AIHost.CUSTOM_OPENAI -> ModelId("gpt-4o")
             }
         }
     }
@@ -160,4 +181,5 @@ class AiService(
 enum class AIHost {
     GEMINI,
     OPENAI,
+    CUSTOM_OPENAI,
 }

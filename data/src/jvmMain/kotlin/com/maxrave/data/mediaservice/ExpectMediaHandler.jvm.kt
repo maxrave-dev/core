@@ -15,5 +15,6 @@ actual fun createMediaServiceHandler(
         songRepository = songRepository,
         streamRepository = streamRepository,
         localPlaylistRepository = localPlaylistRepository,
+        analyticsRepository = analyticsRepository,
         coroutineScope = coroutineScope,
     )

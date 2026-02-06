@@ -7,41 +7,43 @@ class AiClient {
     var host = AIHost.GEMINI
         set(value) {
             field = value
-            apiKey?.let {
-                aiService =
-                    AiService(
-                        aiHost = value,
-                        apiKey = it,
-                    )
-            }
+            rebuildAiService()
         }
     var apiKey: String? = null
         set(value) {
             field = value
-            aiService =
-                if (value != null) {
-                    AiService(
-                        aiHost = host,
-                        apiKey = value,
-                    )
-                } else {
-                    null
-                }
+            rebuildAiService()
         }
     var customModelId: String? = null
         set(value) {
             field = value
-            aiService =
-                if (apiKey != null) {
-                    AiService(
-                        aiHost = host,
-                        apiKey = apiKey!!,
-                        customModelId = value,
-                    )
-                } else {
-                    null
-                }
+            rebuildAiService()
         }
+    var customBaseUrl: String? = null
+        set(value) {
+            field = value
+            rebuildAiService()
+        }
+    var customHeaders: Map<String, String>? = null
+        set(value) {
+            field = value
+            rebuildAiService()
+        }
+
+    private fun rebuildAiService() {
+        aiService =
+            if (apiKey != null) {
+                AiService(
+                    aiHost = host,
+                    apiKey = apiKey!!,
+                    customModelId = customModelId,
+                    customBaseUrl = customBaseUrl,
+                    customHeaders = customHeaders,
+                )
+            } else {
+                null
+            }
+    }
 
     suspend fun translateLyrics(
         inputLyrics: Lyrics,

@@ -793,9 +793,7 @@ interface DatabaseDao {
     suspend fun insertYourYouTubePlaylist(yourYouTubePlaylist: YourYouTubePlaylistList)
 
     @Query("SELECT * FROM your_youtube_playlist_list WHERE emailPageId = :emailPageId LIMIT 1")
-    suspend fun getYourYouTubePlaylistList(
-        emailPageId: String
-    ): YourYouTubePlaylistList?
+    suspend fun getYourYouTubePlaylistList(emailPageId: String): YourYouTubePlaylistList?
 
     @Query("DELETE FROM your_youtube_playlist_list")
     suspend fun deleteAllYourYouTubePlaylist()
@@ -813,27 +811,28 @@ interface DatabaseDao {
         channelIds: List<String>,
         albumBrowseId: String?,
         durationSecond: Long,
-        listenedSecond: Long
+        listenedSecond: Long,
     ): Long {
         val timestamp = now()
 
-        val eventId = insertPlaybackEvent(
-            PlaybackEventEntity(
-                timestamp = timestamp,
-                videoId = videoId,
-                albumBrowseId = albumBrowseId,
-                durationSecond = durationSecond,
-                listenedSecond = listenedSecond
+        val eventId =
+            insertPlaybackEvent(
+                PlaybackEventEntity(
+                    timestamp = timestamp,
+                    videoId = videoId,
+                    albumBrowseId = albumBrowseId,
+                    durationSecond = durationSecond,
+                    listenedSecond = listenedSecond,
+                ),
             )
-        )
 
         channelIds.forEach { channelId ->
             insertEventArtist(
                 EventArtistEntity(
                     eventId = eventId,
                     channelId = channelId,
-                    timestamp = timestamp
-                )
+                    timestamp = timestamp,
+                ),
             )
         }
         return eventId
@@ -842,55 +841,61 @@ interface DatabaseDao {
     @Query("SELECT * FROM playback_event ORDER BY timestamp DESC LIMIT :limit OFFSET :offset")
     suspend fun getPlaybackEventsByOffset(
         offset: Int,
-        limit: Int
+        limit: Int,
     ): List<PlaybackEventEntity>
 
     @Query("SELECT * FROM playback_event WHERE timestamp > :cutoffTimestamp ORDER BY timestamp DESC LIMIT :limit OFFSET :offset")
     suspend fun getPlaybackEventsByOffsetAndTimestamp(
         offset: Int,
         limit: Int,
-        cutoffTimestamp: LocalDateTime
+        cutoffTimestamp: LocalDateTime,
     ): List<PlaybackEventEntity>
 
     @Query("DELETE FROM playback_event WHERE timestamp < :cutoffTimestamp")
     suspend fun deleteOldPlaybackEvents(cutoffTimestamp: LocalDateTime)
 
     // Query event
-    @Query("SELECT \n" +
-        "  videoId,\n" +
-        "  COUNT(*) AS playCount,\n" +
-        "  SUM(listenedSecond) AS totalListeningTime\n" +
-        "FROM playback_event\n" +
-        "WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp\n" +
-        "GROUP BY videoId\n" +
-        "ORDER BY playCount DESC\n" +
-        "LIMIT 100")
+    @Query(
+        "SELECT \n" +
+            "  videoId,\n" +
+            "  COUNT(*) AS playCount,\n" +
+            "  SUM(listenedSecond) AS totalListeningTime\n" +
+            "FROM playback_event\n" +
+            "WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp\n" +
+            "GROUP BY videoId\n" +
+            "ORDER BY playCount DESC\n" +
+            "LIMIT 100",
+    )
     suspend fun queryTopPlayedSongsInRange(
         startTimestamp: LocalDateTime,
-        endTimestamp: LocalDateTime
+        endTimestamp: LocalDateTime,
     ): List<TopPlayedTracks>
 
-    @Query("SELECT channelId, COUNT(*) AS playCount FROM event_artist" +
-        " WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp" +
-        " GROUP BY channelId" + " ORDER BY playCount DESC" +
-        " LIMIT 100")
+    @Query(
+        "SELECT channelId, COUNT(*) AS playCount FROM event_artist" +
+            " WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp" +
+            " GROUP BY channelId" + " ORDER BY playCount DESC" +
+            " LIMIT 100",
+    )
     suspend fun queryTopArtistsInRange(
         startTimestamp: LocalDateTime,
-        endTimestamp: LocalDateTime
+        endTimestamp: LocalDateTime,
     ): List<TopPlayedArtist>
 
-    @Query("SELECT \n" +
-        "  albumBrowseId,\n" +
-        "  COUNT(*) AS playCount\n" +
-        "FROM playback_event\n" +
-        "WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp\n" +
-        "AND albumBrowseId IS NOT NULL " +
-        "GROUP BY albumBrowseId\n" +
-        "ORDER BY playCount DESC\n" +
-        "LIMIT 100")
+    @Query(
+        "SELECT \n" +
+            "  albumBrowseId,\n" +
+            "  COUNT(*) AS playCount\n" +
+            "FROM playback_event\n" +
+            "WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp\n" +
+            "AND albumBrowseId IS NOT NULL " +
+            "GROUP BY albumBrowseId\n" +
+            "ORDER BY playCount DESC\n" +
+            "LIMIT 100",
+    )
     suspend fun queryTopAlbumsInRange(
         startTimestamp: LocalDateTime,
-        endTimestamp: LocalDateTime
+        endTimestamp: LocalDateTime,
     ): List<TopPlayedAlbum>
 
     @Query("SELECT COUNT(*) FROM playback_event")
@@ -901,4 +906,10 @@ interface DatabaseDao {
 
     @Query("SELECT SUM(listenedSecond) FROM playback_event")
     suspend fun getTotalListeningTimeInSeconds(): Long
+
+    @Query("SELECT COUNT(*) FROM playback_event WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp")
+    suspend fun getPlaybackEventCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Long
 }

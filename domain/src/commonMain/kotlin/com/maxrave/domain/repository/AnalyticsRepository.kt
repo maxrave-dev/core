@@ -13,14 +13,20 @@ interface AnalyticsRepository {
         channelIds: List<String>,
         albumBrowseId: String?,
         durationSecond: Long,
-        listenedSecond: Long
+        listenedSecond: Long,
     ): Flow<Long>
-    suspend fun getPlaybackEventsByOffset(offset: Int, limit: Int): Flow<List<PlaybackEventEntity>>
+
+    suspend fun getPlaybackEventsByOffset(
+        offset: Int,
+        limit: Int,
+    ): Flow<List<PlaybackEventEntity>>
+
     suspend fun getPlaybackEventsByOffsetAndTimestamp(
         offset: Int,
         limit: Int,
-        cutoffTimestamp: LocalDateTime
+        cutoffTimestamp: LocalDateTime,
     ): Flow<List<PlaybackEventEntity>>
+
     suspend fun deleteOldPlaybackEvents(cutoffTimestamp: LocalDateTime)
 
     // Query methods for analytics reports
@@ -28,23 +34,21 @@ interface AnalyticsRepository {
 
     suspend fun queryTopPlayedSongsInRange(
         startTimestamp: LocalDateTime,
-        endTimestamp: LocalDateTime
+        endTimestamp: LocalDateTime,
     ): Flow<List<TopPlayedTracks>>
 
-    suspend fun queryTopArtistsLastXDays(
-        x: Int
-    ): Flow<List<TopPlayedArtist>>
+    suspend fun queryTopArtistsLastXDays(x: Int): Flow<List<TopPlayedArtist>>
 
     suspend fun queryTopArtistsInRange(
         startTimestamp: LocalDateTime,
-        endTimestamp: LocalDateTime
+        endTimestamp: LocalDateTime,
     ): Flow<List<TopPlayedArtist>>
 
     suspend fun queryTopAlbumsLastXDays(x: Int): Flow<List<TopPlayedAlbum>>
 
     suspend fun queryTopAlbumsInRange(
         startTimestamp: LocalDateTime,
-        endTimestamp: LocalDateTime
+        endTimestamp: LocalDateTime,
     ): Flow<List<TopPlayedAlbum>>
 
     suspend fun getTotalPlaybackEventCount(): Flow<Long>
@@ -52,4 +56,9 @@ interface AnalyticsRepository {
     suspend fun getTotalEventArtistCount(): Flow<Long>
 
     suspend fun getTotalListeningTimeInSeconds(): Flow<Long>
+
+    suspend fun getPlaybackEventCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Flow<Long>
 }

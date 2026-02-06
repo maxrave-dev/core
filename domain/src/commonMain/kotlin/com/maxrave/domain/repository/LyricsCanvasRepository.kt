@@ -71,6 +71,11 @@ interface LyricsCanvasRepository {
         language: String,
     ): Flow<Resource<Lyrics>>
 
+    fun voteSimpMusicLyrics(
+        lyricsId: String,
+        upvote: Boolean,
+    ): Flow<Resource<String>>
+
     fun voteSimpMusicTranslatedLyrics(
         translatedLyricsId: String,
         upvote: Boolean,

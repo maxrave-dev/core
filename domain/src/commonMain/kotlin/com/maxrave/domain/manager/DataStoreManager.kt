@@ -250,6 +250,14 @@ interface DataStoreManager {
 
     suspend fun setCustomModelId(modelId: String)
 
+    val customOpenAIBaseUrl: Flow<String>
+
+    suspend fun setCustomOpenAIBaseUrl(baseUrl: String)
+
+    val customOpenAIHeaders: Flow<String>
+
+    suspend fun setCustomOpenAIHeaders(headers: String)
+
     val localPlaylistFilter: Flow<String>
 
     suspend fun setLocalPlaylistFilter(filter: String)
@@ -307,6 +315,23 @@ interface DataStoreManager {
 
     suspend fun setSmartQueueEnabled(enabled: Boolean)
 
+    // Auto Backup
+    val autoBackupEnabled: Flow<String>
+
+    suspend fun setAutoBackupEnabled(enabled: Boolean)
+
+    val autoBackupFrequency: Flow<String>
+
+    suspend fun setAutoBackupFrequency(frequency: String)
+
+    val autoBackupMaxFiles: Flow<Int>
+
+    suspend fun setAutoBackupMaxFiles(max: Int)
+
+    val autoBackupLastTime: Flow<Long>
+
+    suspend fun setAutoBackupLastTime(time: Long)
+
     enum class ProxyType {
         PROXY_TYPE_HTTP,
         PROXY_TYPE_SOCKS,
@@ -334,10 +359,16 @@ interface DataStoreManager {
         // AI
         const val AI_PROVIDER_GEMINI = "gemini"
         const val AI_PROVIDER_OPENAI = "openai"
+        const val AI_PROVIDER_CUSTOM_OPENAI = "custom_openai"
 
         const val LOCAL_PLAYLIST_FILTER_OLDER_FIRST = "older_first"
         const val LOCAL_PLAYLIST_FILTER_NEWER_FIRST = "newer_first"
         const val LOCAL_PLAYLIST_FILTER_TITLE = "title"
         const val LOCAL_PLAYLIST_FILTER_CUSTOM_ORDER = "custom_order"
+
+        // Auto Backup Frequency
+        const val AUTO_BACKUP_FREQUENCY_DAILY = "daily"
+        const val AUTO_BACKUP_FREQUENCY_WEEKLY = "weekly"
+        const val AUTO_BACKUP_FREQUENCY_MONTHLY = "monthly"
     }
 }
