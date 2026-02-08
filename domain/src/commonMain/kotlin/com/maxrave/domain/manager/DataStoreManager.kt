@@ -315,6 +315,10 @@ interface DataStoreManager {
 
     suspend fun setSmartQueueEnabled(enabled: Boolean)
 
+    val localTrackingEnabled: Flow<String>
+
+    suspend fun setLocalTrackingEnabled(enabled: Boolean)
+
     // Auto Backup
     val autoBackupEnabled: Flow<String>
 

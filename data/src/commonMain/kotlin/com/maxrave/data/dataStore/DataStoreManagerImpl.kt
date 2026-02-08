@@ -1271,6 +1271,18 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val localTrackingEnabled: Flow<String> = settingsDataStore.data.map { preferences ->
+        preferences[LOCAL_TRACKING_ENABLED] ?: FALSE
+    }
+
+    override suspend fun setLocalTrackingEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[LOCAL_TRACKING_ENABLED] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
     // Auto Backup
     override val autoBackupEnabled: Flow<String> =
         settingsDataStore.data.map { preferences ->
