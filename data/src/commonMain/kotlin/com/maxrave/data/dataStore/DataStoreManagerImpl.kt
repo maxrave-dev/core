@@ -1297,10 +1297,22 @@ internal class DataStoreManagerImpl(
         }
     }
 
-    override val localTrackingEnabled: Flow<String> =
-        settingsDataStore.data.map { preferences ->
-            preferences[LOCAL_TRACKING_ENABLED] ?: FALSE
+
+    override val smartQueueEnabled: Flow<String> = settingsDataStore.data.map { preferences ->
+        preferences[SMART_QUEUE_ENABLED] ?: FALSE
+    }
+
+    override suspend fun setSmartQueueEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[SMART_QUEUE_ENABLED] = if (enabled) TRUE else FALSE
+            }
         }
+    }
+
+    override val localTrackingEnabled: Flow<String> = settingsDataStore.data.map { preferences ->
+        preferences[LOCAL_TRACKING_ENABLED] ?: FALSE
+    }
 
     override suspend fun setLocalTrackingEnabled(enabled: Boolean) {
         withContext(Dispatchers.IO) {
@@ -1452,6 +1464,7 @@ internal class DataStoreManagerImpl(
         val DISCORD_TOKEN = stringPreferencesKey("discord_token")
         val RICH_PRESENCE = stringPreferencesKey("rich_presence")
 
+        val SMART_QUEUE_ENABLED = stringPreferencesKey("smart_queue_enabled")
         val LOCAL_TRACKING_ENABLED = stringPreferencesKey("local_tracking_enabled")
 
         // Auto Backup

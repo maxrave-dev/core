@@ -323,6 +323,10 @@ interface DataStoreManager {
 
     suspend fun setRichPresenceEnabled(enabled: Boolean)
 
+    val smartQueueEnabled: Flow<String>
+
+    suspend fun setSmartQueueEnabled(enabled: Boolean)
+
     val localTrackingEnabled: Flow<String>
 
     suspend fun setLocalTrackingEnabled(enabled: Boolean)

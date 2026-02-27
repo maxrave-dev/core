@@ -121,6 +121,8 @@ interface MediaPlayerHandler {
 
     suspend fun playNext(track: Track)
 
+    suspend fun addToQueue(track: Track)
+
     suspend fun <T> loadMediaItem(
         anyTrack: T,
         type: String,
