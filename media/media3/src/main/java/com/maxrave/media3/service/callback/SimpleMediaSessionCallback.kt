@@ -85,10 +85,7 @@ internal class SimpleMediaSessionCallback(
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.RADIO, Bundle()))
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.SHUFFLE, Bundle()))
                 .build()
-        return MediaSession.ConnectionResult
-            .AcceptedResultBuilder(session)
-            .setAvailableSessionCommands(sessionCommands)
-            .build()
+        return MediaSession.ConnectionResult.accept(sessionCommands, MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS)
     }
 
     @UnstableApi

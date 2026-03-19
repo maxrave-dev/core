@@ -6,6 +6,7 @@ import android.view.SurfaceView
 import android.view.TextureView
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import com.maxrave.logger.Logger
@@ -226,6 +227,10 @@ internal class DelegatingForwardingPlayer(
         if (nav.hasPreviousMediaItem()) {
             builder.add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
         }
+        
+        // Explicitly enable volume commands for Wear OS synchronisation
+        builder.add(Player.COMMAND_SET_VOLUME)
+        builder.add(Player.COMMAND_ADJUST_DEVICE_VOLUME)
 
         return builder.build()
     }
@@ -240,6 +245,8 @@ internal class DelegatingForwardingPlayer(
                     return true // Always allow seeking to start of current track
                 Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM ->
                     return nav.hasPreviousMediaItem()
+                Player.COMMAND_SET_VOLUME, Player.COMMAND_ADJUST_DEVICE_VOLUME ->
+                    return true
             }
         }
         return super.isCommandAvailable(command)
@@ -324,6 +331,9 @@ internal class DelegatingForwardingPlayer(
             }
         }
 
+        // Clear metadata override on delegate swap since it's a new track
+        metadataOverride = null
+
         // 4. Swap the private final `player` field
         field.set(this, newDelegate)
 
@@ -361,10 +371,23 @@ internal class DelegatingForwardingPlayer(
      * (with MediaItem + prepare()) before the ForwardingPlayer is swapped to it.
      * MediaSession uses these events to update the system notification metadata.
      */
+
+    /**
+     * Override the metadata for the current media item.
+     * watchOS FEATURE (ARTWORK + CROWN VOLUME CONTROL)
+     */
+    fun overrideMetadata(metadata: MediaMetadata?) {
+        this.metadataOverride = metadata
+    }
+    override fun getMediaMetadata(): MediaMetadata {
+        return metadataOverride ?: super.getMediaMetadata()
+    }
+    private var metadataOverride: MediaMetadata? = null
+
     fun notifyMediaItemChanged() {
         val player = wrappedPlayer
         val mediaItem = player.currentMediaItem ?: MediaItem.EMPTY
-        val metadata = player.mediaMetadata
+        val metadata = metadataOverride ?: player.mediaMetadata
         val commands = getAvailableCommands()
 
         Logger.d(TAG, "Manually notifying ${trackedListeners.size} listeners about media item change: ${metadata.title}")

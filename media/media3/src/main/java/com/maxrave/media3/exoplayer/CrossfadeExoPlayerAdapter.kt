@@ -42,6 +42,12 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.ln
+import coil3.imageLoader
+import coil3.request.ImageRequest
+import coil3.request.SuccessResult
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
+import java.io.ByteArrayOutputStream
 
 private const val TAG = "CrossfadeExoPlayerAdapter"
 
@@ -1133,6 +1139,13 @@ internal class CrossfadeExoPlayerAdapter(
             coroutineScope.launch {
                 try {
                     transitionToState(InternalState.PREPARING)
+
+                    // Fetch and update artwork for Wear OS
+                    coroutineScope.launch {
+                        fetchArtworkData(videoId)?.let { artwork ->
+                            updateMediaItemMetadataWithArtwork(videoId, artwork)
+                        }
+                    }
 
                     // Notify media item transition
                     listeners.forEach {
@@ -2430,5 +2443,55 @@ internal class CrossfadeExoPlayerAdapter(
     private fun notifyTimelineChanged(reason: String) {
         val list = getShuffledMediaItemList()
         listeners.forEach { it.onTimelineChanged(list, reason) }
+    }
+
+    // ========== Wear OS Artwork Support ==========
+
+    private suspend fun fetchArtworkData(mediaId: String): ByteArray? {
+        val mediaItem = playlist.find { it.mediaId == mediaId } ?: return null
+        val thumbUrl = mediaItem.metadata.artworkUri?.toString() ?: return null
+
+        return try {
+            val request = ImageRequest.Builder(context)
+                .data(thumbUrl)
+                .build()
+            val result = context.imageLoader.execute(request)
+            if (result is SuccessResult) {
+                val bitmap = (result.image as? BitmapDrawable)?.bitmap ?: return null
+                val stream = ByteArrayOutputStream()
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                stream.toByteArray()
+            } else null
+        } catch (e: Exception) {
+            Logger.e(TAG, "Failed to fetch artwork for $mediaId", e)
+            null
+        }
+    }
+
+    private fun updateMediaItemMetadataWithArtwork(mediaId: String, artworkData: ByteArray) {
+        val index = playlist.indexOfFirst { it.mediaId == mediaId }
+        if (index != -1) {
+            val oldItem = playlist[index]
+            val newItem = oldItem.copy(
+                metadata = oldItem.metadata.copy(
+                    artworkData = artworkData
+                )
+            )
+            playlist[index] = newItem
+            
+            // If this is the current track, tell Media3 its metadata changed
+            if (index == localCurrentMediaItemIndex) {
+                 currentPlayer?.let {
+                     val updatedMetadata = it.mediaMetadata.buildUpon()
+                         .setArtworkData(
+                             artworkData,
+                             androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER
+                         )
+                         .build()
+                     forwardingPlayer.overrideMetadata(updatedMetadata)
+                 }
+                 forwardingPlayer.notifyMediaItemChanged()
+            }
+        }
     }
 }
