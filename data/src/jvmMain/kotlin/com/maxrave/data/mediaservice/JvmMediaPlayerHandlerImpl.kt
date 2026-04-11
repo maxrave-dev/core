@@ -65,6 +65,7 @@ import com.maxrave.logger.Logger
 import com.my.kizzy.DiscordRPC
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -107,8 +108,56 @@ class JvmMediaPlayerHandlerImpl(
 ) : MediaPlayerHandler,
     MediaPlayerListener {
     private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val nypc =
-        if (getPlatform() is Platform.Linux) NPYC(getPlatform()) else null
+    private val platform = getPlatform()
+
+    /**
+     * Single-threaded executor dedicated to all NPYC/SMTC calls.
+     *
+     * Windows SMTC (WinRT via JNA) requires that every call to the native COM object
+     * happens on the *same* thread that called [SMTCAdapter.init] (i.e. the thread
+     * that constructed [WindowsJMTC]). Using multiple coroutine / IO threads causes
+     * a JNA "Invalid memory access" Error. Pinning all work to one thread fixes that.
+     *
+     * On Linux the MPRIS/DBus implementation is thread-safe, so this executor is still
+     * fine to use there — it just adds a tiny dispatch overhead.
+     */
+    private val smtcExecutor: java.util.concurrent.ExecutorService? =
+        if (platform is Platform.Linux || platform is Platform.Windows) {
+            java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                Thread(r, "smtc-worker").also { it.isDaemon = true }
+            }
+        } else null
+
+    private val smtcDispatcher = smtcExecutor?.asCoroutineDispatcher()
+
+    /**
+     * The NPYC instance — created lazily on the smtc-worker thread so that
+     * [WindowsJMTC] / [SMTCAdapter.init] is always called from that same thread.
+     */
+    private val nypc: NPYC? by lazy {
+        if (platform is Platform.Linux || platform is Platform.Windows) {
+            try {
+                NPYC(platform)
+            } catch (e: Throwable) {
+                Logger.e(TAG, "Failed to initialize NPYC: ${e.message}", e)
+                null
+            }
+        } else null
+    }
+
+    /**
+     * Dispatches a suspend lambda to the dedicated smtc-worker thread and swallows
+     * any [Throwable] (including JNA [Error]s) so a native crash never propagates
+     * to Kotlin coroutine machinery or kills the process.
+     */
+    private suspend fun safeSmtcCall(block: suspend () -> Unit) {
+        val dispatcher = smtcDispatcher ?: return
+        try {
+            withContext(dispatcher) { block() }
+        } catch (t: Throwable) {
+            Logger.e(TAG, "SMTC/NPYC call failed (ignored): ${t.message}", t)
+        }
+    }
 
     // macOS Media Integration (Now Playing Center + Remote Command Center)
     private val macOSMediaIntegration: MacOSMediaIntegration? by lazy {
@@ -298,33 +347,40 @@ class JvmMediaPlayerHandlerImpl(
         }
         player.volume = runBlocking { dataStoreManager.playerVolume.first() }
         mayBeRestoreQueue()
-        nypc?.setListener(
-            object : NowPlayingListener {
-                override fun onPlayPause() {
-                    coroutineScope.launch {
-                        onPlayerEvent(PlayerEvent.PlayPause)
-                    }
-                }
+        // Initialise NPYC and register listener on the dedicated SMTC thread.
+        // The lazy `nypc` accessor performs construction on the first access here,
+        // guaranteeing the WindowsJMTC/SMTCAdapter.init() call happens on smtc-worker.
+        coroutineScope.launch {
+            safeSmtcCall {
+                nypc?.setListener(
+                    object : NowPlayingListener {
+                        override fun onPlayPause() {
+                            coroutineScope.launch {
+                                onPlayerEvent(PlayerEvent.PlayPause)
+                            }
+                        }
 
-                override fun onNext() {
-                    coroutineScope.launch {
-                        onPlayerEvent(PlayerEvent.Next)
-                    }
-                }
+                        override fun onNext() {
+                            coroutineScope.launch {
+                                onPlayerEvent(PlayerEvent.Next)
+                            }
+                        }
 
-                override fun onPrevious() {
-                    coroutineScope.launch {
-                        onPlayerEvent(PlayerEvent.Previous)
-                    }
-                }
+                        override fun onPrevious() {
+                            coroutineScope.launch {
+                                onPlayerEvent(PlayerEvent.Previous)
+                            }
+                        }
 
-                override fun onStop() {
-                    coroutineScope.launch {
-                        onPlayerEvent(PlayerEvent.Stop)
-                    }
-                }
-            },
-        )
+                        override fun onStop() {
+                            coroutineScope.launch {
+                                onPlayerEvent(PlayerEvent.Stop)
+                            }
+                        }
+                    },
+                )
+            }
+        }
         // Initialize macOS media integration
         initializeMacOSMediaIntegration()
         coroutineScope.launch {
@@ -491,12 +547,14 @@ class JvmMediaPlayerHandlerImpl(
                     val song =
                         songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity()
                     updateDiscordRpc(song)
-                    nypc?.setNowPlaying(
-                        song.title,
-                        song.artistName?.joinToString(", ") ?: "",
-                        song.albumName ?: "",
-                        song.thumbnails,
-                    )
+                    safeSmtcCall {
+                        nypc?.setNowPlaying(
+                            song.title,
+                            song.artistName?.joinToString(", ") ?: "",
+                            song.albumName ?: "",
+                            song.thumbnails,
+                        )
+                    }
                     updateMacOSNowPlayingInfo(song)
                     Logger.w(TAG, "getDataOfNowPlayingState: ${nowPlayingState.value}")
                 }
@@ -656,11 +714,13 @@ class JvmMediaPlayerHandlerImpl(
                 isPreviousAvailable = player.hasPreviousMediaItem(),
             )
         coroutineScope.launch {
-            nypc?.setButtonEnabled(
-                isPlaying = controlState.value.isPlaying,
-                canGoNext = controlState.value.isNextAvailable,
-                canGoPrevious = controlState.value.isPreviousAvailable,
-            )
+            safeSmtcCall {
+                nypc?.setButtonEnabled(
+                    isPlaying = controlState.value.isPlaying,
+                    canGoNext = controlState.value.isNextAvailable,
+                    canGoPrevious = controlState.value.isPreviousAvailable,
+                )
+            }
         }
         updateMacOSCommandsEnabled()
     }
@@ -2135,7 +2195,15 @@ class JvmMediaPlayerHandlerImpl(
 
     override fun release() {
         Logger.w("ServiceHandler", "Starting release process")
-        nypc?.removeListener()
+        // Remove NPYC listener and shut down the dedicated SMTC executor.
+        // We submit the remove call directly to the executor (not a coroutine) so it
+        // completes synchronously before we shut the executor down.
+        smtcExecutor?.submit {
+            try { nypc?.removeListener() } catch (t: Throwable) {
+                Logger.e(TAG, "SMTC removeListener failed: ${t.message}", t)
+            }
+        }
+        smtcExecutor?.shutdown()
         // Release macOS media integration
         clearMacOSNowPlayingInfo()
         macOSMediaIntegration?.release()
