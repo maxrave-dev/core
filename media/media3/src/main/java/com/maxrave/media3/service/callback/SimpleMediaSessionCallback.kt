@@ -481,23 +481,35 @@ internal class SimpleMediaSessionCallback(
             when (path.firstOrNull()) {
                 SONG -> {
                     val songId = path.getOrNull(1) ?: return@future defaultResult
-                    val firstQueue = songRepository.getSongById(songId).first()?.toTrack() ?: return@future defaultResult
-                    mediaPlayerHandler.setQueueData(
-                        QueueData.Data(
-                            listTracks = arrayListOf(firstQueue),
-                            firstPlayedTrack = firstQueue,
-                            playlistId = "RDAMVM$songId",
-                            playlistName = "\"${firstQueue.title}\" Radio",
-                            playlistType = PlaylistType.RADIO,
-                            continuation = null,
-                        ),
-                    )
-                    mediaPlayerHandler.loadMediaItem(
-                        firstQueue,
-                        Config.SONG_CLICK,
-                        0,
-                    )
-                    defaultResult
+                    // Load the full songs library so selecting a song plays from that position,
+                    // not just a single-song radio. Mirrors the FAVORITE/PLAYLIST behaviour.
+                    val allSongs = songRepository.getAllSongs(1000).last().sortedBy { it.inLibrary }
+                    if (allSongs.isEmpty()) {
+                        defaultResult
+                    } else {
+                        var index = 0
+                        val clickedSong =
+                            allSongs
+                                .firstOrNull { it.videoId == songId }
+                                ?.also { index = allSongs.indexOf(it) }
+                                ?.toTrack() ?: return@future defaultResult
+                        mediaPlayerHandler.setQueueData(
+                            QueueData.Data(
+                                listTracks = allSongs.toArrayListTrack(),
+                                firstPlayedTrack = clickedSong,
+                                playlistId = null,
+                                playlistName = context.getString(R.string.songs),
+                                playlistType = PlaylistType.LOCAL_PLAYLIST,
+                                continuation = null,
+                            ),
+                        )
+                        mediaPlayerHandler.loadMediaItem(
+                            clickedSong,
+                            Config.PLAYLIST_CLICK,
+                            index,
+                        )
+                        defaultResult
+                    }
                 }
 
                 FAVORITE -> {
@@ -597,21 +609,26 @@ internal class SimpleMediaSessionCallback(
                             songs.forEach {
                                 songRepository.insertSong(it.toSongEntity()).first()
                             }
-                            val firstQueue = songs.firstOrNull { it.videoId == songId } ?: return@future defaultResult
+                            var index = 0
+                            val firstQueue =
+                                songs
+                                    .firstOrNull { it.videoId == songId }
+                                    ?.also { index = songs.indexOf(it) }
+                                    ?: return@future defaultResult
                             mediaPlayerHandler.setQueueData(
                                 QueueData.Data(
                                     listTracks = songs,
                                     firstPlayedTrack = firstQueue,
-                                    playlistId = "RDAMVM$songId",
-                                    playlistName = "\"${firstQueue.title}\" Radio",
-                                    playlistType = PlaylistType.RADIO,
+                                    playlistId = null,
+                                    playlistName = path.getOrNull(1) ?: "",
+                                    playlistType = PlaylistType.LOCAL_PLAYLIST,
                                     continuation = null,
                                 ),
                             )
                             mediaPlayerHandler.loadMediaItem(
                                 firstQueue,
-                                Config.SONG_CLICK,
-                                0,
+                                Config.PLAYLIST_CLICK,
+                                index,
                             )
                             defaultResult
                         }
@@ -747,6 +764,30 @@ internal class SimpleMediaSessionCallback(
                     .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
                     .build(),
             ).build()
+
+    @UnstableApi
+    override fun onAddMediaItems(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+        mediaItems: MutableList<MediaItem>,
+    ): ListenableFuture<MutableList<MediaItem>> =
+        scope.future(Dispatchers.IO) {
+            mediaItems.map { mediaItem ->
+                val query = mediaItem.requestMetadata.searchQuery
+                if (query != null) {
+                    searchRepository.getSearchDataSong(query).lastOrNull()?.let { resource ->
+                        when (resource) {
+                            is Resource.Success -> {
+                                resource.data?.toListTrack()?.firstOrNull()?.toMediaItemWithoutPath(null)
+                            }
+                            else -> null
+                        }
+                    } ?: mediaItem
+                } else {
+                    mediaItem
+                }
+            }.toMutableList()
+        }
 
     companion object {
         const val ROOT = "root"
