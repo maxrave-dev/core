@@ -1245,31 +1245,12 @@ internal class CrossfadeExoPlayerAdapter(
                     // 4. Setup our listener on new player
                     setupPlayerListenerInternal(player)
 
-                    // 5. Swap ForwardingPlayer delegate (moves MediaSession's listeners from old to new)
-                    forwardingPlayer.swapDelegate(player)
-
-                    // 5b. Notify MediaSession about the new media item
-                    // The MediaItem was set before the swap (either during precache or above),
-                    // so MediaSession's listener missed the onMediaItemTransition event.
-                    // play() below will trigger onIsPlayingChanged which causes MediaSession
-                    // to re-query metadata, but this explicit notify is safer and ensures
-                    // the notification updates immediately even if play() is delayed.
-                    forwardingPlayer.notifyMediaItemChanged()
-
-                    // 6. NOW release old player (it has no listeners anymore)
-                    if (oldPlayer != null && oldPlayer !== player) {
-                        try {
-                            oldPlayer.stop()
-                            oldPlayer.release()
-                        } catch (e: Exception) {
-                            Logger.w(TAG, "Error releasing old player: ${e.message}")
-                        }
-                    }
-
-                    // Audio focus is held at the adapter level (see Audio Focus section),
-                    // not per-player, so it survives this swap (#2155).
-
-                    // Apply settings
+                    // 4b. Apply settings and set the play state BEFORE swapping the
+                    // MediaSession delegate. The session must never observe this player
+                    // with playWhenReady=false while a track should be playing: media3
+                    // treats that as the user disengaging, arms its user-engaged
+                    // foreground-service timeout and demotes the service 10 minutes
+                    // later in the middle of playback (#2233).
                     player.volume = internalVolume
                     player.playbackParameters = PlaybackParameters(internalPlaybackSpeed, internalPlaybackPitch)
                     player.skipSilenceEnabled = internalSkipSilence
@@ -1289,6 +1270,28 @@ internal class CrossfadeExoPlayerAdapter(
                         player.pause()
                         transitionToState(InternalState.READY)
                     }
+
+                    // 5. Swap ForwardingPlayer delegate (moves MediaSession's listeners from old to new)
+                    forwardingPlayer.swapDelegate(player)
+
+                    // 5b. Notify MediaSession about the new media item and play state.
+                    // The MediaItem was set and play() was called before the swap, so
+                    // MediaSession's listener missed those events; this explicit notify
+                    // makes it re-read the player (metadata and playWhenReady=true).
+                    forwardingPlayer.notifyMediaItemChanged()
+
+                    // 6. NOW release old player (it has no listeners anymore)
+                    if (oldPlayer != null && oldPlayer !== player) {
+                        try {
+                            oldPlayer.stop()
+                            oldPlayer.release()
+                        } catch (e: Exception) {
+                            Logger.w(TAG, "Error releasing old player: ${e.message}")
+                        }
+                    }
+
+                    // Audio focus is held at the adapter level (see Audio Focus section),
+                    // not per-player, so it survives this swap (#2155).
 
                     forwardingPlayer.suppressPlaybackEnded = false
 
