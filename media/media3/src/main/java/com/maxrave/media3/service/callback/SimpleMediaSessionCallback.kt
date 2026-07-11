@@ -94,6 +94,7 @@ internal class SimpleMediaSessionCallback(
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.REPEAT, Bundle()))
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.RADIO, Bundle()))
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.SHUFFLE, Bundle()))
+                .add(SessionCommand(MEDIA_CUSTOM_COMMAND.GET_PLATFORM_TOKEN, Bundle()))
                 .build()
         return MediaSession.ConnectionResult
             .AcceptedResultBuilder(session)
@@ -158,6 +159,17 @@ internal class SimpleMediaSessionCallback(
                 scope.launch {
                     mediaPlayerHandler.onPlayerEvent(PlayerEvent.Shuffle)
                 }
+            }
+
+            MEDIA_CUSTOM_COMMAND.GET_PLATFORM_TOKEN -> {
+                return Futures.immediateFuture(
+                    SessionResult(
+                        SessionResult.RESULT_SUCCESS,
+                        Bundle().apply {
+                            putParcelable(MEDIA_CUSTOM_COMMAND.KEY_PLATFORM_TOKEN, session.platformToken)
+                        },
+                    ),
+                )
             }
         }
         return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
@@ -280,6 +292,13 @@ internal class SimpleMediaSessionCallback(
                                 MediaMetadata.MEDIA_TYPE_PLAYLIST,
                             ),
                             browsableMediaItem(
+                                DOWNLOADED,
+                                context.getString(R.string.downloaded),
+                                null,
+                                drawableUri(R.drawable.baseline_downloaded),
+                                MediaMetadata.MEDIA_TYPE_PLAYLIST,
+                            ),
+                            browsableMediaItem(
                                 PLAYLIST,
                                 context.getString(R.string.playlists),
                                 null,
@@ -302,6 +321,14 @@ internal class SimpleMediaSessionCallback(
                             .getLikedSongs()
                             .first()
                             .map { it.toMediaItem(parentId) }
+                    }
+
+                    DOWNLOADED -> {
+                        songRepository
+                            .getDownloadedSongs()
+                            .first()
+                            ?.map { it.toMediaItem(parentId) }
+                            ?: emptyList()
                     }
 
                     PLAYLIST -> {
@@ -519,6 +546,38 @@ internal class SimpleMediaSessionCallback(
                                 firstPlayedTrack = clickedSong,
                                 playlistId = null,
                                 playlistName = context.getString(R.string.favorites),
+                                playlistType = PlaylistType.LOCAL_PLAYLIST,
+                                continuation = null,
+                            ),
+                        )
+                        mediaPlayerHandler.loadMediaItem(
+                            clickedSong,
+                            Config.PLAYLIST_CLICK,
+                            index,
+                        )
+                        defaultResult
+                    }
+                }
+
+                DOWNLOADED -> {
+                    val songId = path.getOrNull(1) ?: return@future defaultResult
+                    val downloadedSongs = songRepository.getDownloadedSongs().first().orEmpty()
+                    if (downloadedSongs.isEmpty()) {
+                        defaultResult
+                    } else {
+                        var index = 0
+                        val clickedSong =
+                            downloadedSongs
+                                .firstOrNull { it.videoId == songId }
+                                ?.also {
+                                    index = downloadedSongs.indexOf(it)
+                                }?.toTrack() ?: return@future defaultResult
+                        mediaPlayerHandler.setQueueData(
+                            QueueData.Data(
+                                listTracks = downloadedSongs.toArrayListTrack(),
+                                firstPlayedTrack = clickedSong,
+                                playlistId = null,
+                                playlistName = context.getString(R.string.downloaded),
                                 playlistType = PlaylistType.LOCAL_PLAYLIST,
                                 continuation = null,
                             ),
@@ -755,6 +814,7 @@ internal class SimpleMediaSessionCallback(
         const val ONLINE_PLAYLIST = "online_playlist"
         const val PLAYLIST = "playlist"
         const val FAVORITE = "favorite"
+        const val DOWNLOADED = "downloaded"
         const val MEDIA_SEARCH_SUPPORTED = "android.media.browse.SEARCH_SUPPORTED"
     }
 }

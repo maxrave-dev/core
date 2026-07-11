@@ -498,6 +498,10 @@ object MEDIA_CUSTOM_COMMAND {
     const val REPEAT = "repeat"
     const val RADIO = "radio"
     const val SHUFFLE = "shuffle"
+
+    // Android Auto (Car App Library): asks the session for its platform token
+    const val GET_PLATFORM_TOKEN = "get_platform_token"
+    const val KEY_PLATFORM_TOKEN = "platform_token"
 }
 
 object MEDIA_NOTIFICATION {

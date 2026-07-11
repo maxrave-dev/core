@@ -1,9 +1,7 @@
 package com.maxrave.media3.carapp
 
-import android.support.v4.media.session.MediaSessionCompat
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.media.MediaPlaybackManager
 import androidx.car.app.media.model.MediaPlaybackTemplate
 import androidx.car.app.model.Action
 import androidx.car.app.model.CarIcon
@@ -13,7 +11,6 @@ import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
-import com.maxrave.logger.Logger
 import com.maxrave.media3.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,9 +22,10 @@ import org.koin.core.component.inject
 
 /**
  * Now-playing screen for Android Auto. The host renders artwork, seek bar and
- * transport controls from the registered MediaSession; the app only owns the
- * header — queue name as title plus a queue button, which the classic media
- * surface never allowed us to customize.
+ * transport controls from the MediaSession token registered by
+ * [SimpMusicCarSession]; the app only owns the header — queue name as title
+ * plus a queue button, which the classic media surface never allowed us to
+ * customize.
  */
 internal class NowPlayingCarScreen(
     carContext: CarContext,
@@ -45,18 +43,6 @@ internal class NowPlayingCarScreen(
             },
         )
         screenScope.launch {
-            CarMediaSessionTokenStore.token.collect { token ->
-                if (token != null) {
-                    runCatching {
-                        (carContext.getCarService(CarContext.MEDIA_PLAYBACK_SERVICE) as MediaPlaybackManager)
-                            .registerMediaPlaybackToken(MediaSessionCompat.Token.fromToken(token))
-                    }.onFailure {
-                        Logger.e(TAG, "registerMediaPlaybackToken failed: ${it.message}")
-                    }
-                }
-            }
-        }
-        screenScope.launch {
             handler.queueData.collect { invalidate() }
         }
     }
@@ -72,7 +58,7 @@ internal class NowPlayingCarScreen(
             .setHeader(
                 Header
                     .Builder()
-                    .setTitle(queueTitle ?: "SimpMusic")
+                    .setTitle(queueTitle ?: "Queue")
                     .addEndHeaderAction(
                         Action
                             .Builder()
@@ -86,9 +72,5 @@ internal class NowPlayingCarScreen(
                             }.build(),
                     ).build(),
             ).build()
-    }
-
-    private companion object {
-        private const val TAG = "NowPlayingCarScreen"
     }
 }

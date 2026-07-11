@@ -78,6 +78,9 @@ dependencies {
     // Android Auto (Car App Library media templates)
     implementation(libs.car.app.core)
     implementation(libs.car.app.projected)
+    // registerMediaPlaybackToken only accepts MediaSessionCompat.Token; both car-app
+    // and media3-session ship androidx.media at runtime scope only
+    implementation(libs.androidx.media)
 
     // Google Cast (gated: real SDK for full builds, no-op stub for FOSS builds)
     if (isFullBuild) {

@@ -29,7 +29,6 @@ import com.maxrave.common.MEDIA_NOTIFICATION
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
-import com.maxrave.media3.carapp.CarMediaSessionTokenStore
 import com.maxrave.media3.R
 import com.maxrave.media3.extension.toCommandButton
 import com.maxrave.media3.utils.CoilBitmapLoader
@@ -114,7 +113,6 @@ internal class SimpleMediaService :
                     simpleMediaSessionCallback,
                 )
         }
-        CarMediaSessionTokenStore.publish(mediaSession?.platformToken)
 
         simpleMediaServiceHandler.onUpdateNotification = { list ->
             val commandButtonList = list.map { it.toCommandButton(this) }
@@ -217,7 +215,6 @@ internal class SimpleMediaService :
                 // Release handler (contains coroutines and jobs, which also releases the adapter)
                 simpleMediaServiceHandler.release()
                 mediaSession = null
-                CarMediaSessionTokenStore.clear()
                 Logger.w("Service", "Simple Media Service Released")
             } catch (e: Exception) {
                 Logger.e("Service", "Error during release")

@@ -127,6 +127,14 @@ fun GenericCommandButton.toCommandButton(context: Context): CommandButton =
                     } else {
                         CommandButton.ICON_HEART_UNFILLED
                     },
+                    // Resource fallback for hosts (e.g. AA templated surface) that
+                    // don't map the media3 icon constants
+                ).setCustomIconResId(
+                    if (liked) {
+                        R.drawable.baseline_favorite_24
+                    } else {
+                        R.drawable.baseline_favorite_border_24
+                    },
                 ).setDisplayName(
                     if (liked) {
                         context.getString(R.string.liked)
@@ -184,7 +192,10 @@ fun GenericCommandButton.toCommandButton(context: Context): CommandButton =
                     } else {
                         CommandButton.ICON_SHUFFLE_OFF
                     },
-                ).setDisplayName(context.getString(R.string.shuffle))
+                    // Resource fallback for hosts that don't map the media3 icon
+                    // constants (AA templated surface renders a gear otherwise)
+                ).setCustomIconResId(R.drawable.baseline_shuffle_24)
+                .setDisplayName(context.getString(R.string.shuffle))
                 .setSessionCommand(
                     SessionCommand(
                         MEDIA_CUSTOM_COMMAND.SHUFFLE,
