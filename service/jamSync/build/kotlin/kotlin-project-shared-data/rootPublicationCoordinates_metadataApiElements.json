@@ -1,0 +1,8 @@
+{
+  "buildPath": ":",
+  "projectPath": ":jamSync",
+  "moduleId": {
+    "groupId": "SimpMusic",
+    "moduleId": "jamSync"
+  }
+}

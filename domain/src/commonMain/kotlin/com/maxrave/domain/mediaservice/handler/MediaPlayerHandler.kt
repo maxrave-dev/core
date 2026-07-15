@@ -266,6 +266,7 @@ data class QueueData(
         val playlistName: String? = null,
         val playlistType: PlaylistType? = null,
         val continuation: String? = null,
+        val currentIndex: Int = 0,
     )
 
     enum class StateSource {

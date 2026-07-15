@@ -145,6 +145,14 @@ private val mediaServiceModule =
             )
         }
 
+        // CachedSongsRepository
+        single<com.maxrave.domain.repository.CachedSongsRepository>(createdAtStart = true) {
+            com.maxrave.media3.repository.CachedSongsRepositoryImpl(
+                playerCache = get(named(PLAYER_CACHE)),
+                songRepository = get()
+            )
+        }
+
         // AudioAttributes
         single<AudioAttributes>(createdAtStart = true) {
             provideAudioAttributes()
@@ -264,67 +272,76 @@ private fun provideResolvingDataSourceFactory(
         }
         var dataSpecReturn: DataSpec = dataSpec
         var resolved = false
-        runBlocking(Dispatchers.IO) {
-            if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
-                val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                streamRepository.getNewFormat(id).lastOrNull()?.let {
-                    val videoUrl = it.videoUrl
-                    if (videoUrl != null && it.expiredTime > now()) {
-                        Logger.d("Stream", videoUrl)
-                        Logger.w("Stream", "Video from format")
-                        val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
-                        Logger.d("Stream", "is 403 $is403Url")
-                        if (!is403Url) {
-                            dataSpecReturn = dataSpec.withUri(videoUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                            resolved = true
-                            return@runBlocking
+        try {
+            runBlocking(Dispatchers.IO) {
+                if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
+                    val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                    streamRepository.getNewFormat(id).lastOrNull()?.let {
+                        val videoUrl = it.videoUrl
+                        if (videoUrl != null && it.expiredTime > now()) {
+                            Logger.d("Stream", videoUrl)
+                            Logger.w("Stream", "Video from format")
+                            val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
+                            Logger.d("Stream", "is 403 $is403Url")
+                            if (!is403Url) {
+                                dataSpecReturn = dataSpec.withUri(videoUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                                resolved = true
+                                return@runBlocking
+                            }
                         }
                     }
-                }
-                streamRepository
-                    .getStream(
-                        dataStoreManager,
-                        id,
-                        isDownloading = false,
-                        isVideo = true,
-                    ).lastOrNull()
-                    ?.let {
-                        Logger.d("Stream", it)
-                        Logger.w("Stream", "Video")
-                        dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                        resolved = true
-                    }
-            } else {
-                streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
-                    val audioUrl = it.audioUrl
-                    if (audioUrl != null && it.expiredTime > now()) {
-                        Logger.d("Stream", audioUrl)
-                        Logger.w("Stream", "Audio from format")
-                        val is403Url = streamRepository.is403Url(audioUrl).firstOrNull() != false
-                        Logger.d("Stream", "is 403 $is403Url")
-                        if (!is403Url) {
-                            dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                    streamRepository
+                        .getStream(
+                            dataStoreManager,
+                            id,
+                            isDownloading = false,
+                            isVideo = true,
+                        ).lastOrNull()
+                        ?.let {
+                            Logger.d("Stream", it)
+                            Logger.w("Stream", "Video")
+                            dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                             resolved = true
-                            return@runBlocking
+                        }
+                } else {
+                    streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
+                        val audioUrl = it.audioUrl
+                        if (audioUrl != null && it.expiredTime > now()) {
+                            Logger.d("Stream", audioUrl)
+                            Logger.w("Stream", "Audio from format")
+                            val is403Url = streamRepository.is403Url(audioUrl).firstOrNull() != false
+                            Logger.d("Stream", "is 403 $is403Url")
+                            if (!is403Url) {
+                                dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                                resolved = true
+                                return@runBlocking
+                            }
                         }
                     }
+                    streamRepository
+                        .getStream(
+                            dataStoreManager,
+                            mediaId,
+                            isDownloading = false,
+                            isVideo = false,
+                        ).lastOrNull()
+                        ?.let {
+                            Logger.d("Stream", it)
+                            Logger.w("Stream", "Audio")
+                            dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                            resolved = true
+                        }
                 }
-                streamRepository
-                    .getStream(
-                        dataStoreManager,
-                        mediaId,
-                        isDownloading = false,
-                        isVideo = false,
-                    ).lastOrNull()
-                    ?.let {
-                        Logger.d("Stream", it)
-                        Logger.w("Stream", "Audio")
-                        dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                        resolved = true
-                    }
             }
+        } catch (e: Exception) {
+            Logger.e("Stream", "Exception while resolving stream URL: ${e.message}")
         }
+        
         if (!resolved) {
+            if (playerCached || downloadCache.isCached(mediaId, dataSpec.position, length)) {
+                Logger.w("Stream", "Failed to resolve stream URL for $mediaId, but it is cached. Proceeding with local cache.")
+                return@Factory dataSpec
+            }
             Logger.e("Stream", "Failed to resolve stream URL for $mediaId")
             throw java.io.IOException("Failed to resolve stream URL for $mediaId")
         }

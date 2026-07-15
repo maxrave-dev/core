@@ -57,6 +57,8 @@ internal class LocalDataSource(
 
     suspend fun getSongByListVideoIdFull(primaryKeyList: List<String>) = databaseDao.getSongByListVideoIdFull(primaryKeyList)
 
+    suspend fun getTopSongs(limit: Int) = databaseDao.getTopSongs(limit)
+
     suspend fun getDownloadedSongs(
         limit: Int,
         offset: Int,

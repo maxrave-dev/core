@@ -92,4 +92,16 @@ val repositoryModule =
         single<AnalyticsRepository>(createdAtStart = true) {
             AnalyticsRepositoryImpl(get())
         }
+
+        single<com.marki19.jamsync.JamSyncClient>(createdAtStart = true) {
+            com.marki19.jamsync.JamSyncClient("wss://simpmusic-jam-backend.onrender.com")
+        }
+
+        single<com.marki19.domain.jam.JamRepository>(createdAtStart = true) {
+            com.marki19.data.repository.jam.JamRepositoryImpl(get())
+        }
+
+        single<com.marki19.domain.jam.JamPlayerSynchronizer>(createdAtStart = true) {
+            com.marki19.domain.jam.JamPlayerSynchronizer(get(), get(), get())
+        }
     }

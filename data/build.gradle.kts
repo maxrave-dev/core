@@ -69,6 +69,7 @@ kotlin {
                 implementation(projects.spotify)
                 implementation(projects.kotlinYtmusicScraper)
                 implementation(projects.kizzy)
+                implementation(projects.jamSync)
 
                 implementation(libs.kotlin.stdlib)
                 // Add KMP dependencies here
@@ -85,6 +86,7 @@ kotlin {
 
                 // Koin
                 implementation(libs.koin.core)
+                implementation(libs.ktor.client.core)
             }
         }
 

@@ -40,6 +40,7 @@ kotlin {
                 // Add KMP dependencies here
                 implementation(libs.room.runtime)
                 implementation(libs.kotlinx.serialization.json)
+                implementation(libs.kotlinx.datetime)
                 implementation(projects.common)
                 api(libs.androidx.paging.common)
             }
