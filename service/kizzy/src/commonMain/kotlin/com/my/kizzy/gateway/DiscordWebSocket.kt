@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
@@ -79,7 +80,9 @@ open class DiscordWebSocket(
         get() = SupervisorJob() + Dispatchers.Default
 
     fun connect() {
-        if (connected) {
+        if (connected || websocket?.isActive == true) {
+            // `websocket?.isActive` guards the mid-handshake window: the socket is open but not yet
+            // READY, so `connected` is still false — without this a second session would be opened.
             Logger.i(TAG, "Gateway already connected.")
             return
         }
@@ -96,7 +99,9 @@ open class DiscordWebSocket(
                             header("Cache-Control", "no-cache")
                             header("Pragma", "no-cache")
                         }
-                    connected = true
+                    // `connected` intentionally stays false here — it only flips true on READY/RESUMED.
+                    // sendActivity spin-waits on `connected`, and a presence sent before IDENTIFY→READY
+                    // completes is rejected by the gateway and tears down the fresh connection (#2236).
                     Logger.i(TAG, "Successfully connected to Discord Gateway.")
                     currentReconnectDelay = INITIAL_RECONNECT_DELAY
                     // start receiving messages
@@ -194,6 +199,9 @@ open class DiscordWebSocket(
             }
 
             "RESUMED" -> {
+                // A resumed session never receives a fresh READY, so flip `connected` here too;
+                // otherwise sendActivity spin-waiters would block forever.
+                connected = true
                 Logger.i(TAG, "Gateway: Session Resumed")
             }
 
@@ -313,9 +321,19 @@ open class DiscordWebSocket(
     }
 
     suspend fun sendActivity(presence: Presence) {
-        // TODO : Figure out a better way to wait for socket to be connected to account
-        while (!isSocketConnectedToAccount()) {
-            delay(10.milliseconds)
+        // Bounded wait for IDENTIFY→READY (or RESUME→RESUMED) to complete. A non-blank but invalid
+        // token closes with a non-recoverable code and is never retried (see NON_RECOVERABLE_CLOSE_CODES),
+        // so an unbounded spin-wait here would hang this coroutine forever.
+        val ready =
+            withTimeoutOrNull(30.seconds) {
+                while (!isSocketConnectedToAccount()) {
+                    delay(100.milliseconds)
+                }
+                true
+            } ?: false
+        if (!ready) {
+            Logger.w(TAG, "Gateway not connected within 30s — dropping presence update")
+            return
         }
         Logger.i(TAG, "Gateway: Sending $PRESENCE_UPDATE")
         send(

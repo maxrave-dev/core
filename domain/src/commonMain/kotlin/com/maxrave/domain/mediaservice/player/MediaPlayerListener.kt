@@ -13,6 +13,9 @@ interface MediaPlayerListener {
 
     fun onIsPlayingChanged(isPlaying: Boolean) {}
 
+    // Default no-op so non-emitting implementors (e.g. the JVM/VLC adapter) don't have to override it.
+    fun onSeeked(positionMs: Long) {}
+
     fun onMediaItemTransition(
         mediaItem: GenericMediaItem?,
         reason: Int,

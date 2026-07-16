@@ -1575,6 +1575,19 @@ internal class CrossfadeExoPlayerAdapter(
                     listeners.forEach { it.onTracksChanged(genericTracks) }
                 }
 
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int,
+                ) {
+                    if (player != currentPlayer) return
+                    // Fires for both in-app seeks and MediaSession/notification seeks — both land on the
+                    // raw ExoPlayer. seekTo() does no manual notification, so this is the single source.
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
+                        listeners.forEach { it.onSeeked(newPosition.positionMs) }
+                    }
+                }
+
                 override fun onEvents(
                     player: Player,
                     events: Player.Events,
