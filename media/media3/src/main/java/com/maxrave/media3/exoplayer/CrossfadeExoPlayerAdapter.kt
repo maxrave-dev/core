@@ -19,6 +19,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
+import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
@@ -360,6 +361,80 @@ internal class CrossfadeExoPlayerAdapter(
             }
     }
 
+    // ========== Cast Remote Routing ==========
+
+    /**
+     * While a Cast session is active this holds the session-level [Player] (the unified
+     * CastPlayer wrapping [forwardingPlayer]): transport calls and position/state getters
+     * are routed to it, and playback-start requests are handed to [castPlaybackRouter]
+     * instead of the local ExoPlayer machinery. The playlist itself stays local — the
+     * receiver only ever sees a small resolved-URL window of it.
+     */
+    @Volatile
+    private var castRemotePlayer: Player? = null
+
+    internal val isCastActive: Boolean
+        get() = castRemotePlayer != null
+
+    /** Set by CastHandoffManager: (playlistIndex, startPositionMs, playWhenReady) -> load on receiver. */
+    internal var castPlaybackRouter: ((Int, Long, Boolean) -> Unit)? = null
+
+    internal fun setCastActive(
+        remotePlayer: Player?,
+        deviceName: String?,
+    ) {
+        if (remotePlayer != null) {
+            if (castRemotePlayer === remotePlayer) return
+            castRemotePlayer = remotePlayer
+            Logger.w(TAG, "Cast session active on ${deviceName ?: "unknown device"} — local playback suspended")
+            coroutineScope.launch {
+                // Kill anything that makes local noise or wastes battery while remote.
+                crossfadeJob?.cancel()
+                crossfadeJob = null
+                currentPlayerFilter?.enabled = false
+                secondaryPlayerFilter?.enabled = false
+                secondaryPlayer?.release()
+                secondaryPlayer = null
+                secondaryPlayerFilter = null
+                setCrossfading(false)
+                cancelPrecaching()
+                clearAllPrecacheInternal()
+                currentPlayer?.pause()
+                stopPositionUpdates()
+                abandonAudioFocusInternal()
+                notifyEqualizerIntent(false)
+            }
+            listeners.forEach { it.onCastStateChanged(GenericCastState(isRemote = true, deviceName = deviceName)) }
+        } else {
+            if (castRemotePlayer == null) return
+            castRemotePlayer = null
+            Logger.w(TAG, "Cast session ended — back to local playback")
+            listeners.forEach { it.onCastStateChanged(GenericCastState.NOT_CASTING) }
+        }
+    }
+
+    /** Remote queue advanced — keep the local playlist pointer and UI in sync. */
+    internal fun notifyRemoteTransition(playlistIndex: Int) {
+        if (!isCastActive || playlistIndex !in playlist.indices) return
+        if (playlistIndex == localCurrentMediaItemIndex) return
+        localCurrentMediaItemIndex = playlistIndex
+        val item = playlist[playlistIndex]
+        listeners.forEach {
+            it.onMediaItemTransition(item, PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO)
+        }
+    }
+
+    internal fun notifyRemoteIsPlaying(isPlaying: Boolean) {
+        if (!isCastActive) return
+        internalPlayWhenReady = isPlaying
+        listeners.forEach { it.onIsPlayingChanged(isPlaying) }
+    }
+
+    internal fun notifyRemotePlaybackState(playbackState: Int) {
+        if (!isCastActive) return
+        listeners.forEach { it.onPlaybackStateChanged(playbackState) }
+    }
+
     // ========== ExoPlayer Instance Factory ==========
 
     /**
@@ -436,6 +511,11 @@ internal class CrossfadeExoPlayerAdapter(
 
     override fun play() {
         Logger.d(TAG, "play() called (state: $internalState, playWhenReady: $internalPlayWhenReady)")
+        castRemotePlayer?.let { remote ->
+            internalPlayWhenReady = true
+            remote.play()
+            return
+        }
         coroutineScope.launch {
             when (internalState) {
                 InternalState.READY, InternalState.ENDED, InternalState.PAUSED -> {
@@ -466,6 +546,11 @@ internal class CrossfadeExoPlayerAdapter(
 
     override fun pause() {
         Logger.d(TAG, "pause() called (state: $internalState, playWhenReady: $internalPlayWhenReady)")
+        castRemotePlayer?.let { remote ->
+            internalPlayWhenReady = false
+            remote.pause()
+            return
+        }
         coroutineScope.launch {
             forwardingPlayer.suppressPlaybackEnded = false
             // Cancel any ongoing crossfade by committing the incoming track (A+1) as current.
@@ -498,6 +583,10 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     override fun stop() {
+        castRemotePlayer?.let { remote ->
+            remote.stop()
+            return
+        }
         coroutineScope.launch {
             forwardingPlayer.suppressPlaybackEnded = false
             currentPlayer?.let { player ->
@@ -512,6 +601,11 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     override fun seekTo(positionMs: Long) {
+        castRemotePlayer?.let { remote ->
+            remote.seekTo(positionMs)
+            cachedPosition = positionMs
+            return
+        }
         currentPlayer?.let { player ->
             try {
                 player.seekTo(positionMs)
@@ -554,12 +648,13 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     override fun seekBack() {
-        val newPosition = (cachedPosition - 5000).coerceAtLeast(0)
+        val newPosition = (currentPosition - 5000).coerceAtLeast(0)
         seekTo(newPosition)
     }
 
     override fun seekForward() {
-        val newPosition = (cachedPosition + 5000).coerceAtMost(cachedDuration)
+        val end = duration.takeIf { it > 0 } ?: cachedDuration
+        val newPosition = (currentPosition + 5000).coerceAtMost(end)
         seekTo(newPosition)
     }
 
@@ -594,18 +689,17 @@ internal class CrossfadeExoPlayerAdapter(
             // - Position > 3s  → seek to start of current track
             // - Position <= 3s → go to previous track
             val positionThresholdMs = 3000L
-            if (cachedPosition > positionThresholdMs) {
-                Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms > ${positionThresholdMs}ms — seeking to start")
-                currentPlayer?.seekTo(0)
-                cachedPosition = 0
+            val position = currentPosition
+            if (position > positionThresholdMs) {
+                Logger.d(TAG, "seekToPrevious: pos=${position}ms > ${positionThresholdMs}ms — seeking to start")
+                seekTo(0)
             } else if (hasPreviousMediaItem()) {
-                Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms <= ${positionThresholdMs}ms — going to previous track")
+                Logger.d(TAG, "seekToPrevious: pos=${position}ms <= ${positionThresholdMs}ms — going to previous track")
                 val prevIndex = getPreviousMediaItemIndex()
                 seekTo(prevIndex, 0)
             } else {
                 Logger.d(TAG, "seekToPrevious: No previous item, seeking to start")
-                currentPlayer?.seekTo(0)
-                cachedPosition = 0
+                seekTo(0)
             }
         }
     }
@@ -850,16 +944,21 @@ internal class CrossfadeExoPlayerAdapter(
     // ========== Playback State Properties ==========
 
     override val isPlaying: Boolean
-        get() = internalState == InternalState.PLAYING
+        get() = castRemotePlayer?.isPlaying ?: (internalState == InternalState.PLAYING)
 
     override val currentPosition: Long
-        get() = cachedPosition
+        get() = castRemotePlayer?.currentPosition ?: cachedPosition
 
     override val duration: Long
-        get() = currentPlayer?.duration ?: cachedDuration
+        get() {
+            castRemotePlayer?.let { remote ->
+                return remote.duration.takeIf { it > 0 } ?: 0L
+            }
+            return currentPlayer?.duration ?: cachedDuration
+        }
 
     override val bufferedPosition: Long
-        get() = cachedBufferedPosition
+        get() = castRemotePlayer?.bufferedPosition ?: cachedBufferedPosition
 
     override val bufferedPercentage: Int
         get() {
@@ -878,11 +977,13 @@ internal class CrossfadeExoPlayerAdapter(
         get() = playlist.size
 
     override val contentPosition: Long
-        get() = cachedPosition
+        get() = castRemotePlayer?.contentPosition ?: cachedPosition
 
     override val playbackState: Int
-        get() =
-            when (internalState) {
+        get() {
+            // Media3 Player.STATE_* values match PlayerConstants 1:1.
+            castRemotePlayer?.let { return it.playbackState }
+            return when (internalState) {
                 InternalState.IDLE -> PlayerConstants.STATE_IDLE
                 InternalState.PREPARING -> PlayerConstants.STATE_BUFFERING
                 InternalState.READY -> PlayerConstants.STATE_READY
@@ -891,6 +992,7 @@ internal class CrossfadeExoPlayerAdapter(
                 InternalState.ERROR -> PlayerConstants.STATE_IDLE
                 InternalState.PAUSED -> PlayerConstants.STATE_READY
             }
+        }
 
     // ========== Navigation ==========
 
@@ -1025,6 +1127,10 @@ internal class CrossfadeExoPlayerAdapter(
             currentPlayer?.playbackParameters = params
             // Also apply to secondary player during crossfade
             secondaryPlayer?.playbackParameters = params
+            // Receiver support varies (speed only, no pitch) — best-effort while casting.
+            castRemotePlayer?.let { remote ->
+                runCatching { remote.playbackParameters = params }
+            }
         }
 
     // ========== Audio Settings ==========
@@ -1037,6 +1143,7 @@ internal class CrossfadeExoPlayerAdapter(
         set(value) {
             Logger.w(TAG, "Setting volume to $value")
             internalVolume = value.coerceIn(0f, 1f)
+            castRemotePlayer?.volume = internalVolume
             currentPlayer?.volume = internalVolume
             listeners.forEach { it.onVolumeChanged(internalVolume) }
         }
@@ -1192,6 +1299,16 @@ internal class CrossfadeExoPlayerAdapter(
 
         val mediaItem = playlist[index]
         val videoId = mediaItem.mediaId
+
+        // While casting, playback starts on the receiver — never on a local ExoPlayer.
+        castPlaybackRouter?.takeIf { isCastActive }?.let { router ->
+            currentLoadJob?.cancel()
+            listeners.forEach {
+                it.onMediaItemTransition(mediaItem, PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_SEEK)
+            }
+            router(index, startPositionMs, shouldPlay)
+            return
+        }
 
         // Cancel previous load
         currentLoadJob?.cancel()
@@ -1571,6 +1688,8 @@ internal class CrossfadeExoPlayerAdapter(
      * Handle track end - mirrors GstreamerPlayerAdapter.handleTrackEndInternal()
      */
     private fun handleTrackEndInternal() {
+        // While casting, track transitions are driven by the receiver queue.
+        if (isCastActive) return
         // Check if crossfade should be used
         val shouldCrossfade =
             crossfadeEnabled &&
@@ -1615,7 +1734,7 @@ internal class CrossfadeExoPlayerAdapter(
      * event is then ignored (no listener to fire).
      */
     private fun triggerCrossfadeTransition(nextIndex: Int) {
-        if (nextIndex !in playlist.indices || isCrossfading) return
+        if (nextIndex !in playlist.indices || isCrossfading || isCastActive) return
 
         coroutineScope.launch {
             try {
@@ -2481,7 +2600,7 @@ internal class CrossfadeExoPlayerAdapter(
      * and calls prepare(), which triggers URL resolution and buffering via MediaSourceFactory.
      */
     private fun triggerPrecachingInternal() {
-        if (!precacheEnabled || playlist.isEmpty()) return
+        if (!precacheEnabled || playlist.isEmpty() || isCastActive) return
 
         cancelPrecaching()
         Logger.d(TAG, "Trigger precache")

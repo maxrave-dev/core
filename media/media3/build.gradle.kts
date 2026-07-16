@@ -1,3 +1,10 @@
+val isFullBuild: Boolean =
+    try {
+        extra["isFullBuild"] == "true"
+    } catch (e: Exception) {
+        false
+    }
+
 plugins {
     alias(libs.plugins.android.library)
 }
@@ -74,4 +81,11 @@ dependencies {
     // registerMediaPlaybackToken only accepts MediaSessionCompat.Token; both car-app
     // and media3-session ship androidx.media at runtime scope only
     implementation(libs.androidx.media)
+
+    // Google Cast (gated: real SDK for full builds, no-op stub for FOSS builds)
+    if (isFullBuild) {
+        implementation(projects.cast)
+    } else {
+        implementation(projects.castEmpty)
+    }
 }

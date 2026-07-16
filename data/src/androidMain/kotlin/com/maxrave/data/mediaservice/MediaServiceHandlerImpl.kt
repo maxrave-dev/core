@@ -28,6 +28,7 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
+import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericCommandButton
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericMediaMetadata
@@ -178,6 +179,9 @@ internal class MediaServiceHandlerImpl(
 
     private val _currentSongIndex: MutableStateFlow<Int> = MutableStateFlow(player.currentMediaItemIndex)
     override val currentSongIndex: StateFlow<Int> = _currentSongIndex.asStateFlow()
+
+    private val _castState = MutableStateFlow(GenericCastState.NOT_CASTING)
+    override val castState: StateFlow<GenericCastState> = _castState.asStateFlow()
 
     // List of Specific variables
 
@@ -658,6 +662,8 @@ internal class MediaServiceHandlerImpl(
     }
 
     private fun sendOpenEqualizerIntent() {
+        // No local audio session to expose to an equalizer while casting (or before one exists).
+        if (_castState.value.isRemote || player.audioSessionId == PlayerConstants.AUDIO_SESSION_ID_UNSET) return
         context.sendBroadcast(
             Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
                 putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
@@ -668,6 +674,7 @@ internal class MediaServiceHandlerImpl(
     }
 
     private fun sendCloseEqualizerIntent() {
+        if (_castState.value.isRemote || player.audioSessionId == PlayerConstants.AUDIO_SESSION_ID_UNSET) return
         context.sendBroadcast(
             Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
                 putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
@@ -2044,7 +2051,9 @@ internal class MediaServiceHandlerImpl(
         // Always recreate LoudnessEnhancer because CrossfadeExoPlayerAdapter creates new
         // ExoPlayer instances per track, each with a different audio session ID.
         // The old LoudnessEnhancer becomes attached to a released session and has no effect.
-        if (player.audioSessionId != PlayerConstants.AUDIO_SESSION_ID_UNSET) {
+        // Skip entirely while casting: a Cast session has no local audio session, and
+        // constructing a LoudnessEnhancer with session id 0 (AUDIO_SESSION_ID_UNSET) throws.
+        if (!_castState.value.isRemote && player.audioSessionId != PlayerConstants.AUDIO_SESSION_ID_UNSET) {
             try {
                 loudnessEnhancer?.release()
             } catch (_: Exception) {
@@ -2467,6 +2476,10 @@ internal class MediaServiceHandlerImpl(
         super.onTimelineChanged(list, reason)
         Logger.d(TAG, "onTimelineChanged: Reason: $reason, Items: ${list.size}")
         reorderShuffledQueue(list)
+    }
+
+    override fun onCastStateChanged(castState: GenericCastState) {
+        _castState.value = castState
     }
 
     private fun reorderShuffledQueue(list: List<GenericMediaItem>) {

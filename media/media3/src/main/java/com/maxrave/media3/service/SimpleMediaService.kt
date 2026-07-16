@@ -28,9 +28,7 @@ import com.google.common.util.concurrent.MoreExecutors
 import com.maxrave.common.MEDIA_NOTIFICATION
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
-import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.logger.Logger
-import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter
 import com.maxrave.media3.R
 import com.maxrave.media3.extension.toCommandButton
 import com.maxrave.media3.utils.CoilBitmapLoader
@@ -51,10 +49,9 @@ internal class SimpleMediaService :
     MediaLibraryService(),
     KoinComponent {
     private val coroutineScope by inject<CoroutineScope>(named(com.maxrave.common.Config.SERVICE_SCOPE))
-    private val mediaPlayerAdapter: MediaPlayerInterface by inject<MediaPlayerInterface>()
-    private val player: Player by lazy {
-        (mediaPlayerAdapter as CrossfadeExoPlayerAdapter).forwardingPlayer
-    }
+    // Session-level player from DI: the ForwardingPlayer wrapped with Cast support in the
+    // full build (plain ForwardingPlayer in the FOSS build).
+    private val player: Player by inject<Player>(qualifier = named(com.maxrave.common.Config.MAIN_PLAYER))
     private val coilBitmapLoader: CoilBitmapLoader by inject<CoilBitmapLoader>()
 
     private var mediaSession: MediaLibrarySession? = null
