@@ -1130,6 +1130,8 @@ class VlcPlayerAdapter(
             // Extra buffering for video streams to prevent stalls near end
             options.add(":network-caching=15000")
             options.add(":http-reconnect")
+        } else {
+            options.add(":no-video")
         }
         return options.toTypedArray()
     }
