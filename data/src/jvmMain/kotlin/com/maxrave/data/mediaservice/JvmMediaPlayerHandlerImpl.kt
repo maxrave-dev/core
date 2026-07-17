@@ -110,8 +110,16 @@ class JvmMediaPlayerHandlerImpl(
 ) : MediaPlayerHandler,
     MediaPlayerListener {
     private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    // Linux (MPRIS) and Windows (SMTC) both go through NPYC/JMTC; macOS uses the
+    // dedicated MacOSMediaIntegration below. runCatching keeps a failed native
+    // init from taking down the whole handler — every nypc call site is already
+    // null-safe, so a null here simply disables system media controls.
     private val nypc =
-        if (getPlatform() is Platform.Linux) NPYC(getPlatform()) else null
+        if (getPlatform() is Platform.Linux || getPlatform() is Platform.Windows) {
+            runCatching { NPYC(getPlatform()) }.getOrNull()
+        } else {
+            null
+        }
 
     // macOS Media Integration (Now Playing Center + Remote Command Center)
     private val macOSMediaIntegration: MacOSMediaIntegration? by lazy {
