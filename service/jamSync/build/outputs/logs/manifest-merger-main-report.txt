@@ -1,13 +1,13 @@
 -- Merging decision tree log ---
 manifest
-ADDED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest16747503986765481191.xml:2:13-83
-INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest16747503986765481191.xml:2:13-83
+ADDED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest9209638410193430160.xml:2:13-83
+INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest9209638410193430160.xml:2:13-83
 	package
-		INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest16747503986765481191.xml
+		INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest9209638410193430160.xml
 	xmlns:android
-		ADDED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest16747503986765481191.xml:2:23-81
+		ADDED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest9209638410193430160.xml:2:23-81
 uses-sdk
-INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest16747503986765481191.xml reason: use-sdk injection requested
-INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest16747503986765481191.xml
+INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest9209638410193430160.xml reason: use-sdk injection requested
+INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest9209638410193430160.xml
 	android:minSdkVersion
-		INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest16747503986765481191.xml
+		INJECTED from C:\Programming Projects\personal projects\SimpMusic\core\service\jamSync\build\intermediates\tmp\ProcessLibraryManifest\tempAndroidManifest9209638410193430160.xml

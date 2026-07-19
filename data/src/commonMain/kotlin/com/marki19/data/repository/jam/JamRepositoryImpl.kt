@@ -453,10 +453,8 @@ class JamRepositoryImpl(
         val type = commandType(command)
         val payload = commandPayload(command)
 
-        if (command is JamCommand.ChatMessage) {
-            // Echo chat locally so the sender sees it immediately
-            _chatMessages.value = _chatMessages.value + command
-        }
+        // Rely on the server broadcast for ChatMessage so it doesn't duplicate
+        // (No local echo)
         jamClient.sendCommand(type, payload)
     }
 
@@ -538,7 +536,15 @@ class JamRepositoryImpl(
             JsonObject(mapOf("mode" to JsonPrimitive(command.mode.name)))
 
         is JamCommand.ShareTaste ->
-            JsonObject(mapOf("tracks" to JsonArray(command.tracks.map { JsonPrimitive(it) })))
+            JsonObject(mapOf("tracks" to JsonArray(command.tracks.map { 
+                JsonObject(mapOf(
+                    "videoId" to JsonPrimitive(it.videoId),
+                    "title" to JsonPrimitive(it.title),
+                    "artist" to JsonPrimitive(it.artist),
+                    "thumbnailUrl" to JsonPrimitive(it.thumbnailUrl ?: ""),
+                    "durationMs" to JsonPrimitive(it.durationMs)
+                ))
+            })))
 
         is JamCommand.ChatMessage ->
             JsonObject(mapOf(

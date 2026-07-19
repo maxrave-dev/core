@@ -131,7 +131,14 @@ sealed class JamCommand {
 
     // Sync / admin
     data class SyncState(val state: JamPlaybackState) : JamCommand()
-    data class ShareTaste(val tracks: List<String>) : JamCommand()
+    data class TasteTrack(
+        val videoId: String,
+        val title: String,
+        val artist: String,
+        val thumbnailUrl: String?,
+        val durationMs: Long
+    )
+    data class ShareTaste(val tracks: List<TasteTrack>) : JamCommand()
     object UnshareTaste : JamCommand()
 
     // Social

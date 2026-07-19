@@ -32,11 +32,17 @@ class JamPlayerSynchronizer(
     private var isSyncing = false
     private val DRIFT_THRESHOLD_MS = 3_000L
 
-    fun startSync() {
-
-        // ── 1. Guest: apply incoming playback state ───────────────────────────
+    init {
+        // ── 1. Guest & Host: apply incoming playback state / Clear queue on join ──
         scope.launch {
+            var wasInSession = false
             jamRepository.sessionState.collectLatest { session ->
+                if (session != null && !wasInSession) {
+                    // Wipe local queue to isolate Jam feature
+                    mediaPlayerHandler.clearMediaItems()
+                }
+                wasInSession = session != null
+
                 if (session == null || session.isHost || isSyncing) return@collectLatest
                 val pb = session.playbackState
                 isSyncing = true
