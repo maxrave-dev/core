@@ -73,23 +73,13 @@ class JamPlayerSynchronizer(
                 if (session == null || !session.isHost || isSyncing) return@collectLatest
 
                 val nowPlayingId = mediaPlayerHandler.nowPlaying.value?.mediaId
-                val queueItems = mediaPlayerHandler.queueData.value?.data?.listTracks
-                    ?.map { track ->
-                        JamQueueItem(
-                            queueId = track.videoId, // best effort stable ID for host sync
-                            videoId = track.videoId,
-                            title = track.title ?: "",
-                            artist = track.artists?.firstOrNull()?.name ?: "",
-                            thumbnailUrl = track.thumbnails?.lastOrNull()?.url,
-                            durationMs = (track.durationSeconds?.toLong() ?: 0L) * 1000L,
-                        )
-                    } ?: emptyList()
+
 
                 val playbackState = JamPlaybackState(
                     currentSongId = nowPlayingId,
                     isPlaying = controlState.isPlaying,
                     playbackPositionMs = mediaPlayerHandler.getProgress(),
-                    queue = queueItems,
+                    queue = session.playbackState.queue,
                     shuffle = controlState.isShuffle,
                     repeatMode = when (controlState.repeatState) {
                         is com.maxrave.domain.mediaservice.handler.RepeatState.One -> JamRepeatMode.ONE
@@ -112,25 +102,7 @@ class JamPlayerSynchronizer(
             }
         }
 
-        // ── 4. Auto radio seed on first session join ──────────────────────────
-        var hasFetchedInitialRadio = false
-        scope.launch {
-            jamRepository.sessionState.collectLatest { session ->
-                if (session == null || !session.isHost || hasFetchedInitialRadio) return@collectLatest
-                hasFetchedInitialRadio = true
-                val queueData = mediaPlayerHandler.queueData.value
-                if (queueData != null && queueData.data.listTracks.size == 1) {
-                    val currentId = queueData.data.listTracks.first().videoId
-                    val response = songRepository.getRelatedData(currentId).firstOrNull()
-                    if (response is com.maxrave.domain.utils.Resource.Success) {
-                        val tracks = response.data?.first?.take(5) ?: emptyList()
-                        if (tracks.isNotEmpty()) {
-                            mediaPlayerHandler.loadMoreCatalog(ArrayList(tracks))
-                        }
-                    }
-                }
-            }
-        }
+
     }
 
     private suspend fun handleCommand(command: JamCommand) {

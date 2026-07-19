@@ -111,8 +111,8 @@ fun Track.toSongEntity(): SongEntity {
                 } else {
                     return@let it
                 }
-            },
-        title = this.title,
+            } ?: "",
+        title = this.title ?: "",
         videoType = this.videoType ?: "",
         category = this.category,
         resultType = this.resultType,
@@ -139,7 +139,9 @@ fun SongEntity.toTrack(): Track {
         isAvailable = this.isAvailable,
         isExplicit = this.isExplicit,
         likeStatus = this.likeStatus,
-        thumbnails = if (isSong) listOf(Thumbnail(544, this.thumbnails ?: "", 544)) else listOf(Thumbnail(720, this.thumbnails ?: "", 1080)),
+        // Update the thumbnails line to handle nulls safely
+        thumbnails = if (isSong) listOf(Thumbnail(544, this.thumbnails ?: "", 544))
+        else listOf(Thumbnail(720, this.thumbnails ?: "", 1080)),
         title = this.title,
         videoId = this.videoId,
         videoType = this.videoType,

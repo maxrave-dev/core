@@ -33,5 +33,10 @@ data class SongEntity(
     val canvasUrl: String? = null,
     val canvasThumbUrl: String? = null,
 ) : RecentlyType {
+    val thumbnailUrl: String
+        get() = thumbnails ?: ""
+    val artistsName: String
+        get() = artistName?.joinToString(", ") ?: ""
+
     override fun objectType(): RecentlyType.Type = RecentlyType.Type.SONG
 }

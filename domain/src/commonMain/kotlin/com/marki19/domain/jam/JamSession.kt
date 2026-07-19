@@ -99,12 +99,24 @@ sealed class JamCommand {
     data class SkipTo(val index: Int) : JamCommand()
 
     // Queue mutations (use queueId, not index, wherever possible)
-    data class AddToQueue(val videoId: String) : JamCommand()
+    data class AddToQueue(
+        val videoId: String,
+        val title: String,
+        val artist: String,
+        val thumbnailUrl: String?,
+        val durationMs: Long
+    ) : JamCommand()
     data class RemoveQueueItem(val queueId: String) : JamCommand()
     /** Legacy index-based remove — kept for JamPlayerSynchronizer compatibility. */
     data class RemoveFromQueue(val index: Int) : JamCommand()
     data class MoveQueueItem(val queueId: String, val toIndex: Int) : JamCommand()
-    data class PlayNow(val videoId: String) : JamCommand()
+    data class PlayNow(
+        val videoId: String,
+        val title: String,
+        val artist: String,
+        val thumbnailUrl: String?,
+        val durationMs: Long
+    ) : JamCommand()
 
     // Voting
     data class Vote(val queueId: String) : JamCommand()

@@ -64,7 +64,7 @@ class JamSyncClient(private val serverUrl: String) {
      * The coroutine keeps the socket alive and automatically reconnects after
      * any error.  Call [disconnect] to stop.
      */
-    suspend fun connect(roomId: String? = null, userId: String, name: String, imageUrl: String) {
+    suspend fun connect(getRoomId: () -> String?, userId: String, name: String, imageUrl: String) {
         var backoffMs = 1_000L
         while (true) {
             try {
@@ -73,8 +73,9 @@ class JamSyncClient(private val serverUrl: String) {
                     session = this
 
                     // Announce ourselves
-                    val init = if (roomId != null) {
-                        JamMessage(type = "JOIN_SESSION", roomId = roomId, userId = userId, name = name, imageUrl = imageUrl)
+                    val currentRoomId = getRoomId()
+                    val init = if (currentRoomId != null) {
+                        JamMessage(type = "JOIN_SESSION", roomId = currentRoomId, userId = userId, name = name, imageUrl = imageUrl)
                     } else {
                         JamMessage(type = "CREATE_SESSION", userId = userId, name = name, imageUrl = imageUrl)
                     }

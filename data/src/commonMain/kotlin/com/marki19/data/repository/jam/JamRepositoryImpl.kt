@@ -250,7 +250,16 @@ class JamRepositoryImpl(
                 when (reason) {
                     "SONG_ADDED" -> {
                         val videoId = message.payload?.string("videoId")
-                        if (videoId != null) _incomingCommands.tryEmit(JamCommand.AddToQueue(videoId))
+                        if (videoId != null) {
+                            val title = message.payload?.string("title") ?: ""
+                            val artist = message.payload?.string("artist") ?: ""
+                            val thumbnailUrl = message.payload?.string("thumbnailUrl") ?: ""
+                            val durationMs = message.payload?.long("durationMs") ?: 0L
+
+                            _incomingCommands.tryEmit(
+                                JamCommand.AddToQueue(videoId, title, artist, thumbnailUrl, durationMs)
+                            )
+                        }
                     }
                     "SONG_REMOVED" -> {
                         val queueId = message.payload?.string("queueId") ?: return
@@ -317,7 +326,14 @@ class JamRepositoryImpl(
                     }
                     "PLAY_NOW" -> {
                         val videoId = message.payload?.string("videoId") ?: return
-                        _incomingCommands.tryEmit(JamCommand.PlayNow(videoId))
+                        val title = message.payload?.string("title") ?: ""
+                        val artist = message.payload?.string("artist") ?: ""
+                        val thumbnailUrl = message.payload?.string("thumbnailUrl") ?: ""
+                        val durationMs = message.payload?.long("durationMs") ?: 0L
+
+                        _incomingCommands.tryEmit(
+                            JamCommand.PlayNow(videoId, title, artist, thumbnailUrl, durationMs)
+                        )
                     }
                     "SET_SHUFFLE" -> {
                         val enabled = message.payload?.bool("enabled") ?: false
@@ -366,17 +382,31 @@ class JamRepositoryImpl(
     // ─────────────────────────────────────────────────────────────────────────
 
     override suspend fun createSession(userId: String, name: String, imageUrl: String): Result<String> {
-    localUserId = userId
-    connectionJob?.cancel()
-    // The server returns the roomId later via SESSION_CREATED, so we return empty/success here
-    connectionJob = scope.launch { jamClient.connect(null, userId, name, imageUrl) }
-    return Result.success("") 
-}
+        localUserId = userId
+        connectionJob?.cancel()
+        // The server returns the roomId later via SESSION_CREATED, so we return empty/success here
+        connectionJob = scope.launch {
+            jamClient.connect(
+                getRoomId = { _sessionState.value?.roomId },
+                userId = userId,
+                name = name,
+                imageUrl = imageUrl
+            )
+        }
+        return Result.success("") 
+    }
 
-override suspend fun joinSession(roomId: String, userId: String, name: String, imageUrl: String): Result<Unit> {
-    localUserId = userId
-    connectionJob?.cancel()
-    connectionJob = scope.launch { jamClient.connect(roomId, userId, name, imageUrl) }
+    override suspend fun joinSession(roomId: String, userId: String, name: String, imageUrl: String): Result<Unit> {
+        localUserId = userId
+        connectionJob?.cancel()
+        connectionJob = scope.launch {
+            jamClient.connect(
+                getRoomId = { roomId },
+                userId = userId,
+                name = name,
+                imageUrl = imageUrl
+            )
+        }
     return Result.success(Unit)
 }
 
@@ -460,7 +490,13 @@ override suspend fun joinSession(roomId: String, userId: String, name: String, i
             JsonObject(mapOf("positionMs" to JsonPrimitive(command.positionMs)))
 
         is JamCommand.AddToQueue ->
-            JsonObject(mapOf("videoId" to JsonPrimitive(command.videoId)))
+            JsonObject(mapOf(
+                "videoId" to JsonPrimitive(command.videoId),
+                "title" to JsonPrimitive(command.title),
+                "artist" to JsonPrimitive(command.artist),
+                "thumbnailUrl" to JsonPrimitive(command.thumbnailUrl),
+                "durationMs" to JsonPrimitive(command.durationMs)
+            ))
 
         is JamCommand.Skip ->
             JsonObject(mapOf("direction" to JsonPrimitive(command.direction)))
@@ -481,7 +517,13 @@ override suspend fun joinSession(roomId: String, userId: String, name: String, i
             ))
 
         is JamCommand.PlayNow ->
-            JsonObject(mapOf("videoId" to JsonPrimitive(command.videoId)))
+            JsonObject(mapOf(
+                "videoId" to JsonPrimitive(command.videoId),
+                "title" to JsonPrimitive(command.title),
+                "artist" to JsonPrimitive(command.artist),
+                "thumbnailUrl" to JsonPrimitive(command.thumbnailUrl),
+                "durationMs" to JsonPrimitive(command.durationMs)
+            ))
 
         is JamCommand.Vote ->
             JsonObject(mapOf("queueId" to JsonPrimitive(command.queueId)))
