@@ -1,5 +1,6 @@
 package com.maxrave.domain.mediaservice.player
 
+import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericTracks
 import com.maxrave.domain.data.player.PlayerError
@@ -11,6 +12,9 @@ interface MediaPlayerListener {
     fun onPlaybackStateChanged(playbackState: Int) {}
 
     fun onIsPlayingChanged(isPlaying: Boolean) {}
+
+    // Default no-op so non-emitting implementors (e.g. the JVM/VLC adapter) don't have to override it.
+    fun onSeeked(positionMs: Long) {}
 
     fun onMediaItemTransition(
         mediaItem: GenericMediaItem?,
@@ -36,4 +40,6 @@ interface MediaPlayerListener {
     fun onCrossfadeStateChanged(isCrossfading: Boolean) {}
 
     fun onVolumeChanged(volume: Float) {}
+
+    fun onCastStateChanged(castState: GenericCastState) {}
 }
