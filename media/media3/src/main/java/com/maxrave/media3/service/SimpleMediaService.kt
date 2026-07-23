@@ -63,8 +63,6 @@ internal class SimpleMediaService :
 
     private val binder = MusicBinder()
 
-    private lateinit var playerNotificationManager: PlayerNotificationManager
-
     inner class MusicBinder : Binder() {
         val service: SimpleMediaService
             get() = this@SimpleMediaService
@@ -124,53 +122,6 @@ internal class SimpleMediaService :
         val sessionToken = SessionToken(this, ComponentName(this, SimpleMediaService::class.java))
         val controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
         controllerFuture.addListener({ controllerFuture.get() }, MoreExecutors.directExecutor())
-
-        if (runBlocking { dataStoreManager.keepServiceAlive.first() == DataStoreManager.TRUE }) {
-            val notificationManager = getSystemService<NotificationManager>()
-            notificationManager?.run {
-                createNotificationChannel(
-                    NotificationChannel(
-                        "media_playback_channel",
-                        "Now playing",
-                        NotificationManager.IMPORTANCE_LOW,
-                    ).apply {
-                        setSound(null, null)
-                        enableLights(false)
-                        enableVibration(false)
-                    },
-                )
-            }
-            playerNotificationManager =
-                PlayerNotificationManager
-                    .Builder(this, 2026, "media_playback_channel")
-                    .setNotificationListener(
-                        object : PlayerNotificationManager.NotificationListener {
-                            override fun onNotificationPosted(
-                                notificationId: Int,
-                                notification: Notification,
-                                ongoing: Boolean,
-                            ) {
-                                fun startFg() {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                        startForeground(notificationId, notification, FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-                                    } else {
-                                        startForeground(notificationId, notification)
-                                    }
-                                }
-                                coroutineScope.launch {
-                                    while (coroutineScope.isActive) {
-                                        startFg()
-                                        delay(30.seconds)
-                                    }
-                                }
-                            }
-                        },
-                    ).setMediaDescriptionAdapter(DefaultMediaDescriptionAdapter(mediaSession?.sessionActivity))
-                    .build()
-            playerNotificationManager.setPlayer(player)
-            playerNotificationManager.setSmallIcon(R.drawable.mono)
-            mediaSession?.platformToken?.let { playerNotificationManager.setMediaSessionToken(it) }
-        }
 
         simpleMediaServiceHandler.onUpdateNotification = { list ->
             val commandButtonList = list.map { it.toCommandButton(this) }

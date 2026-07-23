@@ -112,7 +112,7 @@ fun Track.toSongEntity(): SongEntity {
                     return@let it
                 }
             } ?: "",
-        title = this.title ?: "",
+        title = this.title,
         videoType = this.videoType ?: "",
         category = this.category,
         resultType = this.resultType,

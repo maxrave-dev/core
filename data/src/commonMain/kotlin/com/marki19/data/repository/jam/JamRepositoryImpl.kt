@@ -169,7 +169,7 @@ class JamRepositoryImpl(
 
                 _sessionState.value = JamSessionState(
                     roomId = message.roomId ?: "",
-                    isHost = false,
+                    isHost = hostId == localUserId,
                     hostId = hostId,
                     participants = participantsArr,
                     permissions = parsePermissions(permObj),
