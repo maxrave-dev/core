@@ -951,44 +951,6 @@ internal class DataStoreManagerImpl(
         }
     }
 
-    override val blurFullscreenLyrics =
-        settingsDataStore.data.map { preferences ->
-            preferences[BLUR_FULLSCREEN_LYRICS] ?: FALSE
-        }
-
-    override suspend fun setBlurFullscreenLyrics(blur: Boolean) {
-        withContext(Dispatchers.IO) {
-            if (blur) {
-                settingsDataStore.edit { settings ->
-                    settings[BLUR_FULLSCREEN_LYRICS] = TRUE
-                }
-            } else {
-                settingsDataStore.edit { settings ->
-                    settings[BLUR_FULLSCREEN_LYRICS] = FALSE
-                }
-            }
-        }
-    }
-
-    override val blurPlayerBackground =
-        settingsDataStore.data.map { preferences ->
-            preferences[BLUR_PLAYER_BACKGROUND] ?: FALSE
-        }
-
-    override suspend fun setBlurPlayerBackground(blur: Boolean) {
-        withContext(Dispatchers.IO) {
-            if (blur) {
-                settingsDataStore.edit { settings ->
-                    settings[BLUR_PLAYER_BACKGROUND] = TRUE
-                }
-            } else {
-                settingsDataStore.edit { settings ->
-                    settings[BLUR_PLAYER_BACKGROUND] = FALSE
-                }
-            }
-        }
-    }
-
     override val playbackSpeed =
         settingsDataStore.data.map { preferences ->
             preferences[PLAYBACK_SPEED] ?: 1.0f
@@ -1511,8 +1473,6 @@ internal class DataStoreManagerImpl(
         val SHOULD_SHOW_LOG_IN_REQUIRED_ALERT = stringPreferencesKey("should_show_log_in_required_alert")
         val AUTO_CHECK_FOR_UPDATES = stringPreferencesKey("auto_check_for_updates")
         val UPDATE_CHANNEL = stringPreferencesKey("update_channel")
-        val BLUR_FULLSCREEN_LYRICS = stringPreferencesKey("blur_fullscreen_lyrics")
-        val BLUR_PLAYER_BACKGROUND = stringPreferencesKey("blur_player_background")
         val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
         val PITCH = intPreferencesKey("pitch")
         val OPEN_APP_TIME = intPreferencesKey("open_app_time")

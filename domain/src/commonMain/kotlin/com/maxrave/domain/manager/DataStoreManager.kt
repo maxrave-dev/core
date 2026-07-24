@@ -226,14 +226,6 @@ interface DataStoreManager {
 
     suspend fun setUpdateChannel(channel: String)
 
-    val blurFullscreenLyrics: Flow<String>
-
-    suspend fun setBlurFullscreenLyrics(blur: Boolean)
-
-    val blurPlayerBackground: Flow<String>
-
-    suspend fun setBlurPlayerBackground(blur: Boolean)
-
     val playbackSpeed: Flow<Float>
 
     fun setPlaybackSpeed(speed: Float)
