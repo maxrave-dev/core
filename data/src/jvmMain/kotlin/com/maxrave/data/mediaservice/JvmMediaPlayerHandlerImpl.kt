@@ -543,43 +543,58 @@ class JvmMediaPlayerHandlerImpl(
             coroutineScope.launch {
                 Logger.w(TAG, "getDataOfNowPlayingState: $videoId")
                 songRepository.getSongById(videoId).cancellable().singleOrNull().let { songEntity ->
-                    if (songEntity != null) {
-                        _controlState.update { it.copy(isLiked = songEntity.liked) }
-                        var thumbUrl =
-                            track?.thumbnails?.lastOrNull()?.url
-                                ?: songEntity.thumbnails
-                                ?: "http://i.ytimg.com/vi/${songEntity.videoId}/maxresdefault.jpg"
-                        if (thumbUrl.contains("w120")) {
-                            thumbUrl = Regex("([wh])120").replace(thumbUrl, "$1544")
-                        }
-                        if (songEntity.thumbnails != thumbUrl) {
-                            songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
-                                Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                    // Both branches resolve to an entity that already carries the up-scaled
+                    // thumbnail, so the now-playing state, Discord RPC and the OS media panels
+                    // get the high-res URL immediately instead of waiting for the DB flow to
+                    // re-emit. The regex matches any "=w<n>" / "-h<n>" size segment, not just
+                    // w120, so 60/226/etc. are up-scaled too (parity with Android).
+                    val song: SongEntity =
+                        if (songEntity != null) {
+                            _controlState.update { it.copy(isLiked = songEntity.liked) }
+                            val thumbUrl =
+                                Regex("([=-][wh])\\d+").replace(
+                                    track?.thumbnails?.lastOrNull()?.url
+                                        ?: songEntity.thumbnails
+                                        ?: "http://i.ytimg.com/vi/${songEntity.videoId}/maxresdefault.jpg",
+                                    "$1544",
+                                )
+                            if (songEntity.thumbnails != thumbUrl) {
+                                songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
+                                    Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                                }
                             }
-                        }
-                        songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
-                            Logger.w(TAG, "getDataOfNowPlayingState: $it")
-                        }
-                        songRepository.updateListenCount(songEntity.videoId)
-                    } else {
-                        _controlState.update { it.copy(isLiked = false) }
-                        songRepository
-                            .insertSong(
-                                track?.toSongEntity() ?: mediaItem.toSongEntity(),
-                            ).singleOrNull()
-                            ?.let {
+                            songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
                                 Logger.w(TAG, "getDataOfNowPlayingState: $it")
                             }
-                    }
+                            songRepository.updateListenCount(songEntity.videoId)
+                            songEntity.copy(thumbnails = thumbUrl)
+                        } else {
+                            _controlState.update { it.copy(isLiked = false) }
+                            val thumbUrl =
+                                Regex("([=-][wh])\\d+").replace(
+                                    track?.thumbnails?.lastOrNull()?.url
+                                        ?: "http://i.ytimg.com/vi/${track?.videoId}/maxresdefault.jpg",
+                                    "$1544",
+                                )
+                            val newSong =
+                                (track?.toSongEntity() ?: mediaItem.toSongEntity()).copy(
+                                    thumbnails = thumbUrl,
+                                )
+                            songRepository
+                                .insertSong(newSong)
+                                .singleOrNull()
+                                ?.let {
+                                    Logger.w(TAG, "getDataOfNowPlayingState: $it")
+                                }
+                            newSong
+                        }
                     Logger.w(TAG, "getDataOfNowPlayingState: $songEntity")
                     Logger.w(TAG, "getDataOfNowPlayingState: $track")
                     _nowPlayingState.update {
                         it.copy(
-                            songEntity = songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity(),
+                            songEntity = song,
                         )
                     }
-                    val song =
-                        songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity()
                     updateDiscordRpc(song)
                     nypc?.setNowPlaying(
                         song.title,
@@ -824,12 +839,28 @@ class JvmMediaPlayerHandlerImpl(
 
     // Region: Override functions
     override fun startProgressUpdate() {
+        // Cancel any previous loop first: both onIsPlayingChanged(true) and PlayerEvent.PlayPause
+        // land here, and VLC re-emits isPlaying=true on rebuffer/next-track, so a leaked loop
+        // would otherwise multiply the UI updates and the periodic position writes (#2152).
+        progressJob?.cancel()
         progressJob =
             coroutineScope.launch {
+                // Persist the playback position to DataStore on this interval so a hard quit
+                // or crash while playing still restores the correct position instead of
+                // restarting the track from the beginning (#2152, parity with Android). The
+                // position is otherwise only saved on pause / track change / release, which
+                // misses uninterrupted playback.
+                val positionPersistIntervalMs = 5_000L
+                var sinceLastPositionSaveMs = 0L
                 while (true) {
                     delay(100)
                     _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
                     updateMacOSElapsedTime()
+                    sinceLastPositionSaveMs += 100
+                    if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
+                        sinceLastPositionSaveMs = 0
+                        mayBeSaveRecentPosition()
+                    }
                 }
             }
     }
@@ -840,7 +871,21 @@ class JvmMediaPlayerHandlerImpl(
                 while (true) {
                     delay(500)
                     _simpleMediaState.value =
-                        SimpleMediaState.Loading(100, player.duration)
+                        SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
+                    // Tracks whose catalog metadata carries no duration would otherwise stay at
+                    // 0:00 forever on desktop; VLC only knows the real length once the media is
+                    // parsed, so backfill it here (parity with Android).
+                    val current = nowPlayingState.value.songEntity
+                    if (current?.durationSeconds == 0 && player.duration > 0L) {
+                        _nowPlayingState.update {
+                            it.copy(
+                                songEntity =
+                                    current.copy(
+                                        durationSeconds = (player.duration / 1000).toInt(),
+                                    ),
+                            )
+                        }
+                    }
                 }
             }
     }
@@ -2116,6 +2161,21 @@ class JvmMediaPlayerHandlerImpl(
             runBlocking { unit() }
         } else {
             coroutineScope.launch { unit() }
+        }
+    }
+
+    /**
+     * Lightweight periodic persistence of just the playback position (#2152).
+     * Unlike [mayBeSaveRecentSong] this does NOT rewrite the whole saved queue, so it is
+     * cheap enough to call every few seconds while a track plays uninterrupted. The saved
+     * media id + position are what [mayBeRestoreQueue] reads to resume on next launch.
+     */
+    private fun mayBeSaveRecentPosition() {
+        coroutineScope.launch {
+            if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
+                val videoId = nowPlayingState.value.songEntity?.videoId ?: return@launch
+                dataStoreManager.saveRecentSong(videoId, player.contentPosition)
+            }
         }
     }
 
