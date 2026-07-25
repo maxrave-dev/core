@@ -277,4 +277,12 @@ class JamPlayerSynchronizer(
                     JamRepeatMode.OFF -> currentRepeat is com.maxrave.domain.mediaservice.handler.RepeatState.None
                     JamRepeatMode.QUEUE -> currentRepeat is com.maxrave.domain.mediaservice.handler.RepeatState.All
                     JamRepeatMode.ONE -> currentRepeat is com.maxrave.domain.mediaservice.handler.RepeatState.One
-              
+                }
+                if (!alreadyMatches) {
+                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Repeat)
+                }
+            }
+            else -> { /* no-op for non-player commands */ }
+        }
+    }
+}
