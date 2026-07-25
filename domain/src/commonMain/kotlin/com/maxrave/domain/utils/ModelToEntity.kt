@@ -56,7 +56,7 @@ fun ResultVideo.toTrack(): Track =
     Track(
         album = null,
         artists = this.artists ?: listOf(),
-        duration = this.duration,
+        duration = this.duration ?: "",
         durationSeconds = this.durationSeconds,
         isAvailable = false,
         isExplicit = false,

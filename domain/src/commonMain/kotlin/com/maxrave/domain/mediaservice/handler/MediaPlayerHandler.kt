@@ -46,6 +46,8 @@ interface MediaPlayerHandler {
 
     fun resetSongAndQueue()
 
+    fun hardReset()
+
     // Sleep timer
     fun sleepStart(minutes: Int)
 

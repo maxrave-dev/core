@@ -713,6 +713,16 @@ internal class MediaServiceHandlerImpl(
             player.prepare()
             player.playWhenReady = true
         }
+        val activeItem = player.currentMediaItem ?: mediaItem
+        val videoId = activeItem.mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+        val track = queueData.value.data.listTracks.find { it.videoId == videoId }
+        _nowPlayingState.update {
+            it.copy(
+                mediaItem = activeItem,
+                track = track,
+            )
+        }
+        getDataOfNowPlayingState(activeItem)
         updateNextPreviousTrackAvailability()
     }
 
@@ -1007,6 +1017,24 @@ internal class MediaServiceHandlerImpl(
         _queueData.value = QueueData()
     }
 
+    override fun hardReset() {
+        Logger.w(TAG, "Executing hardReset() for Jam session teardown")
+        player.stop()
+        player.clearMediaItems()
+        _nowPlayingState.value = NowPlayingTrackState.initial()
+        _queueData.value = QueueData()
+        _controlState.value = ControlState(
+            isPlaying = false,
+            isShuffle = false,
+            repeatState = RepeatState.None,
+            isLiked = false,
+            isNextAvailable = false,
+            isPreviousAvailable = false,
+            isCrossfading = false,
+            volume = 1f,
+        )
+    }
+
     override fun sleepStart(minutes: Int) {
         sleepTimerJob?.cancel()
         sleepTimerJob =
@@ -1078,10 +1106,21 @@ internal class MediaServiceHandlerImpl(
         player.setMediaItem(mediaItem)
         player.prepare()
         player.playWhenReady = playWhenReady
+        _nowPlayingState.update {
+            it?.copy(
+                mediaItem = mediaItem,
+            ) ?: NowPlayingTrackState.initial().copy(
+                mediaItem = mediaItem,
+            )
+        }
+        getDataOfNowPlayingState(mediaItem)
     }
 
     override fun clearMediaItems() {
         player.clearMediaItems()
+        _nowPlayingState.value = NowPlayingTrackState.initial()
+        _queueData.value = QueueData()
+        updateNextPreviousTrackAvailability()
     }
 
     override fun addMediaItemList(mediaItemList: List<GenericMediaItem>) {
@@ -1095,6 +1134,19 @@ internal class MediaServiceHandlerImpl(
         player.seekTo(i, 0)
         player.prepare()
         player.playWhenReady = true
+        val activeItem = try { player.getMediaItemAt(i) } catch (_: Exception) { player.currentMediaItem }
+        if (activeItem != null) {
+            val videoId = activeItem.mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+            val track = queueData.value.data.listTracks.find { it.videoId == videoId }
+            _nowPlayingState.update {
+                it.copy(
+                    mediaItem = activeItem,
+                    track = track,
+                )
+            }
+            getDataOfNowPlayingState(activeItem)
+        }
+        updateNextPreviousTrackAvailability()
     }
 
     override fun currentSongIndex(): Int = player.currentMediaItemIndex
@@ -1463,6 +1515,7 @@ internal class MediaServiceHandlerImpl(
     override fun setQueueData(queueData: QueueData.Data) {
         _queueData.update {
             it.copy(
+                queueState = QueueData.StateSource.STATE_INITIALIZED,
                 data = queueData,
             )
         }
@@ -1470,6 +1523,8 @@ internal class MediaServiceHandlerImpl(
     }
 
     override fun getCurrentMediaItem(): GenericMediaItem? = player.currentMediaItem
+
+
 
     override suspend fun moveItemUp(position: Int) {
         moveMediaItem(position, position - 1)

@@ -1112,6 +1112,9 @@ class JvmMediaPlayerHandlerImpl(
 
     override fun clearMediaItems() {
         player.clearMediaItems()
+        _nowPlayingState.value = NowPlayingTrackState.initial()
+        _queueData.value = QueueData()
+        updateNextPreviousTrackAvailability()
     }
 
     override fun addMediaItemList(mediaItemList: List<GenericMediaItem>) {

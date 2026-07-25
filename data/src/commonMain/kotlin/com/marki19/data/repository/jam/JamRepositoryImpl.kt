@@ -1,5 +1,6 @@
 package com.marki19.data.repository.jam
 
+import com.marki19.domain.jam.cleanId
 import com.marki19.domain.jam.JamCommand
 import com.marki19.domain.jam.JamParticipant
 import com.marki19.domain.jam.JamPermissions
@@ -263,7 +264,12 @@ class JamRepositoryImpl(
                     }
                     "SONG_REMOVED" -> {
                         val queueId = message.payload?.string("queueId") ?: return
-                        _incomingCommands.tryEmit(JamCommand.RemoveQueueItem(queueId))
+                        val payloadVideoId = message.payload.string("videoId") ?: ""
+                        val resolvedVideoId = payloadVideoId.ifBlank {
+                            _sessionState.value?.playbackState?.queue
+                                ?.find { it.queueId == queueId }?.videoId ?: ""
+                        }
+                        _incomingCommands.tryEmit(JamCommand.RemoveQueueItem(queueId, resolvedVideoId))
                     }
                     "SONG_MOVED" -> {
                         val queueId = message.payload?.string("queueId") ?: return
@@ -331,6 +337,7 @@ class JamRepositoryImpl(
                         val thumbnailUrl = message.payload?.string("thumbnailUrl") ?: ""
                         val durationMs = message.payload?.long("durationMs") ?: 0L
 
+                        updateState { it.copy(playbackState = it.playbackState.copy(currentSongId = videoId, isPlaying = true)) }
                         _incomingCommands.tryEmit(
                             JamCommand.PlayNow(videoId, title, artist, thumbnailUrl, durationMs)
                         )
@@ -503,7 +510,10 @@ class JamRepositoryImpl(
             JsonObject(mapOf("index" to JsonPrimitive(command.index)))
 
         is JamCommand.RemoveQueueItem ->
-            JsonObject(mapOf("queueId" to JsonPrimitive(command.queueId)))
+            JsonObject(mapOf(
+                "queueId" to JsonPrimitive(command.queueId),
+                "videoId" to JsonPrimitive(command.videoId)
+            ))
 
         is JamCommand.RemoveFromQueue ->
             JsonObject(mapOf("index" to JsonPrimitive(command.index)))

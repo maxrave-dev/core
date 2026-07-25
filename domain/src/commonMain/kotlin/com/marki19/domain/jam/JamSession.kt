@@ -106,7 +106,7 @@ sealed class JamCommand {
         val thumbnailUrl: String?,
         val durationMs: Long
     ) : JamCommand()
-    data class RemoveQueueItem(val queueId: String) : JamCommand()
+    data class RemoveQueueItem(val queueId: String, val videoId: String = "") : JamCommand()
     /** Legacy index-based remove — kept for JamPlayerSynchronizer compatibility. */
     data class RemoveFromQueue(val index: Int) : JamCommand()
     data class MoveQueueItem(val queueId: String, val toIndex: Int) : JamCommand()
