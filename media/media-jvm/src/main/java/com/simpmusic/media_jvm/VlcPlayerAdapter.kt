@@ -215,6 +215,14 @@ class VlcPlayerAdapter(
     @Volatile
     private var crossfadeFromIndex = -1
 
+    /**
+     * Set only while [commitIncomingAsCurrent] tears down a fade. [performCrossfade]'s
+     * cancellation handler releases the incoming player by default; during a commit we are
+     * promoting that very player, so it must be kept alive.
+     */
+    @Volatile
+    private var committingIncomingPlayer = false
+
     // AutoMix metadata cache (in-memory, populated from Tidal via NewFormatEntity)
     private val audioMetaCache = ConcurrentHashMap<String, SongAudioMeta>()
 
@@ -310,10 +318,11 @@ class VlcPlayerAdapter(
     override fun pause() {
         Logger.d(TAG, "pause() called (current state: $internalState)")
         coroutineScope.launch {
-            // Cancel any ongoing crossfade and await completion before proceeding
+            // Pausing mid-crossfade stays on A+1 — the track the UI already shows — and freezes
+            // it in place via the when(internalState) block below. It does NOT jump back to A.
             if (isCrossfading) {
-                Logger.d(TAG, "Pause: Cancelling crossfade")
-                cancelCrossfadeAndCleanup(revertIndex = true)
+                Logger.d(TAG, "Pause: committing incoming (A+1) and pausing in place")
+                commitIncomingAsCurrent()
             }
 
             when (internalState) {
@@ -400,31 +409,31 @@ class VlcPlayerAdapter(
     }
 
     override fun seekToNext() {
-        if (hasNextMediaItem()) {
-            // During crossfade A→A+1: user pressing "next" means go to the track we're fading in (A+1).
-            // localCurrentMediaItemIndex was already updated to A+1 in triggerCrossfadeTransition,
-            // so getNextMediaItemIndex() would return A+2. We must seek to localCurrentMediaItemIndex instead.
-            if (isCrossfading) {
-                val targetIndex = localCurrentMediaItemIndex
-                Logger.d(TAG, "seekToNext: Cancelling crossfade, seeking to track we're fading in (index $targetIndex)")
-                coroutineScope.launch {
-                    cancelCrossfadeAndCleanup(revertIndex = false)
-                    seekTo(targetIndex, 0)
-                }
-                return
+        coroutineScope.launch {
+            // During crossfade A→A+1, "next" commits A+1 as current (the UI already shows A+1)
+            // and then advances to A+2. Outside a crossfade it advances normally. hasNextMediaItem()
+            // is evaluated AFTER the commit so it is relative to A+1, not A.
+            val wasCrossfading = isCrossfading
+            if (wasCrossfading) {
+                Logger.d(TAG, "seekToNext: committing incoming (A+1), then advancing to A+2")
+                commitIncomingAsCurrent()
             }
-
-            val nextIndex = getNextMediaItemIndex()
-            seekTo(nextIndex, 0)
+            if (hasNextMediaItem()) {
+                seekTo(getNextMediaItemIndex(), 0)
+            } else if (wasCrossfading) {
+                // A+1 was the last track — stay on it; it is already promoted and announced.
+                Logger.d(TAG, "seekToNext: A+1 was the last track — staying on it")
+            }
         }
     }
 
     override fun seekToPrevious() {
         coroutineScope.launch {
-            // Cancel any ongoing crossfade first and revert index, awaiting completion
+            // Commit the incoming track (A+1) as current FIRST, so the 3-second rule below
+            // evaluates against A+1's position and index rather than A's.
             if (isCrossfading) {
-                Logger.d(TAG, "seekToPrevious: Cancelling crossfade")
-                cancelCrossfadeAndCleanup(revertIndex = true)
+                Logger.d(TAG, "seekToPrevious: committing incoming (A+1) first")
+                commitIncomingAsCurrent()
             }
 
             // Standard music player behavior:
@@ -449,10 +458,11 @@ class VlcPlayerAdapter(
 
     override fun seekToPreviousMediaItem() {
         coroutineScope.launch {
-            // Cancel any ongoing crossfade first (mirror seekToPrevious()).
+            // Mirror seekToPrevious(): commit the incoming track (A+1) as current first, so
+            // "previous" means the track before A+1 (i.e. A), not the one before A.
             if (isCrossfading) {
-                Logger.d(TAG, "seekToPreviousMediaItem: Cancelling crossfade")
-                cancelCrossfadeAndCleanup(revertIndex = true)
+                Logger.d(TAG, "seekToPreviousMediaItem: committing incoming (A+1) first")
+                commitIncomingAsCurrent()
             }
 
             // Always go to the previous track — skips the 3-second "seek to start"
@@ -1580,6 +1590,72 @@ class VlcPlayerAdapter(
     }
 
     /**
+     * Abort an in-progress crossfade by committing the INCOMING track (A+1) as the new current
+     * player — the mid-fade counterpart of [finalizeCrossfade]. Invoked when the user interacts
+     * during a crossfade (next / previous / pause).
+     *
+     * Direction: "crossfade means we have moved to A+1", so A+1 is kept and A is dropped. This
+     * mirrors CrossfadeExoPlayerAdapter.commitIncomingAsCurrentInternal() on Android — both
+     * platforms must resolve mid-crossfade transport commands the same way.
+     *
+     * [localCurrentMediaItemIndex] already equals A+1 and its onMediaItemTransition was emitted
+     * by [triggerCrossfadeTransition], so neither is touched here: the UI already shows A+1.
+     *
+     * Position polling is deliberately left running, unlike the Android counterpart. On this
+     * adapter the poll loop also drives crossfade detection and [play] never restarts it, so
+     * stopping it here would freeze progress and disable every later crossfade.
+     *
+     * Does NOT change [internalState] and does NOT seek — the caller decides what happens next
+     * (pause in place, advance to A+2, go to previous, ...).
+     */
+    private suspend fun commitIncomingAsCurrent() {
+        val incoming = secondaryPlayer
+        if (incoming == null) {
+            // The fade already collapsed (the secondary player errored out and was released).
+            // Nothing to promote, so revert to A instead — that keeps index and player in sync.
+            Logger.w(TAG, "commitIncomingAsCurrent: no incoming player, reverting to outgoing track")
+            cancelCrossfadeAndCleanup(revertIndex = true)
+            return
+        }
+
+        committingIncomingPlayer = true
+        try {
+            val job = crossfadeJob
+            crossfadeJob = null
+            job?.cancel()
+            job?.join()
+        } finally {
+            committingIncomingPlayer = false
+        }
+
+        // Drop the outgoing track (A).
+        currentPlayer?.let { outgoing ->
+            try {
+                outgoing.release()
+            } catch (e: Exception) {
+                Logger.w(TAG, "commitIncomingAsCurrent: error releasing outgoing player: ${e.message}")
+            }
+        }
+
+        // Promote the incoming track (A+1).
+        currentPlayer = incoming
+        currentPlayerIsVideo = incoming.videoSurface != null
+        _currentVideoSurface.value = incoming.videoSurface
+        secondaryPlayer = null
+
+        // Until now it only carried the minimal crossfade error listener (see
+        // triggerCrossfadeTransition); give it the full one now that it is the current player.
+        setupPlayerEventsInternal(incoming)
+
+        // It was mid fade-in, so its volume sits somewhere below the target.
+        incoming.setVolume((internalVolume * 100).toInt())
+
+        crossfadeFromIndex = -1
+        setCrossfading(false)
+        Logger.d(TAG, "commitIncomingAsCurrent: committed track index $localCurrentMediaItemIndex")
+    }
+
+    /**
      * Perform the actual crossfade animation
      *
      * @param effectiveDurationMs The actual crossfade duration to use. May be shorter than
@@ -1618,10 +1694,16 @@ class VlcPlayerAdapter(
 
             finalizeCrossfade(nextIndex, nextPlayer)
         } catch (e: CancellationException) {
-            Logger.d(TAG, "Crossfade cancelled")
-            nextPlayer.release()
-            secondaryPlayer = null
-            setCrossfading(false)
+            if (committingIncomingPlayer) {
+                // commitIncomingAsCurrent() is promoting nextPlayer to current — releasing it
+                // here would kill the track the user just chose to keep.
+                Logger.d(TAG, "Crossfade cancelled to commit incoming track — keeping its player")
+            } else {
+                Logger.d(TAG, "Crossfade cancelled")
+                nextPlayer.release()
+                secondaryPlayer = null
+                setCrossfading(false)
+            }
         }
     }
 
