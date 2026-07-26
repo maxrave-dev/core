@@ -2089,8 +2089,12 @@ class JvmMediaPlayerHandlerImpl(
             _queueData.update {
                 it
                     .copy(
+                        data =
+                            it.data.copy(
+                                listTracks = catalogMetadata,
+                            ),
                         queueState = QueueData.StateSource.STATE_INITIALIZED,
-                    ).addTrackList(catalogMetadata)
+                    )
             }
             reorderShuffledQueue(player.getCurrentMediaTimeLine())
         }
