@@ -139,7 +139,6 @@ fun SongEntity.toTrack(): Track {
         isAvailable = this.isAvailable,
         isExplicit = this.isExplicit,
         likeStatus = this.likeStatus,
-        // Update the thumbnails line to handle nulls safely
         thumbnails = if (isSong) listOf(Thumbnail(544, this.thumbnails ?: "", 544))
         else listOf(Thumbnail(720, this.thumbnails ?: "", 1080)),
         title = this.title,

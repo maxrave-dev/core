@@ -460,6 +460,14 @@ class JamRepositoryImpl(
         val type = commandType(command)
         val payload = commandPayload(command)
 
+        // Local echo for commands that affect local playback so the host reacts instantly, 
+        // in case the server does not broadcast to the sender, or to eliminate network latency.
+        if (command is JamCommand.PlayNow || command is JamCommand.Play || command is JamCommand.Pause || 
+            command is JamCommand.Skip || command is JamCommand.SkipTo || command is JamCommand.Seek || 
+            command is JamCommand.SetShuffle || command is JamCommand.SetRepeat) {
+            _incomingCommands.tryEmit(command)
+        }
+
         // Rely on the server broadcast for ChatMessage so it doesn't duplicate
         // (No local echo)
         jamClient.sendCommand(type, payload)
