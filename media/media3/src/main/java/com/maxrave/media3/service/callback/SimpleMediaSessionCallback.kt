@@ -52,6 +52,7 @@ import com.maxrave.media3.R
 import com.maxrave.media3.extension.toMediaItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.flow.lastOrNull
@@ -96,6 +97,19 @@ internal class SimpleMediaSessionCallback(
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.SHUFFLE, Bundle()))
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.GET_PLATFORM_TOKEN, Bundle()))
                 .build()
+        // Backup for MODE: when Gearhead rebinds after AA returns, resume only if we were
+        // interrupted while playing (adapter also watches CarConnection).
+        if (isAndroidAutoHost(controller.packageName)) {
+            scope.launch {
+                delay(500)
+                runCatching {
+                    (mediaPlayerHandler.player as? com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter)
+                        ?.resumeIfInterrupted()
+                }.onFailure {
+                    Logger.e(TAG, "AA resume failed: ${it.message}")
+                }
+            }
+        }
         return MediaSession.ConnectionResult
             .AcceptedResultBuilder(session)
             .setAvailableSessionCommands(sessionCommands)
@@ -508,7 +522,18 @@ internal class SimpleMediaSessionCallback(
             when (path.firstOrNull()) {
                 SONG -> {
                     val songId = path.getOrNull(1) ?: return@future defaultResult
-                    val firstQueue = songRepository.getSongById(songId).first()?.toTrack() ?: return@future defaultResult
+                    // Search results are shown from searchTempList but were never written to Room.
+                    // Looking up only via getSongById made AA search taps no-op for new songs,
+                    // so the previously playing track kept going (looked like the "wrong" song).
+                    val firstQueue =
+                        searchTempList.firstOrNull { it.videoId == songId }
+                            ?: songRepository.getSongById(songId).first()?.toTrack()
+                            ?: streamRepository.getFullMetadata(songId).lastOrNull()?.data
+                    if (firstQueue == null) {
+                        Logger.w(TAG, "onSetMediaItems SONG: no track for $songId")
+                        return@future defaultResult
+                    }
+                    Logger.w(TAG, "onSetMediaItems SONG: playing ${firstQueue.title} ($songId)")
                     mediaPlayerHandler.setQueueData(
                         QueueData.Data(
                             listTracks = arrayListOf(firstQueue),
@@ -816,5 +841,10 @@ internal class SimpleMediaSessionCallback(
         const val FAVORITE = "favorite"
         const val DOWNLOADED = "downloaded"
         const val MEDIA_SEARCH_SUPPORTED = "android.media.browse.SEARCH_SUPPORTED"
+
+        private fun isAndroidAutoHost(packageName: String): Boolean =
+            packageName == "com.google.android.projection.gearhead" ||
+                packageName.contains("projection", ignoreCase = true) ||
+                packageName.contains("gearhead", ignoreCase = true)
     }
 }
