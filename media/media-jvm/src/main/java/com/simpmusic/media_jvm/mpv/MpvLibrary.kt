@@ -262,19 +262,85 @@ interface MpvLibrary : Library {
             }
         }
 
+        /** File names that identify a directory as holding a usable libmpv. */
+        private fun hasMpvLib(dir: java.io.File): Boolean =
+            dir.listFiles()?.any { file ->
+                val name = file.name
+                name.startsWith("libmpv.so") ||
+                    name.startsWith("libmpv.") && name.endsWith(".dylib") ||
+                    name == "libmpv.dylib" ||
+                    name.startsWith("libmpv") && name.endsWith(".dll") ||
+                    name == "mpv-2.dll"
+            } == true
+
+        /**
+         * Directories that may hold a bundled libmpv, most specific first.
+         *
+         * Deliberately mirrors `DefaultVlcDiscoverer.findBundledVlcPath()`, because the two
+         * backends are staged by the same pipelines and hit the same two-packagers problem:
+         *
+         *  1. `mpv.bundled.path` — set by `:desktopApp:run` (Gradle dev loop).
+         *  2. `compose.application.resources.dir` — set by the Compose/jpackage packaging path
+         *     only, and its per-OS subdirectory is searched too.
+         *  3. A `mpv/` directory found by walking up from this class's own JAR. This is the
+         *     one that matters for shipped builds: Conveyor stages natives via
+         *     `mac.aarch64.inputs += { from = "mpv-natives/macos-arm64", to = "mpv" }` and does
+         *     NOT set compose.application.resources.dir, so case 2 never fires there.
+         *  4. `mpv-natives/<os>-<arch>` relative to the working directory, for a raw checkout.
+         */
+        private fun bundledLibraryDirs(): List<java.io.File> {
+            val candidates = mutableListOf<java.io.File>()
+
+            System.getProperty("mpv.bundled.path")?.let { candidates += java.io.File(it) }
+
+            System.getProperty("compose.application.resources.dir")?.let { dir ->
+                val root = java.io.File(dir)
+                candidates += root
+                root.listFiles()?.filter { it.isDirectory }?.let { candidates += it }
+            }
+
+            // Walk up from the JAR/classes location looking for a sibling `mpv/`. The depth
+            // covers Conveyor's app layouts on all three OSes without hard-coding any of them.
+            runCatching {
+                val codeSource = MpvLibrary::class.java.protectionDomain?.codeSource?.location
+                var dir = codeSource?.toURI()?.let { java.io.File(it) }?.parentFile
+                repeat(6) {
+                    val current = dir ?: return@repeat
+                    candidates += current.resolve("mpv")
+                    dir = current.parentFile
+                }
+            }
+
+            val osName = System.getProperty("os.name", "").lowercase()
+            val osArch = System.getProperty("os.arch", "").lowercase()
+            val subDir =
+                when {
+                    osName.contains("win") -> if (osArch.contains("aarch64")) "windows-arm64" else "windows-x64"
+                    osName.contains("mac") -> if (osArch.contains("aarch64")) "macos-arm64" else "macos-x64"
+                    else -> "linux-x64"
+                }
+            candidates += java.io.File("mpv-natives/$subDir")
+
+            return candidates.filter { it.isDirectory && hasMpvLib(it) }.distinctBy { it.absolutePath }
+        }
+
         private fun loadLibrary(): MpvLibrary? {
             forceCNumericLocale()
 
-            // Mirrors VlcPlayerAdapter: packaged natives live in the Compose resources dir.
-            System
-                .getProperty("compose.application.resources.dir")
-                ?.let { dir ->
-                    val existing = System.getProperty("jna.library.path")
-                    System.setProperty(
-                        "jna.library.path",
-                        if (existing.isNullOrBlank()) dir else "$existing${java.io.File.pathSeparator}$dir",
-                    )
-                }
+            // Bundled natives take priority over any system install: they are the versions
+            // MpvLibrary's struct layouts were verified against.
+            val bundled = bundledLibraryDirs()
+            if (bundled.isNotEmpty()) {
+                val existing = System.getProperty("jna.library.path")
+                val bundledPath = bundled.joinToString(java.io.File.pathSeparator) { it.absolutePath }
+                System.setProperty(
+                    "jna.library.path",
+                    if (existing.isNullOrBlank()) bundledPath else "$bundledPath${java.io.File.pathSeparator}$existing",
+                )
+                Logger.d(TAG, "Bundled libmpv search path: $bundledPath")
+            } else {
+                Logger.d(TAG, "No bundled libmpv found; falling back to a system-wide install")
+            }
 
             for (name in CANDIDATE_NAMES) {
                 try {
@@ -323,12 +389,14 @@ interface MpvLibrary : Library {
                     Logger.d(TAG, "libmpv not loadable as '$name': ${e.message}")
                 }
             }
-            // There is no equivalent of the `vlc-setup` Gradle plugin for mpv yet, so libmpv is
-            // not bundled with the app — it has to be present system-wide.
+            // Shipped builds carry libmpv in mpv-natives/<os>-<arch>, staged by
+            // `./gradlew :composeApp:mpvSetupAll` and placed by Conveyor. Reaching this point
+            // means neither the bundle nor a system install was usable.
             Logger.e(
                 TAG,
                 "libmpv native library not found (tried: ${CANDIDATE_NAMES.joinToString(", ")}). " +
-                    "mpv is not bundled with SimpMusic; install it system-wide " +
+                    "Bundled natives were not located either — from a source checkout run " +
+                    "'./gradlew :composeApp:mpvSetupAll', or install libmpv system-wide " +
                     "(Debian/Ubuntu: 'apt install libmpv2', Fedora: 'dnf install mpv-libs', " +
                     "macOS: 'brew install mpv', Windows: place libmpv-2.dll on the library path).",
             )

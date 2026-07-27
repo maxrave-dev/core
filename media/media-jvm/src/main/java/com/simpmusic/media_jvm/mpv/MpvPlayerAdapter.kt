@@ -2497,8 +2497,25 @@ class MpvPlayerAdapter(
                         // request, so muxed=true silently drops the login for that call).
                     ).lastOrNull()
             if (videoUrl != null) {
-                Logger.d(TAG, "Stream Video $videoUrl")
-                return PlayableSource(isVideo = true, url = videoUrl)
+                // The stream above is video-ONLY. Dropping `muxed = true` traded the HLS
+                // manifest (audio and video in one URL) for a real DASH stream, which carries
+                // no audio track at all — so the audio URL has to be fetched separately and
+                // merged back in, exactly as the format path above does. Without this the
+                // player plays a silent video, with nothing in the logs to say why.
+                val audioUrl =
+                    streamRepository
+                        .getStream(
+                            dataStoreManager,
+                            videoId,
+                            isDownloading = false,
+                            isVideo = false,
+                        ).lastOrNull()
+                Logger.d(TAG, "Stream Video $videoUrl (with audio stream: ${audioUrl != null})")
+                return PlayableSource(
+                    isVideo = true,
+                    url = videoUrl,
+                    audioSlaveUrl = audioUrl,
+                )
             }
         } else {
             val audioUrl =

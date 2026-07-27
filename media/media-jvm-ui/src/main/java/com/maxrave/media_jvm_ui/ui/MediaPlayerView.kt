@@ -46,12 +46,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.swing.Swing
 import org.koin.compose.koinInject
-// Imports for the commented-out VLC implementations below, kept alongside them for comparison:
-// import com.simpmusic.media_jvm.VlcPlayerAdapter
-// import com.simpmusic.media_jvm.VlcVideoSurfacePanel
-// import uk.co.caprica.vlcj.factory.MediaPlayerFactory
-// import uk.co.caprica.vlcj.player.base.MediaPlayer
-// import uk.co.caprica.vlcj.player.base.MediaPlayerEventAdapter
 import java.awt.Component
 import java.awt.Dimension
 import javax.swing.JPanel
@@ -65,49 +59,6 @@ fun MediaPlayerViewWithUrl(
     var videoPanel by remember { mutableStateOf<Component?>(null) }
     var mpvPlayer by remember { mutableStateOf<MpvPlayer?>(null) }
 
-    // Previous VLC implementation, kept for comparison while the mpv backend is evaluated.
-    // This composable built its own MediaPlayerFactory rather than going through DI, so it was
-    // the last runtime path able to construct VLC.
-    //
-    // var videoPanel by remember { mutableStateOf<VlcVideoSurfacePanel?>(null) }
-    // var vlcFactory by remember { mutableStateOf<MediaPlayerFactory?>(null) }
-    // var vlcPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    //
-    // DisposableEffect(url) {
-    //     scope.launch(Dispatchers.Swing) {
-    //         val factory = MediaPlayerFactory()
-    //         vlcFactory = factory
-    //         val panel = VlcVideoSurfacePanel()
-    //
-    //         val player = factory.mediaPlayers().newEmbeddedMediaPlayer()
-    //         val surface = panel.createVideoSurface(factory)
-    //         player.videoSurface().set(surface)
-    //         vlcPlayer = player
-    //
-    //         player.events().addMediaPlayerEventListener(
-    //             object : MediaPlayerEventAdapter() {
-    //                 override fun finished(mediaPlayer: MediaPlayer) {
-    //                     // VLCJ deadlocks if you call player methods from the event callback thread.
-    //                     // Dispatch replay onto the Swing EDT to avoid the deadlock.
-    //                     scope.launch(Dispatchers.Swing) {
-    //                         mediaPlayer.media().play(url)
-    //                     }
-    //                 }
-    //             },
-    //         )
-    //
-    //         videoPanel = panel
-    //         player.media().play(url)
-    //     }
-    //     onDispose {
-    //         vlcPlayer?.release()
-    //         vlcFactory?.release()
-    //         videoPanel = null
-    //         vlcPlayer = null
-    //         vlcFactory = null
-    //     }
-    // }
-
     DisposableEffect(url) {
         scope.launch(Dispatchers.Swing) {
             // audioOnly = false attaches the software render context before the first loadfile,
@@ -116,8 +67,7 @@ fun MediaPlayerViewWithUrl(
             val player = MpvPlayer.create(audioOnly = false)
             if (player != null) {
                 mpvPlayer = player
-                // mpv loops natively, so no end-of-file listener is needed. The VLC version had to
-                // re-issue play() on finished(), which refetched the URL on every repeat.
+                // mpv loops natively, so no end-of-file listener is needed.
                 player.setLooping(true)
                 videoPanel = player.videoSurface
                 player.loadFile(url, startPaused = false)
@@ -173,9 +123,6 @@ fun MediaPlayerViewWithSubtitleJvm(
     translatedTextStyle: TextStyle,
     mediaPlayerHandler: MediaPlayerHandler = koinInject(),
 ) {
-    // Kept for comparison while the mpv backend is evaluated — injecting VlcPlayerAdapter here
-    // would construct a VLC MediaPlayerFactory even though mpv is the bound MediaPlayerInterface.
-    // val player: VlcPlayerAdapter = koinInject<VlcPlayerAdapter>()
     val player: MpvPlayerAdapter = koinInject<MpvPlayerAdapter>()
 
     val state by mediaPlayerHandler.nowPlayingState.collectAsState()
