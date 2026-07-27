@@ -4,8 +4,24 @@ import com.maxrave.logger.Logger
 import com.sun.jna.Memory
 import com.sun.jna.Pointer
 import java.awt.Component
+import java.util.Locale
 
 private const val TAG = "MpvPlayer"
+
+/**
+ * The two halves of the DJ-style filter sweep, mirroring `BiquadFilter.FilterType` on the Android
+ * backend: during a crossfade the outgoing track gets a low-pass whose cutoff falls, and the
+ * incoming track a high-pass whose cutoff falls.
+ *
+ * [lavfiName] is the libavfilter filter name. It doubles as the `af-command` *target*, which is why
+ * the caller has to say which sweep a handle is running — see [MpvPlayer.setCrossfadeCutoffHz].
+ */
+enum class MpvCrossfadeFilter(
+    internal val lavfiName: String,
+) {
+    LOW_PASS("lowpass"),
+    HIGH_PASS("highpass"),
+}
 
 /**
  * Event callbacks for a single [MpvPlayer], shaped after vlcj's `MediaPlayerEventAdapter` so the
@@ -86,6 +102,12 @@ class MpvPlayer private constructor(
 
         /** Scratch buffer for get/set_property with a native format. One per calling thread. */
         private val scratch = ThreadLocal.withInitial { Memory(8) }
+
+        /** `@label:` of the DJ sweep entry, so `af-command` can retune it mid-fade. */
+        private const val SWEEP_LABEL = "simpDjSweep"
+
+        /** `@label:` of the rubberband entry that carries the AutoMix pitch match. */
+        private const val PITCH_LABEL = "simpDjPitch"
 
         /**
          * Create and initialize a libmpv handle.
@@ -468,6 +490,150 @@ class MpvPlayer private constructor(
         setPropertyDouble("speed", rate.toDouble())
     }
 
+    // ================= DJ crossfade audio chain =================
+    //
+    // Android runs the sweep through `CrossfadeFilterAudioProcessor` and the tempo/pitch match
+    // through `PlaybackParameters`. Neither exists here, so both are expressed as mpv audio
+    // filters. Everything mpv-specific about that — filter names, the `af` string grammar,
+    // number formatting — is contained in this section; the adapter only ever speaks Hz and
+    // ratios, exactly as it does on Android.
+
+    /**
+     * What [installCrossfadeChain] actually got past mpv. The caller must not drive a stage that
+     * came back false — `af-command` against a filter that is not in the chain fails on every
+     * animation step.
+     */
+    data class CrossfadeChain(
+        val sweep: Boolean,
+        val pitchShift: Boolean,
+    ) {
+        companion object {
+            val NONE = CrossfadeChain(sweep = false, pitchShift = false)
+        }
+    }
+
+    /**
+     * Install the audio filter chain a DJ-style crossfade needs on this handle.
+     *
+     * Rebuilding the `af` chain is the expensive part (mpv drains and re-creates the filter
+     * graph), so it happens once here and the per-step updates go through `af-command`
+     * ([setCrossfadeCutoffHz] / [setPitchScale]) which retunes the live filters in place.
+     *
+     * The chain is written as an `af` property string, v0.37.0 options.rst:1941
+     * ``--af=<filter1[=parameter1:parameter2:...],filter2,...>``, with `@label:` prefixes per
+     * v0.37.0 vf.rst:15 (*"Before the filter name, a label can be specified with ``@name:``"*)
+     * so `af-command` can address each entry later.
+     *
+     * @param sweep the filter sweep to arm, or null for none. Armed at [sweepStartHz] so the
+     *   chain is installed transparently (the sweep only bites once [setCrossfadeCutoffHz] runs).
+     * @param pitchShift arms `rubberband` at its neutral `pitch-scale=1.0`. Required for
+     *   [setPitchScale]; `speed` alone never moves pitch (see [setPitchScale]).
+     * @return which parts mpv actually accepted — see [CrossfadeChain].
+     */
+    fun installCrossfadeChain(
+        sweep: MpvCrossfadeFilter?,
+        sweepStartHz: Float,
+        pitchShift: Boolean,
+    ): CrossfadeChain {
+        if (isReleased) return CrossfadeChain.NONE
+        if (sweep == null && !pitchShift) {
+            clearAudioFilters()
+            return CrossfadeChain.NONE
+        }
+        if (applyCrossfadeChain(sweep, sweepStartHz, pitchShift)) {
+            return CrossfadeChain(sweep = sweep != null, pitchShift = pitchShift)
+        }
+        // librubberband is an OPTIONAL build-time dependency of libmpv — this build reports
+        // "rubberband rubberband-3" among its features, but a bundled build for another platform
+        // may not have it, in which case mpv rejects the whole chain string. The lavfi biquads
+        // ship with every FFmpeg, so drop the pitch stage rather than lose the sweep as well.
+        if (pitchShift && sweep != null && applyCrossfadeChain(sweep, sweepStartHz, false)) {
+            Logger.w(TAG, "rubberband unavailable; crossfade keeps the filter sweep without pitch match")
+            return CrossfadeChain(sweep = true, pitchShift = false)
+        }
+        Logger.w(TAG, "Could not install the crossfade filter chain; falling back to a volume-only fade")
+        clearAudioFilters()
+        return CrossfadeChain.NONE
+    }
+
+    private fun applyCrossfadeChain(
+        sweep: MpvCrossfadeFilter?,
+        sweepStartHz: Float,
+        pitchShift: Boolean,
+    ): Boolean {
+        val entries = mutableListOf<String>()
+        if (sweep != null) {
+            // TWO cascaded 2-pole Butterworth stages = 4th order / 24 dB per octave, matching
+            // BiquadFilter on Android ("two cascaded Butterworth stages for 4th-order (24
+            // dB/octave) rolloff, matching professional DJ mixer filter steepness").
+            // width_type/width are spelled out rather than inherited from libavfilter's defaults.
+            val stage = "${sweep.lavfiName}=f=${mpvNumber(sweepStartHz)}:width_type=q:width=0.707"
+            // The graph is wrapped in [ ] because it contains `,` and `=`, which would otherwise
+            // be eaten by mpv's own filter-list parser — v0.37.0 vf.rst:380
+            // ``--vf=lavfi=[gradfun=20:30,vflip]`` … *"The filter graph string is quoted with
+            // ``[`` and ``]``"*, and af.rst:243 repeats the requirement for the audio lavfi.
+            entries += "@$SWEEP_LABEL:lavfi=[$stage,$stage]"
+        }
+        if (pitchShift) {
+            // v0.37.0 af.rst:196 ``pitch-scale=<amount>`` — *"Sets the pitch scaling factor.
+            // Frequencies are multiplied by this value. (default: 1.0)"*.
+            entries += "@$PITCH_LABEL:rubberband=pitch-scale=1.0"
+        }
+        return setPropertyString("af", entries.joinToString(","))
+    }
+
+    /**
+     * Retune the live sweep to [hz] without rebuilding the chain.
+     *
+     * `af-command <label> <command> <argument> [<target>]` (v0.37.0 input.rst:1313). `frequency`
+     * is a runtime-settable AVOption of libavfilter's biquad filters, so mpv forwards it straight
+     * to `avfilter_graph_send_command`.
+     *
+     * [target][MpvCrossfadeFilter.lavfiName] is passed explicitly rather than defaulting to `all`:
+     * mpv's lavfi graph also holds the `abuffer`/`abuffersink` endpoints, which answer any command
+     * with `ENOSYS` and would make an otherwise successful retune report failure.
+     */
+    fun setCrossfadeCutoffHz(
+        sweep: MpvCrossfadeFilter,
+        hz: Float,
+    ) {
+        if (isReleased) return
+        command("af-command", SWEEP_LABEL, "frequency", mpvNumber(hz), sweep.lavfiName)
+    }
+
+    /**
+     * Shift pitch by [scale] (1.0 = unchanged), independently of playback speed.
+     *
+     * This needs `rubberband` in the chain, which is why [installCrossfadeChain] must have been
+     * called with `pitchShift = true`. mpv's `speed` property alone can never do this: with
+     * `--audio-pitch-correction` (default yes, v0.37.0 options.rst:1870) a speed change is
+     * pitch-CORRECTED, and with it disabled pitch would be welded to tempo — Android needs the two
+     * to move independently, the way Media3's `PlaybackParameters(speed, pitch)` does.
+     *
+     * With rubberband present it also absorbs the tempo change: mpv hands `SET_SPEED` to the last
+     * user filter that accepts it and then stops (f_output_chain.c:464 *"make sure only 1 filter
+     * changes speed"*), so rubberband — not the built-in `scaletempo2` — does the time stretch,
+     * and [setRate] keeps behaving exactly as before.
+     *
+     * v0.37.0 af.rst:223 ``set-pitch`` — *"Set the <pitch-scale> argument dynamically … Note that
+     * speed is controlled using the standard ``speed`` property, not ``af-command``."*
+     */
+    fun setPitchScale(scale: Float) {
+        if (isReleased) return
+        command("af-command", PITCH_LABEL, "set-pitch", mpvNumber(scale))
+    }
+
+    /**
+     * Drop every audio filter, returning the handle to untouched output.
+     *
+     * This is also what resets pitch: removing `rubberband` removes the pitch shift with it, so
+     * callers only have to restore [setRate] afterwards.
+     */
+    fun clearAudioFilters() {
+        if (isReleased) return
+        setPropertyString("af", "")
+    }
+
     /**
      * Repeat the current file indefinitely.
      *
@@ -543,7 +709,8 @@ class MpvPlayer private constructor(
 
     // ================= native helpers =================
 
-    private fun command(vararg args: String) {
+    /** @return true if mpv accepted the command. */
+    private fun command(vararg args: String): Boolean {
         // mpv_command takes a NULL-terminated char** — JNA does not append the terminator.
         val argv = arrayOfNulls<String>(args.size + 1)
         args.forEachIndexed { i, a -> argv[i] = a }
@@ -552,24 +719,30 @@ class MpvPlayer private constructor(
                 lib.mpv_command(ctx, argv)
             } catch (e: Throwable) {
                 Logger.e(TAG, "mpv_command(${args.firstOrNull()}) threw: ${e.message}")
-                return
+                return false
             }
         if (rc < 0) {
             Logger.w(TAG, "mpv_command(${args.joinToString(" ")}) failed: ${lib.mpv_error_string(rc)}")
+            return false
         }
+        return true
     }
 
+    /** @return true if mpv accepted the value. */
     private fun setPropertyString(
         name: String,
         value: String,
-    ) {
+    ): Boolean {
         try {
             val rc = lib.mpv_set_property_string(ctx, name, value)
             if (rc < 0) {
                 Logger.w(TAG, "set $name=$value failed: ${lib.mpv_error_string(rc)}")
+                return false
             }
+            return true
         } catch (e: Throwable) {
             Logger.e(TAG, "set $name threw: ${e.message}")
+            return false
         }
     }
 
@@ -599,6 +772,17 @@ class MpvPlayer private constructor(
             0.0
         }
 }
+
+/**
+ * Render a number the way mpv's parsers expect it: `.` as the decimal separator, nothing else.
+ *
+ * [Locale.ROOT] is load-bearing rather than pedantic. The JVM default locale here is `vi_VN`, whose
+ * `String.format` emits `0,9800` — and `af_rubberband.c`'s `set-pitch` handler runs
+ * `strtod(arg, &endptr); if (*endptr) return false;`, so a comma would silently reject every pitch
+ * update. (`MpvLibrary` already forces the NATIVE `LC_NUMERIC` to C for the same class of reason;
+ * that does nothing for numbers formatted on the Java side.)
+ */
+private fun mpvNumber(value: Float): String = String.format(Locale.ROOT, "%.4f", value)
 
 /** mpv reports times in seconds; the whole player stack above speaks milliseconds. */
 private fun secondsToMs(seconds: Double): Long =
