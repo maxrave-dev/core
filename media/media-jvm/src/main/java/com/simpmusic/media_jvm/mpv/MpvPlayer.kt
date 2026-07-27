@@ -165,6 +165,14 @@ class MpvPlayer private constructor(
             option("cache", "yes")
             option("cache-secs", networkCacheSeconds.toString())
 
+            // cache-secs alone is only a target; the hard ceiling is demuxer-max-bytes, whose
+            // default is 150 MB forward plus a back-buffer. Two handles exist at once during a
+            // crossfade, so the default lets the demuxer alone account for several hundred MB of
+            // resident memory. 32 MB covers cache-secs of audio comfortably — a 320 kbps stream
+            // is 2.4 MB per minute — and mpv simply refills more often if it ever runs short.
+            option("demuxer-max-bytes", (32 * 1024 * 1024).toString())
+            option("demuxer-max-back-bytes", (8 * 1024 * 1024).toString())
+
             // VLC ":http-reconnect".
             option(
                 "stream-lavf-o",
