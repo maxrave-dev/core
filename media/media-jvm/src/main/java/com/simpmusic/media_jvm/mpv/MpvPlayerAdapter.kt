@@ -1313,6 +1313,14 @@ class MpvPlayerAdapter(
         crossfadeJob = null
         setCrossfading(false)
 
+        // The crossfade handle has to die with its job. This runs on the load path (next / prev /
+        // picking another track), which never passes through cancelCrossfadeAndCleanup, so nothing
+        // else would release it: the following crossfade overwrites `secondaryPlayer` and the old
+        // handle loses its last reference while still holding a demuxer, a decoder, an audio output
+        // and its event pump thread.
+        secondaryPlayer?.let { cleanupPlayerInternal(it) }
+        secondaryPlayer = null
+
         currentPlayer?.let { cleanupPlayerInternal(it) }
         currentPlayer = null
         currentPlayerIsVideo = false
