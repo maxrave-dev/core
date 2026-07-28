@@ -833,7 +833,7 @@ class MpvPlayerAdapter(
             Logger.w(TAG, "Setting volume to $value")
             internalVolume = value.coerceIn(0f, 1f)
             // mpv volume: 0-100 (100 = unattenuated). Map our 0.0-1.0 to 0-100.
-            currentPlayer?.setVolume((internalVolume * 100).toInt())
+            currentPlayer?.setMasterVolume((internalVolume * 100).toInt())
             notifyListeners { onVolumeChanged(internalVolume) }
         }
 
@@ -1029,7 +1029,7 @@ class MpvPlayerAdapter(
                     currentPlayerIsVideo = player.videoSurface != null
                     _currentVideoSurface.value = player.videoSurface
                     setupPlayerEventsInternal(player)
-                    player.setVolume((internalVolume * 100).toInt())
+                    player.setMasterVolume((internalVolume * 100).toInt())
 
                     if (cachedPrecache != null) {
                         // The precached handle already has the file loaded and held paused;
@@ -1414,7 +1414,8 @@ class MpvPlayerAdapter(
                             },
                         )
                         nextPlayer.setMute(true)
-                        nextPlayer.setVolume(0)
+                        nextPlayer.setMasterVolume((internalVolume * 100).toInt())
+                        nextPlayer.setFadeVolume(0)
                         nextPlayer.play()
                         delay(50)
                         nextPlayer.setMute(false)
@@ -1593,8 +1594,10 @@ class MpvPlayerAdapter(
         // triggerCrossfadeTransition); give it the full one now that it is the current player.
         setupPlayerEventsInternal(incoming)
 
-        // It was mid fade-in, so its volume sits somewhere below the target.
-        incoming.setVolume((internalVolume * 100).toInt())
+        // It was mid fade-in, so its ramp sits somewhere below full — open it back up. The master
+        // volume is untouched by the crossfade and already holds whatever the user set.
+        incoming.setMasterVolume((internalVolume * 100).toInt())
+        incoming.setFadeVolume(100)
 
         crossfadeFromIndex = -1
         setCrossfading(false)
@@ -1619,7 +1622,9 @@ class MpvPlayerAdapter(
     ) {
         val steps = 50
         val delayPerStep = (effectiveDurationMs / steps).coerceAtLeast(20)
-        val targetVolume = (internalVolume * 100).toInt()
+        // A pure 0..100 attenuation per handle: the user's level rides on the master volume and must
+        // come out of the crossfade exactly as it went in.
+        val targetVolume = 100
         val wantDjFilter = djCrossfadeEnabled
         val wantAutoMixRamp = targetSpeedRatio != 1.0f || targetPitchRatio != 1.0f
         val outgoingPlayer = currentPlayer
@@ -1679,10 +1684,10 @@ class MpvPlayerAdapter(
                 val angle = progress * Math.PI / 2.0
 
                 val fadeOutVolume = (targetVolume * kotlin.math.cos(angle)).toInt()
-                currentPlayer?.setVolume(fadeOutVolume)
+                currentPlayer?.setFadeVolume(fadeOutVolume)
 
                 val fadeInVolume = (targetVolume * kotlin.math.sin(angle)).toInt()
-                nextPlayer.setVolume(fadeInVolume)
+                nextPlayer.setFadeVolume(fadeInVolume)
 
                 // DJ-style filter sweep, alongside the volume fade.
                 // S-curve (sigmoid) on the time axis holds both tracks near full spectrum at the
@@ -1786,7 +1791,8 @@ class MpvPlayerAdapter(
         // Ensure correct volume, and drop the high-pass this player faded in under so it is back to
         // untouched playback. (Its speed/pitch were never moved — only the outgoing track is
         // adjusted — but restore them anyway, mirroring the Android finalize path.)
-        currentPlayer?.setVolume((internalVolume * 100).toInt())
+        currentPlayer?.setMasterVolume((internalVolume * 100).toInt())
+        currentPlayer?.setFadeVolume(100)
         currentPlayer?.endCrossfadeAudio()
 
         // Reset state

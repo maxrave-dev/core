@@ -416,6 +416,14 @@ class MpvPlayer private constructor(
                 }
             }
 
+            MpvEventId.AUDIO_RECONFIG -> {
+                // The audio output was just (re)created, and `ao-volume` only becomes settable once
+                // it exists. An earlier setMasterVolume/setFadeVolume therefore may have fallen back
+                // to the software volume — which would then multiply against the mixer level the
+                // previous track left behind. Re-apply now that the real target is reachable.
+                applyVolume()
+            }
+
             MpvEventId.PLAYBACK_RESTART -> {
                 // Also fires after every seek, so it can't stand in for vlcj's playing() on its
                 // own — it only marks "output has (re)started"; the pause flag decides the rest.
@@ -512,10 +520,50 @@ class MpvPlayer private constructor(
         command("stop")
     }
 
-    /** @param volume 0..100, matching `VlcPlayer.setVolume`. mpv's `volume` is natively 0..100. */
-    fun setVolume(volume: Int) {
+    // Volume is split in two so a crossfade can ramp one handle without disturbing the level the
+    // user set: `masterPercent` is the pipeline volume (the slider), `fadePercent` is this handle's
+    // own crossfade ramp. [applyVolume] decides how each reaches mpv.
+    private var masterPercent = 100
+    private var fadePercent = 100
+
+    /**
+     * The pipeline volume — what the volume slider controls. Must NOT be touched while a crossfade
+     * is running; ramp with [setFadeVolume] instead.
+     *
+     * @param volume 0..100, matching `VlcPlayer.setVolume`. mpv's `volume` is natively 0..100.
+     */
+    fun setMasterVolume(volume: Int) {
         if (isReleased) return
-        setPropertyDouble("volume", volume.coerceIn(0, 100).toDouble())
+        masterPercent = volume.coerceIn(0, 100)
+        applyVolume()
+    }
+
+    /**
+     * This handle's crossfade ramp, 0..100 where 100 means "no attenuation". Per-player by design:
+     * every handle registers under the same `audio-client-name`, so they share one `ao-volume` and
+     * only the software volume can fade one track against another.
+     */
+    fun setFadeVolume(volume: Int) {
+        if (isReleased) return
+        fadePercent = volume.coerceIn(0, 100)
+        applyVolume()
+    }
+
+    /**
+     * `volume` is mpv's *software* volume: applied inside the filter chain, so audio already queued
+     * in the audio-output buffer keeps playing at the previous level — audible as a couple of
+     * seconds of lag after the slider is released. `ao-volume` drives the audio device's own mixer
+     * and takes effect immediately, so the master rides on that and the software volume is left to
+     * carry the fade alone (mpv applies the two independently — they multiply). When the audio
+     * output exposes no mixer control, both collapse into the software volume so the user's level is
+     * still honoured.
+     */
+    private fun applyVolume() {
+        if (setPropertyDouble("ao-volume", masterPercent.toDouble(), logFailure = false) >= 0) {
+            setPropertyDouble("volume", fadePercent.toDouble())
+        } else {
+            setPropertyDouble("volume", masterPercent * fadePercent / 100.0)
+        }
     }
 
     fun setMute(mute: Boolean) {
@@ -784,21 +832,24 @@ class MpvPlayer private constructor(
         }
     }
 
+    /** @return mpv's return code; negative means the property could not be set. */
     private fun setPropertyDouble(
         name: String,
         value: Double,
-    ) {
+        logFailure: Boolean = true,
+    ): Int =
         try {
             val mem = scratch.get()
             mem.setDouble(0, value)
             val rc = lib.mpv_set_property(ctx, name, MpvFormat.DOUBLE, mem)
-            if (rc < 0) {
+            if (rc < 0 && logFailure) {
                 Logger.w(TAG, "set $name=$value failed: ${lib.mpv_error_string(rc)}")
             }
+            rc
         } catch (e: Throwable) {
             Logger.e(TAG, "set $name threw: ${e.message}")
+            -1
         }
-    }
 
     /** @return the property value, or 0.0 when unavailable (e.g. nothing loaded yet). */
     private fun getPropertyDouble(name: String): Double =
