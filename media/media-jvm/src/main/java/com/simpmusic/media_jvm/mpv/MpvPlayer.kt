@@ -100,6 +100,14 @@ class MpvPlayer private constructor(
         /** Userdata tag for every `mpv_observe_property` registration; we dispatch by name. */
         private const val OBSERVE_USERDATA = 1L
 
+        /**
+         * `MPV_ERROR_OPTION_NOT_FOUND` from client.h — the option name is unknown to this build.
+         *
+         * Not an error for options that only ever disable something: a libmpv compiled without the
+         * subsystem never had it to begin with.
+         */
+        private const val MPV_ERROR_OPTION_NOT_FOUND = -5
+
         /** Scratch buffer for get/set_property with a native format. One per calling thread. */
         private val scratch = ThreadLocal.withInitial { Memory(8) }
 
@@ -143,6 +151,23 @@ class MpvPlayer private constructor(
                 }
             }
 
+            // Same as option(), but treats "no such option" as success.
+            //
+            // For options whose whole purpose is to switch a subsystem OFF, a libmpv built without
+            // that subsystem is already in the desired state — warning about it would report the
+            // goal being met as a problem. Any other error is still real and still logged.
+            fun optionalOption(
+                name: String,
+                value: String,
+            ) {
+                val rc = lib.mpv_set_option_string(ctx, name, value)
+                if (rc == MPV_ERROR_OPTION_NOT_FOUND) {
+                    Logger.d(TAG, "Option '$name' absent in this libmpv build — already off, nothing to do")
+                } else if (rc < 0) {
+                    Logger.w(TAG, "mpv_set_option_string($name=$value) failed: ${lib.mpv_error_string(rc)}")
+                }
+            }
+
             // VLC "--quiet" / "--no-video-title-show" / "--no-metadata-network-access" have no
             // direct mpv analogue; disabling the terminal covers all of their observable effect.
             //
@@ -155,7 +180,12 @@ class MpvPlayer private constructor(
             // We resolve stream URLs ourselves via StreamRepository, so mpv must never invoke its
             // ytdl_hook Lua script (seen firing as "Running hook: ytdl_hook/on_load"). Leaving it on
             // means mpv shells out to youtube-dl/yt-dlp behind our back on every loadfile.
-            option("ytdl", "no")
+            //
+            // optional(): our own Linux slice is built with -Dlua=disabled, so ytdl_hook does not
+            // exist there and the option is genuinely absent — an absence that is the desired state,
+            // not a failure worth warning about on every handle. Platforms using a stock libmpv
+            // (Windows, macOS) do have it, and there it still gets turned off.
+            optionalOption("ytdl", "no")
             // Keep the core alive across end-of-file so one handle can be reloaded, and so EOF
             // surfaces as MPV_EVENT_END_FILE instead of MPV_EVENT_SHUTDOWN.
             option("idle", "yes")
