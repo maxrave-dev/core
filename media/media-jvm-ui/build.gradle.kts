@@ -27,8 +27,6 @@ kotlin {
         implementation(libs.koin.jvm)
         implementation(libs.koin.compose)
 
-        // VLC
-        implementation(libs.vlcj)
         implementation(libs.kotlinx.coroutinesSwing)
     }
 }

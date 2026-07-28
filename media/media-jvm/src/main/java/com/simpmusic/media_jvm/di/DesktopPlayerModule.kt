@@ -4,8 +4,8 @@ import com.maxrave.common.Config.SERVICE_SCOPE
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.repository.CacheRepository
-import com.simpmusic.media_jvm.VlcPlayerAdapter
 import com.simpmusic.media_jvm.download.DownloadUtils
+import com.simpmusic.media_jvm.mpv.MpvPlayerAdapter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -14,29 +14,32 @@ import org.koin.core.context.loadKoinModules
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
 
-private val vlcModule =
+private val desktopPlayerModule =
     module {
         single<CoroutineScope>(qualifier = named(SERVICE_SCOPE)) {
-            // Single-thread dispatcher: VLC native calls are NOT thread-safe,
-            // so all player operations must be serialized on one thread.
+            // Single-thread dispatcher: serializes all player operations onto one thread so the
+            // adapter's state machine never races with itself. libmpv is thread-safe on its own,
+            // but the adapter's playlist/crossfade state still assumes a single writer.
             // UI listener notifications are dispatched to Dispatchers.Main separately.
-            val vlcDispatcher = Executors.newSingleThreadExecutor { r ->
-                Thread(r, "VLC-Player-Thread").apply { isDaemon = true }
+            val playerDispatcher = Executors.newSingleThreadExecutor { r ->
+                Thread(r, "Desktop-Player-Thread").apply { isDaemon = true }
             }.asCoroutineDispatcher()
-            CoroutineScope(vlcDispatcher + SupervisorJob())
+            CoroutineScope(playerDispatcher + SupervisorJob())
         }
 
-        single<VlcPlayerAdapter> {
-            VlcPlayerAdapter(
+        single<MpvPlayerAdapter> {
+            MpvPlayerAdapter(
                 coroutineScope = get(named(SERVICE_SCOPE)),
                 dataStoreManager = get(),
                 streamRepository = get(),
             )
         }
 
+        // ---- Active playback backend ----
         single<MediaPlayerInterface> {
-            get<VlcPlayerAdapter>()
+            get<MpvPlayerAdapter>()
         }
+
         single<CacheRepository> {
             object : CacheRepository {
                 override suspend fun getCacheSize(cacheName: String): Long = 0L
@@ -55,4 +58,4 @@ private val vlcModule =
         }
     }
 
-fun loadVlcModule() = loadKoinModules(vlcModule)
+fun loadDesktopPlayerModule() = loadKoinModules(desktopPlayerModule)
