@@ -262,16 +262,24 @@ interface MpvLibrary : Library {
             }
         }
 
+        /** True when [name] is a libmpv shared library on any of the three platforms. */
+        private fun isMpvLibName(name: String): Boolean =
+            name.startsWith("libmpv.so") ||
+                name.startsWith("libmpv.") && name.endsWith(".dylib") ||
+                name == "libmpv.dylib" ||
+                name.startsWith("libmpv") && name.endsWith(".dll") ||
+                name == "mpv-2.dll"
+
         /** File names that identify a directory as holding a usable libmpv. */
         private fun hasMpvLib(dir: java.io.File): Boolean =
-            dir.listFiles()?.any { file ->
-                val name = file.name
-                name.startsWith("libmpv.so") ||
-                    name.startsWith("libmpv.") && name.endsWith(".dylib") ||
-                    name == "libmpv.dylib" ||
-                    name.startsWith("libmpv") && name.endsWith(".dll") ||
-                    name == "mpv-2.dll"
-            } == true
+            dir.listFiles()?.any { isMpvLibName(it.name) } == true
+
+        /** Absolute paths of every libmpv file inside [dirs], most specific location first. */
+        private fun bundledLibraryFiles(dirs: List<java.io.File>): List<String> =
+            dirs.flatMap { dir ->
+                dir.listFiles()?.filter { it.isFile && isMpvLibName(it.name) }?.map { it.absolutePath }
+                    ?: emptyList()
+            }
 
         /**
          * Directories that may hold a bundled libmpv, most specific first.
@@ -331,8 +339,32 @@ interface MpvLibrary : Library {
             // MpvLibrary's struct layouts were verified against.
             val bundled = bundledLibraryDirs()
             if (bundled.isNotEmpty()) {
-                val existing = System.getProperty("jna.library.path")
                 val bundledPath = bundled.joinToString(java.io.File.pathSeparator) { it.absolutePath }
+
+                // Register through JNA's runtime API, NOT by setting the `jna.library.path`
+                // system property.
+                //
+                // JNA reads that property once, when NativeLibrary is first initialised, and
+                // caches the parsed result — setting it afterwards is a no-op. And it IS already
+                // initialised by this point: forceCNumericLocale() above does Native.load("c").
+                //
+                // The bug this caused was invisible on any dev machine: with libmpv installed
+                // system-wide, dlopen() finds it through ld.so and everything works. On a clean
+                // machine the bundled directory was never searched, and a shipped AppImage failed
+                // with "libmpv native library not found ... Bundled natives were not located
+                // either" despite carrying libmpv.so.2 inside it.
+                //
+                // addSearchPath() takes effect immediately and is per-library-name, so it is
+                // registered for every candidate SONAME we might try below.
+                CANDIDATE_NAMES.forEach { candidate ->
+                    bundled.forEach { dir ->
+                        com.sun.jna.NativeLibrary.addSearchPath(candidate, dir.absolutePath)
+                    }
+                }
+
+                // Kept for the JVM's own System.loadLibrary and for any JNA instance that has not
+                // been initialised yet; harmless, just not sufficient on its own.
+                val existing = System.getProperty("jna.library.path")
                 System.setProperty(
                     "jna.library.path",
                     if (existing.isNullOrBlank()) bundledPath else "$bundledPath${java.io.File.pathSeparator}$existing",
@@ -342,7 +374,20 @@ interface MpvLibrary : Library {
                 Logger.d(TAG, "No bundled libmpv found; falling back to a system-wide install")
             }
 
-            for (name in CANDIDATE_NAMES) {
+            // Absolute paths FIRST, plain SONAMEs second.
+            //
+            // JNA maps a bare name like "mpv" onto the platform convention — `libmpv.so` on Linux.
+            // The bundles ship the versioned file (`libmpv.so.2`) and no unversioned symlink, so
+            // every bare name misses and JNA falls through to dlopen(), which quietly succeeds
+            // against a SYSTEM libmpv when one happens to be installed. That is exactly how a
+            // shipped AppImage carrying its own libmpv still failed on a clean Ubuntu box while
+            // working on every machine that had `apt install libmpv2`.
+            //
+            // Passing the absolute path sidesteps the naming convention entirely. The bundled
+            // libraries declare `RUNPATH=$ORIGIN/lib`, so their ~97 dependencies resolve from the
+            // bundle itself once the file is opened by path — nothing else needs configuring.
+            val loadTargets = bundledLibraryFiles(bundled) + CANDIDATE_NAMES
+            for (name in loadTargets) {
                 try {
                     // Load PRIVATELY (RTLD_LOCAL), not with JNA's default RTLD_GLOBAL.
                     //
@@ -360,16 +405,38 @@ interface MpvLibrary : Library {
                     //
                     // RTLD_NOW (2) without RTLD_GLOBAL (0x100) keeps those symbols private to this
                     // handle, which is what we want anyway — nothing outside links against libmpv.
+                    //
+                    // POSIX ONLY. JNA forwards this value verbatim to LoadLibraryEx on Windows,
+                    // where 2 is not RTLD_NOW but LOAD_LIBRARY_AS_DATAFILE: the DLL gets mapped as
+                    // plain data, imports are never resolved and — per MSDN — GetProcAddress
+                    // refuses to return anything from it. The symptom is a load that "succeeds"
+                    // and then fails on the very first lookup with a misleading message:
+                    //   Error looking up function 'mpv_client_api_version':
+                    //   The specified module could not be found.
+                    // Windows has no RTLD_GLOBAL leakage to guard against anyway — DLL exports are
+                    // never published process-wide — so the default flags are already correct.
                     val lib =
                         Native.load(
                             name,
                             MpvLibrary::class.java,
-                            mapOf(com.sun.jna.Library.OPTION_OPEN_FLAGS to 2),
+                            if (com.sun.jna.Platform.isWindows()) {
+                                emptyMap<String, Any>()
+                            } else {
+                                mapOf<String, Any>(com.sun.jna.Library.OPTION_OPEN_FLAGS to 2)
+                            },
                         )
                     val version = lib.mpv_client_api_version()
+                    // Log the file that was ACTUALLY opened, not just the name we asked for.
+                    // On a dev machine with libmpv installed system-wide both a working bundle
+                    // and a broken one load fine — the only way to tell them apart is to see
+                    // whether this points inside the app or at /usr/lib.
+                    val resolved =
+                        runCatching {
+                            com.sun.jna.NativeLibrary.getInstance(name).file?.absolutePath
+                        }.getOrNull() ?: "<unknown>"
                     Logger.d(
                         TAG,
-                        "Loaded libmpv as '$name' (client API ${version shr 16}.${version and 0xFFFF})",
+                        "Loaded libmpv as '$name' (client API ${version shr 16}.${version and 0xFFFF}) from $resolved",
                     )
                     // Struct layouts here are hand-mapped for API 2.2. A different major means
                     // a potentially ABI-incompatible client.h — loud, because JNA would otherwise
