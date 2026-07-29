@@ -24,6 +24,16 @@ import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.FilterState
 import kotlinx.datetime.LocalDateTime
 
+/**
+ * The album name older builds stored when they could not find a real one.
+ *
+ * The playlist parser used to take the album's browse id out of the row's context menu, which
+ * carries an id but no title, and filled the name in with this literal string. It then travelled
+ * out to MediaSession metadata, where external scrobblers read it. The parser no longer does this,
+ * but roughly half the rows already in users' databases still hold it — see [LocalDataSource.insertSong].
+ */
+private const val PLACEHOLDER_ALBUM_NAME = "Album"
+
 internal class LocalDataSource(
     private val databaseDao: DatabaseDao,
 ) {
@@ -87,7 +97,34 @@ internal class LocalDataSource(
 
     fun getSongAsFlow(videoId: String) = databaseDao.getSongAsFlow(videoId)
 
-    suspend fun insertSong(song: SongEntity) = databaseDao.insertSong(song)
+    /**
+     * Every path that stores a track funnels through here — playback, playlist browsing, the
+     * now-playing sheet, local playlist edits — which is why the self-repair below lives at this
+     * level rather than at any one caller.
+     *
+     * The insert itself is IGNORE, so a track already in the database keeps whatever it was first
+     * written with. That is usually right, but it also means a row saved with the old "Album"
+     * placeholder can never learn its real album name, however many times it is seen again.
+     *
+     * Room returns -1 when IGNORE drops the row, which tells us the track already exists without
+     * spending a read to ask. Only then, and only when this copy actually carries a real name, do
+     * we let the database decide whether the stored row is stale — the WHERE clause in
+     * [DatabaseDao.refreshAlbumIfPlaceholder] is what guarantees good data is never overwritten.
+     */
+    suspend fun insertSong(song: SongEntity): Long {
+        val rowId = databaseDao.insertSong(song)
+        if (rowId == -1L) {
+            val albumName = song.albumName
+            if (!albumName.isNullOrBlank() && albumName != PLACEHOLDER_ALBUM_NAME) {
+                databaseDao.refreshAlbumIfPlaceholder(
+                    videoId = song.videoId,
+                    albumName = albumName,
+                    albumId = song.albumId,
+                )
+            }
+        }
+        return rowId
+    }
 
     suspend fun updateThumbnailsSongEntity(
         thumbnail: String,

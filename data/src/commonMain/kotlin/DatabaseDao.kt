@@ -246,6 +246,28 @@ interface DatabaseDao {
     @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
     suspend fun insertSong(song: SongEntity): Long
 
+    /**
+     * Fills in an album name that an older parse never had.
+     *
+     * Rows written before the playlist parser read the album column carry the literal string
+     * "Album" — a placeholder invented because the old code took the album's browse id from the
+     * context menu, which has an id but no name. Those rows are never refreshed on their own:
+     * [insertSong] is IGNORE, so every later encounter with the same track is discarded.
+     *
+     * The WHERE clause is the safety catch, not just a filter. A row that already holds a real
+     * album name is untouched no matter who calls this, so a caller holding a sparser entity —
+     * the playback path, say — cannot overwrite good data with worse.
+     */
+    @Query(
+        "UPDATE song SET albumName = :albumName, albumId = :albumId " +
+            "WHERE videoId = :videoId AND (albumName IS NULL OR albumName = '' OR albumName = 'Album')",
+    )
+    suspend fun refreshAlbumIfPlaceholder(
+        videoId: String,
+        albumName: String,
+        albumId: String?,
+    )
+
     @Query("UPDATE song SET canvasUrl = :canvasUrl WHERE videoId = :videoId")
     suspend fun updateCanvasUrl(
         videoId: String,
