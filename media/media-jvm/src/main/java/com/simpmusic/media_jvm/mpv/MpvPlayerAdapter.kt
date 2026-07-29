@@ -12,6 +12,7 @@ import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.simpmusic.media_jvm.download.getDownloadPath
+import com.simpmusic.media_jvm.memory.MemoryTrimmer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -901,11 +902,13 @@ class MpvPlayerAdapter(
             InternalState.PAUSED -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_READY) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
+                trimNativeMemory("paused")
             }
 
             InternalState.IDLE -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_IDLE) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
+                trimNativeMemory("idle")
             }
 
             InternalState.PREPARING -> {
@@ -953,6 +956,23 @@ class MpvPlayerAdapter(
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Give the C allocator's free pages back to the OS now that playback has gone quiet.
+     *
+     * Only ever called from the PAUSED / IDLE transitions: the underlying call walks the heap while
+     * holding the allocator lock, so anything that mallocs — mpv's decoder threads included — stalls
+     * until it returns. See [MemoryTrimmer] for the measurements that motivate this.
+     *
+     * Dispatched off the single service thread because that thread also drives the transport; a
+     * heap walk there would show up as a laggy pause button. [MemoryTrimmer] throttles itself, so
+     * firing this on every pause is cheap.
+     */
+    private fun trimNativeMemory(reason: String) {
+        coroutineScope.launch(Dispatchers.IO) {
+            MemoryTrimmer.trim(reason)
         }
     }
 
