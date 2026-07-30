@@ -27,8 +27,22 @@ private const val TAG = "MemoryTrimmer"
  * | OS      | call                                                  | since        |
  * |---------|-------------------------------------------------------|--------------|
  * | Linux   | `malloc_trim(0)`                                       | glibc        |
- * | macOS   | `malloc_zone_pressure_relief(NULL, 0)`                 | OS X 10.7    |
  * | Windows | `HeapSetInformation(NULL, HeapOptimizeResources, ...)` | Windows 8.1  |
+ *
+ * ## Why macOS is deliberately excluded
+ * macOS has an equivalent — `malloc_zone_pressure_relief(NULL, 0)` — and it was wired up here until
+ * it was traced to a startup crash. A null zone means EVERY registered zone, not just the one
+ * mpv/FFmpeg allocate from, so the call also tells the zones behind Metal, QuartzCore and Skia to
+ * hand their free pages back. Dispatched off a background thread it can land in the middle of a
+ * `CATransaction` commit on the main thread, and the process dies with an uncaught NSException
+ * raised inside `-[MTLLayer blitCallback]`.
+ *
+ * The race window is narrow enough that anything perturbing timing hides it — attaching
+ * `log stream` was enough to make it disappear — so it only reproduced on a real Finder/Dock launch,
+ * where activation and the window animation keep the main thread inside CoreAnimation for longer.
+ *
+ * Nothing is lost by skipping it: `MallocNanoZone=0` in the app's `LSEnvironment` already addresses
+ * the allocator growth this class exists to fight on macOS.
  *
  * ## Why it must only run while idle
  * `malloc_trim` walks the heap holding the arena lock, so every thread that calls `malloc` blocks
@@ -72,19 +86,6 @@ object MemoryTrimmer {
     }
 
     /**
-     * macOS: `size_t malloc_zone_pressure_relief(malloc_zone_t *zone, size_t goal)` — malloc/malloc.h.
-     *
-     * A null zone means "every registered zone", and a goal of 0 means "release as much as you can".
-     * Returns the number of bytes actually handed back.
-     */
-    private interface LibSystem : Library {
-        fun malloc_zone_pressure_relief(
-            zone: Pointer?,
-            goal: Long,
-        ): Long
-    }
-
-    /**
      * Windows: `BOOL HeapSetInformation(HANDLE, HEAP_INFORMATION_CLASS, PVOID, SIZE_T)` — heapapi.h.
      *
      * Microsoft documents the null-handle form specifically: *"If HeapSetInformation is called with
@@ -114,12 +115,6 @@ object MemoryTrimmer {
     private val glibc: GlibC? by lazy {
         runCatching { Native.load("c", GlibC::class.java) }
             .onFailure { Logger.d(TAG, "glibc malloc_trim unavailable: ${it.message}") }
-            .getOrNull()
-    }
-
-    private val libSystem: LibSystem? by lazy {
-        runCatching { Native.load("System", LibSystem::class.java) }
-            .onFailure { Logger.d(TAG, "libSystem pressure relief unavailable: ${it.message}") }
             .getOrNull()
     }
 
@@ -188,9 +183,11 @@ object MemoryTrimmer {
             }
 
             com.sun.jna.Platform.isMac() -> {
-                val lib = libSystem ?: return "libSystem unavailable"
-                val bytes = lib.malloc_zone_pressure_relief(null, 0L)
-                "${bytes / 1024} KB returned"
+                // Never trim on macOS — the null-zone call reaches Metal's and QuartzCore's zones
+                // too and can crash a CATransaction commit. See the class docs for the full trace.
+                // Latching `unsupported` stops every later transition from re-entering this branch.
+                unsupported.set(true)
+                "disabled on macOS"
             }
 
             else -> {
