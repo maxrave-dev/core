@@ -9,6 +9,7 @@ import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.Thumbnail
 import com.maxrave.kotlinytmusicscraper.models.Thumbnails
 import com.maxrave.kotlinytmusicscraper.models.oddElements
+import com.maxrave.kotlinytmusicscraper.models.splitBySeparator
 import com.maxrave.kotlinytmusicscraper.utils.parseTime
 
 data class AlbumPage(
@@ -75,6 +76,10 @@ data class AlbumPage(
                             ?.musicResponsiveListItemFlexColumnRenderer
                             ?.text
                             ?.runs
+                            // The column reads "Artist • Album • 13M plays"; only the first group
+                            // is artists, so everything after the first " • " is dropped.
+                            ?.splitBySeparator()
+                            ?.firstOrNull()
                             ?.oddElements()
                             ?.map {
                                 Artist(
