@@ -110,6 +110,10 @@ internal class LocalDataSource(
      * spending a read to ask. Only then, and only when this copy actually carries a real name, do
      * we let the database decide whether the stored row is stale — the WHERE clause in
      * [DatabaseDao.refreshAlbumIfPlaceholder] is what guarantees good data is never overwritten.
+     *
+     * The artist list is refreshed the same way. Rows written before the parser split the subtitle
+     * column on " • " kept its trailing groups too, so the album name and the view count were
+     * stored as extra artists ("JENNIE", "13M plays") and travelled out to MediaSession metadata.
      */
     suspend fun insertSong(song: SongEntity): Long {
         val rowId = databaseDao.insertSong(song)
@@ -120,6 +124,14 @@ internal class LocalDataSource(
                     videoId = song.videoId,
                     albumName = albumName,
                     albumId = song.albumId,
+                )
+            }
+            val artistName = song.artistName
+            if (!artistName.isNullOrEmpty()) {
+                databaseDao.refreshArtists(
+                    videoId = song.videoId,
+                    artistName = artistName,
+                    artistId = song.artistId,
                 )
             }
         }

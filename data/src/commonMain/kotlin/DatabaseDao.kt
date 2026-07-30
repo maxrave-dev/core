@@ -268,6 +268,28 @@ interface DatabaseDao {
         albumId: String?,
     )
 
+    /**
+     * Replaces an artist list that an older parse polluted with the row's trailing metadata.
+     *
+     * The parser used to split the subtitle column on " • " and keep every group, so a row could
+     * be stored as `["JENNIE", "13M plays"]` — the view count read as a second artist. It now
+     * keeps only the first group, but [insertSong] is IGNORE, so a row already in the database
+     * never learns the corrected list on its own.
+     *
+     * The WHERE clause is the safety catch, exactly as in [refreshAlbumIfPlaceholder]: the update
+     * only lands when the stored list actually differs from the fresh one, so repeatedly seeing
+     * the same track costs nothing and a caller cannot rewrite a row with what it already holds.
+     */
+    @Query(
+        "UPDATE song SET artistName = :artistName, artistId = :artistId " +
+            "WHERE videoId = :videoId AND artistName IS NOT :artistName",
+    )
+    suspend fun refreshArtists(
+        videoId: String,
+        artistName: List<String>,
+        artistId: List<String>?,
+    )
+
     @Query("UPDATE song SET canvasUrl = :canvasUrl WHERE videoId = :videoId")
     suspend fun updateCanvasUrl(
         videoId: String,
