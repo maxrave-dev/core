@@ -15,6 +15,7 @@ import com.maxrave.common.LOCAL_PLAYLIST_ID_SAVED_QUEUE
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.common.TITLE
 import com.maxrave.data.db.Converters
+import com.maxrave.data.lastfm.LastfmScrobbler
 import com.maxrave.data.mediaservice.mac.MacOSMediaIntegration
 import com.maxrave.data.mediaservice.mac.MacOSRemoteCommandListener
 import com.maxrave.data.mediaservice.mac.NowPlayingInfo
@@ -147,6 +148,13 @@ class JvmMediaPlayerHandlerImpl(
     override val player: MediaPlayerInterface = getKoin().get()
     @Volatile
     private var discordRPC: DiscordRPC? = null
+
+    /**
+     * Built here rather than injected: it needs nothing this handler does not already hold, and
+     * threading it through [createMediaServiceHandler] would mean changing that expect signature
+     * and all three actuals for one dependency.
+     */
+    private val lastfmScrobbler = LastfmScrobbler(dataStoreManager)
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
     override var pushPlayerError: (PlayerError) -> Unit = {}
@@ -596,6 +604,9 @@ class JvmMediaPlayerHandlerImpl(
                         )
                     }
                     updateDiscordRpc(song)
+                    // Launched separately: "now playing" is a network round trip, and this job
+                    // still has the rest of the track state to publish.
+                    coroutineScope.launch { lastfmScrobbler.onTrackStarted(song) }
                     nypc?.setNowPlaying(
                         song.title,
                         song.artistName?.joinToString(", ") ?: "",
@@ -860,6 +871,10 @@ class JvmMediaPlayerHandlerImpl(
                     if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
                         sinceLastPositionSaveMs = 0
                         mayBeSaveRecentPosition()
+                        // Riding the existing 5s tick instead of adding one: the scrobble point is
+                        // half the track or four minutes, so five seconds of granularity is plenty
+                        // and the 100ms loop stays as cheap as it was.
+                        lastfmScrobbler.onProgress(player.currentPosition)
                     }
                 }
             }

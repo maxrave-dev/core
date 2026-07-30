@@ -22,6 +22,7 @@ import com.maxrave.common.LOCAL_PLAYLIST_ID_SAVED_QUEUE
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.common.TITLE
 import com.maxrave.data.db.Converters
+import com.maxrave.data.lastfm.LastfmScrobbler
 import com.maxrave.domain.data.entities.NewFormatEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.model.browse.album.Track
@@ -116,6 +117,13 @@ internal class MediaServiceHandlerImpl(
 
     @Volatile
     private var discordRPC: DiscordRPC? = null
+
+    /**
+     * Built here rather than injected: it needs nothing this handler does not already hold, and
+     * threading it through [createMediaServiceHandler] would mean changing that expect signature
+     * and all three actuals for one dependency.
+     */
+    private val lastfmScrobbler = LastfmScrobbler(dataStoreManager)
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
     override var pushPlayerError: (PlayerError) -> Unit = {}
@@ -517,6 +525,9 @@ internal class MediaServiceHandlerImpl(
                             )
                         }
                         updateDiscordRpc(songEntity)
+                        // Launched separately: "now playing" is a network round trip, and this job
+                        // still has the rest of the track state to publish.
+                        coroutineScope.launch { lastfmScrobbler.onTrackStarted(songEntity) }
                     } else {
                         _controlState.update { it.copy(isLiked = false) }
                         var thumbUrl =
@@ -542,6 +553,9 @@ internal class MediaServiceHandlerImpl(
                             )
                         }
                         updateDiscordRpc(songEntity)
+                        // Launched separately: "now playing" is a network round trip, and this job
+                        // still has the rest of the track state to publish.
+                        coroutineScope.launch { lastfmScrobbler.onTrackStarted(songEntity) }
                     }
                     Logger.w(TAG, "getDataOfNowPlayingState: ${nowPlayingState.value}")
                 }
@@ -802,6 +816,10 @@ internal class MediaServiceHandlerImpl(
                     if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
                         sinceLastPositionSaveMs = 0
                         mayBeSaveRecentPosition()
+                        // Riding the existing 5s tick instead of adding one: the scrobble point is
+                        // half the track or four minutes, so five seconds of granularity is plenty
+                        // and the 100ms loop stays as cheap as it was.
+                        lastfmScrobbler.onProgress(player.currentPosition)
                     }
                 }
             }

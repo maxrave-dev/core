@@ -338,6 +338,21 @@ interface DataStoreManager {
 
     suspend fun setRichPresenceEnabled(enabled: Boolean)
 
+    /** Last.fm session key. Has no expiry — it stays valid until the user revokes it on last.fm. */
+    val lastfmSessionKey: Flow<String>
+
+    /** The logged-in Last.fm username, kept only so settings can show whose account is connected. */
+    val lastfmUsername: Flow<String>
+
+    suspend fun setLastfmSession(
+        sessionKey: String,
+        username: String,
+    )
+
+    val lastfmScrobbleEnabled: Flow<String>
+
+    suspend fun setLastfmScrobbleEnabled(enabled: Boolean)
+
     val localTrackingEnabled: Flow<String>
 
     suspend fun setLocalTrackingEnabled(enabled: Boolean)
