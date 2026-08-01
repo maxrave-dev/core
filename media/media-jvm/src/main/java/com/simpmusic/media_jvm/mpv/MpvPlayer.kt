@@ -188,6 +188,35 @@ class MpvPlayer private constructor(
             option("idle", "yes")
             option("audio-client-name", "SimpMusic")
 
+            // macOS only: keep mpv off ao_coreaudio, which leaks a process-wide CoreAudio
+            // listener pointing at a freed `struct ao` and takes the whole JVM down the next
+            // time the user plugs in headphones.
+            //
+            // ao_coreaudio.c init() registers a listener on the SYSTEM audio object, passing
+            // the ao itself as clientData:
+            //   AudioObjectAddPropertyListener(kAudioObjectSystemObject, &addr, hotplug_cb, (void *)ao)
+            // but its error label is bare — `coreaudio_error: return CONTROL_ERROR;` — so an
+            // init that fails any later step (ca_init_chmap, init_audiounit) leaves that
+            // listener registered. ao.c then does `goto fail` -> ao_uninit(), and buffer.c's
+            // ao_uninit() only calls driver->uninit() when `driver_initialized` is set — a flag
+            // ao.c sets only AFTER a successful init. So unregister_hotplug_cb() never runs,
+            // while talloc_free(ao) does. The orphaned listener outlives the handle for the rest
+            // of the process, and the next device change calls hotplug_cb -> MP_VERBOSE(ao, ...)
+            // -> mp_msg(ao->log) on freed memory: EXC_BAD_ACCESS on the HALC_ProxyNotification
+            // queue. Still present in mpv master as of 0.41.0.
+            //
+            // One handle per media item, plus two live handles during a crossfade, means a
+            // single failed audio init anywhere in the session arms this. Avoiding the driver is
+            // the only fix that does not require patching and rebuilding libmpv ourselves.
+            //
+            // ao_avfoundation registers no property listeners at all, so the bug cannot occur
+            // there. Accepted trade-offs: delayed mute (mpv#15014) and audio desync when
+            // playback speed changes (mpv#14483). The trailing comma keeps mpv's normal
+            // auto-probe as a fallback so a failure here means degraded audio, not silence.
+            if (com.sun.jna.Platform.isMac()) {
+                option("ao", "avfoundation,")
+            }
+
             // VLC "--network-caching=10000" / ":network-caching=15000".
             option("cache", "yes")
             option("cache-secs", networkCacheSeconds.toString())
