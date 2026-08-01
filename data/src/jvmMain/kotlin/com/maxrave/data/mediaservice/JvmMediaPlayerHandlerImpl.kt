@@ -2529,6 +2529,7 @@ class JvmMediaPlayerHandlerImpl(
             resetCrossfade()
         }
         mayBeSaveRecentSong()
+        _currentSongIndex.value = player.currentMediaItemIndex
     }
 
     private fun mayBeTrackingListeningLocal(
