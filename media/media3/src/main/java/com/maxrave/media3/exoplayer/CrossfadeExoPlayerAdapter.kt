@@ -24,6 +24,7 @@ import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
+import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
@@ -109,6 +110,12 @@ internal class CrossfadeExoPlayerAdapter(
             dataStoreManager.crossfadeDjMode.collect { enabled ->
                 djCrossfadeEnabled = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "DJ crossfade mode: $djCrossfadeEnabled")
+            }
+        }
+        coroutineScope.launch {
+            dataStoreManager.watchVideoInsteadOfPlayingAudio.collect { enabled ->
+                watchVideoEnabled = (enabled == DataStoreManager.TRUE)
+                Logger.d(TAG, "Watch video enabled: $watchVideoEnabled")
             }
         }
     }
@@ -274,6 +281,11 @@ internal class CrossfadeExoPlayerAdapter(
 
     @Volatile
     private var djCrossfadeEnabled = true
+
+    // Whether video content plays as video (watch-video setting) — the same condition
+    // MergingMediaSourceFactory uses to build a merged audio+video source.
+    @Volatile
+    private var watchVideoEnabled = false
 
     @Volatile
     private var secondaryPlayer: ExoPlayer? = null
@@ -1698,6 +1710,16 @@ internal class CrossfadeExoPlayerAdapter(
     // ========== Internal: Track End ==========
 
     /**
+     * Crossfade is skipped when the NEXT track will play as a video (video content with
+     * the watch-video setting on — the same condition MergingMediaSourceFactory uses to
+     * build a merged audio+video source). The merged source resolves two stream URLs and
+     * is error-prone to prepare mid-fade, and a video should start from its first frame
+     * instead of fading in under the outgoing song — so the transition takes the normal
+     * (non-crossfade) path.
+     */
+    private fun isNextTrackVideo(): Boolean = watchVideoEnabled && playlist.getOrNull(getNextMediaItemIndex())?.isVideo() == true
+
+    /**
      * Handle track end - mirrors GstreamerPlayerAdapter.handleTrackEndInternal()
      */
     private fun handleTrackEndInternal() {
@@ -1707,7 +1729,8 @@ internal class CrossfadeExoPlayerAdapter(
         val shouldCrossfade =
             crossfadeEnabled &&
                 hasNextMediaItem() &&
-                !isCrossfading
+                !isCrossfading &&
+                !isNextTrackVideo()
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -2561,7 +2584,8 @@ internal class CrossfadeExoPlayerAdapter(
                                     !isCrossfading &&
                                     player.isPlaying &&
                                     dur > 0 &&
-                                    pos > 0
+                                    pos > 0 &&
+                                    !isNextTrackVideo()
                                 ) {
                                     // Account for playback speed: at higher speed, media time
                                     // is consumed faster, so wall-clock remaining is shorter
