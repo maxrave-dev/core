@@ -123,6 +123,15 @@ interface MpvLibrary : Library {
         timeout: Double,
     ): Pointer?
 
+    /**
+     * `void mpv_wakeup(mpv_handle *ctx);`
+     *
+     * Makes a concurrent (or the next) [mpv_wait_event] call return immediately with
+     * MPV_EVENT_NONE. Used by release so the pump thread notices shutdown without
+     * waiting out its poll timeout.
+     */
+    fun mpv_wakeup(ctx: Pointer)
+
     // ---- render API (render.h) ----
 
     /**

@@ -3,7 +3,6 @@ package com.simpmusic.media_jvm.mpv
 import com.maxrave.logger.Logger
 import com.sun.jna.Memory
 import com.sun.jna.Pointer
-import java.awt.Component
 import java.util.Locale
 
 private const val TAG = "MpvPlayer"
@@ -88,14 +87,12 @@ class MpvPlayer private constructor(
     private val ctx: Pointer,
     private val lib: MpvLibrary,
     /**
-     * The video render target, or null for an audio-only handle. Populated with an
-     * [MpvVideoSurfacePanel] driving mpv's software render API — the counterpart of the
-     * `VlcVideoSurfacePanel` that vlcj rendered into.
+     * The video frame source, or null for an audio-only handle. Drives mpv's software render
+     * API and publishes finished frames for Compose to draw — the successor of the
+     * `MpvVideoSurfacePanel` that Swing used to blit.
      */
-    val videoSurface: Component? = null,
+    val videoFrames: MpvVideoFrameSource? = null,
 ) {
-    /** Same instance as [videoSurface]; typed so teardown can reach [MpvVideoSurfacePanel.detach]. */
-    private var videoPanel: MpvVideoSurfacePanel? = null
     companion object {
         /** Userdata tag for every `mpv_observe_property` registration; we dispatch by name. */
         private const val OBSERVE_USERDATA = 1L
@@ -121,7 +118,7 @@ class MpvPlayer private constructor(
          * Create and initialize a libmpv handle.
          *
          * @param audioOnly disables video decoding and the video output entirely. When false, an
-         *   [MpvVideoSurfacePanel] is created and its render context is attached before any file
+         *   [MpvVideoFrameSource] is created and its render context is attached before any file
          *   is loaded, as render.h requires.
          * @param networkCacheSeconds mpv's `cache-secs`. VLC's `--network-caching` was expressed
          *   in milliseconds (10000 / 15000); mpv's equivalent is in seconds.
@@ -270,11 +267,11 @@ class MpvPlayer private constructor(
             //
             // Creating it here (post-initialize, pre-loadfile) is correct: mpv_initialize() only
             // applies options, while the VO is instantiated when a file with video is loaded.
-            var panel: MpvVideoSurfacePanel? = null
+            var frameSource: MpvVideoFrameSource? = null
             if (!audioOnly) {
-                val created = MpvVideoSurfacePanel()
+                val created = MpvVideoFrameSource()
                 if (created.attach(ctx)) {
-                    panel = created
+                    frameSource = created
                 } else {
                     // vo=libmpv is now pinned but has no render context behind it. Disable video
                     // decoding outright so no VO is ever needed, and point the VO at the null sink
@@ -286,8 +283,7 @@ class MpvPlayer private constructor(
                 }
             }
 
-            return MpvPlayer(ctx, lib, panel).also {
-                it.videoPanel = panel
+            return MpvPlayer(ctx, lib, frameSource).also {
                 it.start()
             }
         }
@@ -374,6 +370,11 @@ class MpvPlayer private constructor(
                 }
 
             if (event.event_id == MpvEventId.NONE) continue
+
+            // Release has begun: stop dispatching. Handlers like AUDIO_RECONFIG -> applyVolume
+            // call back INTO libmpv from this thread, and Mpv-Release only destroys the core
+            // after joining this loop — so no new native call may start once the flag drops.
+            if (!pumpRunning) return
 
             try {
                 dispatch(event)
@@ -757,7 +758,7 @@ class MpvPlayer private constructor(
      *    down, so the pump is stopped and joined first.
      *  - render.h: *"You must free the context with mpv_render_context_free() before the mpv core
      *    is destroyed. If this doesn't happen, undefined behavior will result."* — so
-     *    [MpvVideoSurfacePanel.detach] runs before `mpv_terminate_destroy`.
+     *    [MpvVideoFrameSource.detach] runs before `mpv_terminate_destroy`.
      *
      * The whole sequence runs off-thread because both `detach` (which joins the render thread) and
      * `mpv_terminate_destroy` (which blocks until the core is gone) would otherwise stall the
@@ -768,22 +769,36 @@ class MpvPlayer private constructor(
         isReleased = true
         eventListener = null
         pumpRunning = false
+        // Kick a concurrent mpv_wait_event awake so the pump sees pumpRunning=false now
+        // instead of after its 100ms poll timeout.
+        try {
+            lib.mpv_wakeup(ctx)
+        } catch (e: Throwable) {
+            Logger.w(TAG, "mpv_wakeup failed: ${e.message}")
+        }
 
         val thread = pumpThread
         pumpThread = null
-        val panel = videoPanel
-        videoPanel = null
+        val frameSource = videoFrames
 
         Thread({
+            // Join WITHOUT a timeout. The pump may still be inside a JNA call against this
+            // handle (e.g. AUDIO_RECONFIG -> applyVolume -> mpv_set_property during the EOF
+            // audio teardown), and destroying the core underneath that call is a
+            // use-after-free — the SIGSEGV in mpv_set_property on Mpv-Event-Pump. While the
+            // core is still alive every such call returns normally and the loop then exits
+            // on pumpRunning=false, so this join is bounded in practice; the old join(1000)
+            // gave up exactly when the core was busy tearing down the audio output and
+            // destroyed it mid-call.
             try {
-                thread?.join(1000)
+                thread?.join()
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             }
             try {
-                panel?.detach()
+                frameSource?.detach()
             } catch (e: Throwable) {
-                Logger.w(TAG, "Error detaching video surface: ${e.message}")
+                Logger.w(TAG, "Error detaching video frame source: ${e.message}")
             }
             try {
                 lib.mpv_terminate_destroy(ctx)

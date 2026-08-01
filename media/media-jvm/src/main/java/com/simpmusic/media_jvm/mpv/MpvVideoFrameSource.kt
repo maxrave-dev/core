@@ -4,31 +4,32 @@ import com.maxrave.logger.Logger
 import com.sun.jna.Memory
 import com.sun.jna.Pointer
 import com.sun.jna.ptr.PointerByReference
-import java.awt.Color
-import java.awt.Graphics
-import java.awt.Graphics2D
-import java.awt.RenderingHints
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.awt.image.BufferedImage
 import java.awt.image.DataBufferInt
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-import javax.swing.JPanel
 
-private const val TAG = "MpvVideoSurfacePanel"
+private const val TAG = "MpvVideoFrameSource"
 
 /**
- * JPanel that renders mpv video frames through the software render API.
+ * Produces mpv video frames through the software render API as immutable [BufferedImage]
+ * snapshots that Compose draws directly.
  *
- * Counterpart of `VlcVideoSurfacePanel`, which receives raw RV32 frames from vlcj's
- * `RenderCallback` into a `BufferedImage` and paints them with plain Java2D. The same reasoning
- * applies here: rendering into memory we own works identically on every platform, whereas
- * embedding via a native window handle (mpv's `wid` option) has the same macOS problems that made
- * the Canvas approach unusable for VLC.
+ * Successor of `MpvVideoSurfacePanel`, which blitted the same frames onto a Swing `JPanel`
+ * embedded in Compose via `SwingPanel`. SwingPanel is a heavyweight AWT overlay: it sits above
+ * every Compose node regardless of z-order, repositions one frame late while scrolling (the
+ * flicker that exposes the transparent window behind it), and — being an AWT component — can
+ * only ever have ONE parent, so two screens composing the player fought over the panel and the
+ * loser went black. Publishing plain frames removes the AWT dependency entirely: any number of
+ * composables can collect [frames] and draw them as ordinary images.
  *
- * mpv's equivalent is `MPV_RENDER_API_TYPE_SW` — mpv decodes, scales and letterboxes into a buffer
- * we hand it, and we blit that buffer ourselves. render.h calls this renderer "extremely simple
- * (but slow)" and it is CPU-bound and single-threaded, which is the same performance class as the
- * vlcj render-callback path it replaces.
+ * mpv's side is unchanged: `MPV_RENDER_API_TYPE_SW` — mpv decodes, scales and letterboxes into a
+ * buffer we hand it, and we copy that buffer out ourselves. render.h calls this renderer
+ * "extremely simple (but slow)" and it is CPU-bound and single-threaded, which is the same
+ * performance class as the vlcj render-callback path it replaced.
  *
  * ## Lifecycle (render.h "Context and handle lifecycle")
  * [attach] must run after `mpv_initialize` but BEFORE the first `loadfile`: *"The renderer needs to
@@ -40,10 +41,10 @@ private const val TAG = "MpvVideoSurfacePanel"
  * ## Threading (render.h "Threading")
  * The update callback fires on a foreign thread, and render.h forbids calling any `mpv_render_*`
  * function from inside it, so [updateCallback] only signals. All rendering happens on a dedicated
- * thread owned by this panel, which — as render.h requires of a render thread — calls no libmpv
- * function other than `mpv_render_*`. Painting stays on the EDT and only blits the finished image.
+ * thread owned by this source, which — as render.h requires of a render thread — calls no libmpv
+ * function other than `mpv_render_*`. Consumers only ever see finished snapshots via [frames].
  */
-class MpvVideoSurfacePanel : JPanel() {
+class MpvVideoFrameSource {
     /**
      * mpv's SW pixel format, chosen to match `BufferedImage.TYPE_INT_RGB` with no per-pixel
      * swizzle.
@@ -54,13 +55,13 @@ class MpvVideoSurfacePanel : JPanel() {
      *
      * Java2D's `TYPE_INT_RGB` packs a pixel into one int as `0x00RRGGBB`. On a little-endian JVM
      * — every platform Java desktop ships on — that int occupies memory as B@0, G@1, R@2, 0@3.
-     * Identical. A bulk `Pointer.read` into the raster's `int[]` therefore needs no channel fixup;
+     * Identical. A bulk `Pointer.read` into an `int[]` therefore needs no channel fixup;
      * picking `rgb0` here instead is exactly what produces the classic red/blue-swapped video.
      *
-     * `TYPE_INT_RGB` rather than the `TYPE_INT_ARGB` that `VlcVideoSurfacePanel` uses, deliberately:
-     * render.h warns the `0` component *"contains uninitialized garbage (often the value 0, but not
-     * necessarily)"*. In an ARGB image that byte is the alpha channel, so a garbage-zero would make
-     * every frame fully transparent. `TYPE_INT_RGB` ignores the high byte entirely.
+     * `TYPE_INT_RGB` rather than `TYPE_INT_ARGB`, deliberately: render.h warns the `0` component
+     * *"contains uninitialized garbage (often the value 0, but not necessarily)"*. In an ARGB
+     * image that byte is the alpha channel, so a garbage-zero would make every frame fully
+     * transparent. `TYPE_INT_RGB` ignores the high byte entirely.
      */
     private val swFormat = "bgr0"
 
@@ -79,18 +80,28 @@ class MpvVideoSurfacePanel : JPanel() {
     @Volatile
     private var renderCtx: Pointer? = null
 
-    /** Guards [surface] and the pixel copy so the EDT never paints a half-written frame. */
+    /** Guards [surface] so [detach] cannot null it out mid-copy on the render thread. */
     private val surfaceLock = Any()
 
     @Volatile
     private var surface: Surface? = null
 
-    /** Latest panel size seen by the component listener; the render thread reallocates to match. */
+    /** Latest size reported via [setTargetSize]; the render thread reallocates to match. */
     @Volatile
     private var requestedWidth = 0
 
     @Volatile
     private var requestedHeight = 0
+
+    private val _frames = MutableStateFlow<BufferedImage?>(null)
+
+    /**
+     * Latest finished video frame, already scaled and letterboxed by mpv to the size last given
+     * via [setTargetSize]. Every emission is a fresh snapshot that is never written to again, so
+     * consumers may convert or draw it on any thread without locking. Null until the first frame
+     * arrives, and null again after [detach] so the UI can fall back to the artwork.
+     */
+    val frames: StateFlow<BufferedImage?> = _frames.asStateFlow()
 
     /**
      * Signalled by [updateCallback] (a foreign thread) and awaited by the render thread.
@@ -119,7 +130,7 @@ class MpvVideoSurfacePanel : JPanel() {
 
     /**
      * Strongly held so JNA cannot collect it while mpv still holds the function pointer — the same
-     * hazard `VlcVideoSurfacePanel` guards against for its vlcj callbacks.
+     * hazard `VlcVideoSurfacePanel` guarded against for its vlcj callbacks.
      */
     private val updateCallback =
         MpvRenderUpdateFn {
@@ -129,12 +140,13 @@ class MpvVideoSurfacePanel : JPanel() {
 
     /**
      * One allocated render target. Immutable; swapped wholesale on resize so the render thread and
-     * the EDT never disagree about dimensions.
+     * [detach] never disagree about dimensions.
      *
-     * [image] is [bufferWidth] wide rather than [width]: the stride is padded up to [alignment], and
-     * making the backing image exactly stride-wide keeps the frame contiguous so it can be copied
-     * out in a single bulk read. Only the leftmost [width] columns are ever painted — render.h
-     * leaves the padding between `(w, y)` and `(0, y + 1)` explicitly unspecified.
+     * [pixels] is [bufferWidth] ints per row rather than [width]: the stride is padded up to
+     * [alignment], and making the staging buffer exactly stride-wide keeps the frame contiguous so
+     * it can be copied out of native memory in a single bulk read. Only the leftmost [width]
+     * columns are ever published — render.h leaves the padding between `(w, y)` and `(0, y + 1)`
+     * explicitly unspecified.
      */
     private class Surface(
         val width: Int,
@@ -146,7 +158,7 @@ class MpvVideoSurfacePanel : JPanel() {
         val pixelBuffer: Pointer,
         /** Held only to keep the allocation that [pixelBuffer] points into alive. */
         @Suppress("unused") val backing: Memory,
-        val image: BufferedImage,
+        /** Stride-wide staging row buffer the native frame is bulk-read into. */
         val pixels: IntArray,
         // DO NOT DELETE sizeMem / strideMem because they look unused. [renderParams] stores raw
         // pointers INTO these two allocations, which mpv dereferences on every render call.
@@ -159,19 +171,20 @@ class MpvVideoSurfacePanel : JPanel() {
         val renderParams: Memory,
     )
 
-    init {
-        background = Color.BLACK
-        isOpaque = true
-        addComponentListener(
-            object : java.awt.event.ComponentAdapter() {
-                override fun componentResized(e: java.awt.event.ComponentEvent?) {
-                    requestedWidth = width
-                    requestedHeight = height
-                    // Wake the render thread so it reallocates and repaints at the new size.
-                    frameSignal.release()
-                }
-            },
-        )
+    /**
+     * Report the size the video should be rendered at, in physical pixels. Replaces the Swing
+     * `componentResized` listener — Compose calls this from `onSizeChanged`. The render thread
+     * reallocates its target and repaints at the new size on the next wake-up.
+     */
+    fun setTargetSize(
+        width: Int,
+        height: Int,
+    ) {
+        if (width <= 0 || height <= 0) return
+        if (width == requestedWidth && height == requestedHeight) return
+        requestedWidth = width
+        requestedHeight = height
+        frameSignal.release()
     }
 
     /**
@@ -253,6 +266,9 @@ class MpvVideoSurfacePanel : JPanel() {
             }
         }
         synchronized(surfaceLock) { surface = null }
+        // Clear the last frame so collectors fall back to the artwork instead of holding a
+        // stale image from a player that no longer exists.
+        _frames.value = null
     }
 
     // ================= render thread =================
@@ -283,15 +299,38 @@ class MpvVideoSurfacePanel : JPanel() {
                     continue
                 }
 
-                // Single bulk copy out of native memory into the raster — the frame is contiguous
-                // because the image is stride-wide. Native ints are read in platform byte order,
-                // which is what makes the bgr0 <-> TYPE_INT_RGB match hold (little-endian).
-                synchronized(surfaceLock) {
-                    if (surface === target) {
-                        target.pixelBuffer.read(0L, target.pixels, 0, target.pixels.size)
+                // Single bulk copy out of native memory into the staging buffer — the frame is
+                // contiguous because the buffer is stride-wide. Native ints are read in platform
+                // byte order, which is what makes the bgr0 <-> TYPE_INT_RGB match hold
+                // (little-endian).
+                val copied =
+                    synchronized(surfaceLock) {
+                        if (surface === target) {
+                            target.pixelBuffer.read(0L, target.pixels, 0, target.pixels.size)
+                            true
+                        } else {
+                            false
+                        }
                     }
+                if (!copied) continue
+
+                // Publish a fresh snapshot with the stride padding stripped. A new image per frame
+                // keeps every published frame immutable — collectors can convert it on any thread
+                // with no tearing — and replaces the per-frame Java2D blit the EDT used to do, so
+                // the total copy work is unchanged. StateFlow also needs a distinct instance per
+                // frame: re-emitting a mutated image would be conflated away as equal.
+                val snapshot = BufferedImage(target.width, target.height, BufferedImage.TYPE_INT_RGB)
+                val snapshotPixels = (snapshot.raster.dataBuffer as DataBufferInt).data
+                for (y in 0 until target.height) {
+                    System.arraycopy(
+                        target.pixels,
+                        y * target.bufferWidth,
+                        snapshotPixels,
+                        y * target.width,
+                        target.width,
+                    )
                 }
-                repaint()
+                _frames.value = snapshot
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return
@@ -302,9 +341,9 @@ class MpvVideoSurfacePanel : JPanel() {
     }
 
     /**
-     * Allocate or reallocate the render target to match the panel size.
+     * Allocate or reallocate the render target to match the requested size.
      *
-     * Runs on the render thread so all native allocation stays off the EDT.
+     * Runs on the render thread so all native allocation stays off the UI.
      *
      * @return true when a new surface was allocated this call.
      */
@@ -316,8 +355,8 @@ class MpvVideoSurfacePanel : JPanel() {
         val existing = surface
         if (existing != null && existing.width == w && existing.height == h) return false
 
-        // Stride padded up to the alignment mpv asks for, then used as the image width so the
-        // whole frame stays one contiguous run of pixels.
+        // Stride padded up to the alignment mpv asks for, then used as the staging row width so
+        // the whole frame stays one contiguous run of pixels.
         val minStride = w.toLong() * bytesPerPixel
         val strideBytes = ((minStride + alignment - 1) / alignment) * alignment
         val bufferWidth = (strideBytes / bytesPerPixel).toInt()
@@ -328,8 +367,7 @@ class MpvVideoSurfacePanel : JPanel() {
         val offset = (alignment - (Pointer.nativeValue(backing) % alignment)) % alignment
         val pixelBuffer = backing.share(offset, needed)
 
-        val image = BufferedImage(bufferWidth, h, BufferedImage.TYPE_INT_RGB)
-        val pixels = (image.raster.dataBuffer as DataBufferInt).data
+        val pixels = IntArray(bufferWidth * h)
 
         val sizeMem =
             Memory(8).apply {
@@ -360,7 +398,6 @@ class MpvVideoSurfacePanel : JPanel() {
                 strideBytes = strideBytes,
                 pixelBuffer = pixelBuffer,
                 backing = backing,
-                image = image,
                 pixels = pixels,
                 sizeMem = sizeMem,
                 strideMem = strideMem,
@@ -369,31 +406,5 @@ class MpvVideoSurfacePanel : JPanel() {
         synchronized(surfaceLock) { surface = next }
         Logger.d(TAG, "Render surface allocated: ${w}x$h (stride=$strideBytes, bufferWidth=$bufferWidth)")
         return true
-    }
-
-    // ================= painting =================
-
-    override fun paintComponent(g: Graphics) {
-        super.paintComponent(g)
-        val g2 = g as Graphics2D
-        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-
-        synchronized(surfaceLock) {
-            val target = surface ?: return
-            // mpv already scaled and letterboxed the frame to the requested surface size, so this
-            // is a 1:1 blit. Only the first `width` columns are valid — the rest is stride padding.
-            g2.drawImage(
-                target.image,
-                0,
-                0,
-                target.width,
-                target.height,
-                0,
-                0,
-                target.width,
-                target.height,
-                null,
-            )
-        }
     }
 }

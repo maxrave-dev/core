@@ -30,7 +30,6 @@ import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.awt.Component
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
@@ -54,7 +53,7 @@ private const val TAG = "MpvPlayerAdapter"
  *  - Events are pulled on a per-handle pump thread instead of pushed from a native thread, so the
  *    "never call stop()/release() from inside a callback" hazard that VLC has does not exist here.
  *  - Video frames come from mpv's software render API on a thread this backend owns, rather than
- *    from a vlcj render callback — see [MpvVideoSurfacePanel].
+ *    from a vlcj render callback — see [MpvVideoFrameSource].
  */
 class MpvPlayerAdapter(
     private val coroutineScope: CoroutineScope,
@@ -98,6 +97,13 @@ class MpvPlayerAdapter(
             dataStoreManager.crossfadeDjMode.collect { enabled ->
                 djCrossfadeEnabled = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "DJ crossfade mode: $djCrossfadeEnabled")
+            }
+        }
+
+        coroutineScope.launch {
+            dataStoreManager.watchVideoInsteadOfPlayingAudio.collect { enabled ->
+                watchVideoEnabled = (enabled == DataStoreManager.TRUE)
+                Logger.d(TAG, "Watch video enabled: $watchVideoEnabled")
             }
         }
     }
@@ -169,6 +175,11 @@ class MpvPlayerAdapter(
     @Volatile
     private var djCrossfadeEnabled = false
 
+    // Whether video content plays as video (watch-video setting) — the same condition
+    // extractPlayableUrl uses to include the video stream in the edl:// merged source.
+    @Volatile
+    private var watchVideoEnabled = false
+
     @Volatile
     private var secondaryPlayer: MpvPlayer? = null
 
@@ -219,8 +230,10 @@ class MpvPlayerAdapter(
     fun getCurrentPlayer(): MpvPlayer? = currentPlayer
 
     // Video surface state - UI collects this to display video.
-    private val _currentVideoSurface = MutableStateFlow<Component?>(null)
-    val currentVideoSurface: StateFlow<Component?> = _currentVideoSurface.asStateFlow()
+    private val _currentVideoFrames = MutableStateFlow<MpvVideoFrameSource?>(null)
+
+    /** Frame source of the player whose video should be on screen, or null when the current track has no video. */
+    val currentVideoFrames: StateFlow<MpvVideoFrameSource?> = _currentVideoFrames.asStateFlow()
 
     // ========== Playback Source ==========
     private data class PlayableSource(
@@ -343,7 +356,7 @@ class MpvPlayerAdapter(
             currentPlayer?.release()
             currentPlayer = null
             currentPlayerIsVideo = false
-            _currentVideoSurface.value = null
+            _currentVideoFrames.value = null
             loadAndPlayTrackInternal(mediaItemIndex, positionMs, shouldPlay)
         }
     }
@@ -1046,8 +1059,8 @@ class MpvPlayerAdapter(
                     // mpv native calls on the service thread
                     cleanupCurrentPlayerInternal()
                     currentPlayer = player
-                    currentPlayerIsVideo = player.videoSurface != null
-                    _currentVideoSurface.value = player.videoSurface
+                    currentPlayerIsVideo = player.videoFrames != null
+                    _currentVideoFrames.value = player.videoFrames
                     setupPlayerEventsInternal(player)
                     player.setMasterVolume((internalVolume * 100).toInt())
 
@@ -1123,7 +1136,7 @@ class MpvPlayerAdapter(
      * Create an mpv player instance for [source].
      *
      * Video sources get a handle with mpv's software render API attached — see
-     * [MpvVideoSurfacePanel], the counterpart of `VlcVideoSurfacePanel`. Audio sources get a
+     * [MpvVideoFrameSource], the successor of `VlcVideoSurfacePanel`. Audio sources get a
      * headless handle with `vid=no`/`vo=null`, so no video stream is ever decoded or fetched.
      */
     private fun createMediaPlayerInternal(source: PlayableSource): MpvPlayer? {
@@ -1344,8 +1357,18 @@ class MpvPlayerAdapter(
         currentPlayer?.let { cleanupPlayerInternal(it) }
         currentPlayer = null
         currentPlayerIsVideo = false
-        _currentVideoSurface.value = null
+        _currentVideoFrames.value = null
     }
+
+    /**
+     * Crossfade is skipped when the NEXT track will play as a video (video content with
+     * the watch-video setting on — the same condition [extractPlayableUrl] uses to include
+     * the video stream). The merged edl:// source resolves two stream URLs and is
+     * error-prone to prepare mid-fade, and a video should start from its first frame
+     * instead of fading in under the outgoing song — so the transition takes the normal
+     * (non-crossfade) path.
+     */
+    private fun isNextTrackVideo(): Boolean = watchVideoEnabled && playlist.getOrNull(getNextMediaItemIndex())?.isVideo() == true
 
     /**
      * Handle track end
@@ -1361,7 +1384,8 @@ class MpvPlayerAdapter(
 
         val shouldCrossfade =
             crossfadeEnabled &&
-                hasNextMediaItem()
+                hasNextMediaItem() &&
+                !isNextTrackVideo()
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -1466,11 +1490,12 @@ class MpvPlayerAdapter(
                         loadAudioMetaIfNeeded(nextVideoId)
                     }
 
-                    // Update now playing and video surface immediately
+                    // Update now playing and video frames immediately. Set unconditionally: the
+                    // old null-guard kept the OUTGOING player's frames on screen when the incoming
+                    // track has no video, leaving a dead surface from a soon-released player on
+                    // screen (the "black video until next/prev" bug).
                     localCurrentMediaItemIndex = nextIndex
-                    if (nextPlayer.videoSurface != null) {
-                        _currentVideoSurface.value = nextPlayer.videoSurface
-                    }
+                    _currentVideoFrames.value = nextPlayer.videoFrames
                     notifyListeners {
                         onMediaItemTransition(
                             nextMediaItem,
@@ -1614,8 +1639,8 @@ class MpvPlayerAdapter(
 
         // Promote the incoming track (A+1).
         currentPlayer = incoming
-        currentPlayerIsVideo = incoming.videoSurface != null
-        _currentVideoSurface.value = incoming.videoSurface
+        currentPlayerIsVideo = incoming.videoFrames != null
+        _currentVideoFrames.value = incoming.videoFrames
         secondaryPlayer = null
 
         // Until now it only carried the minimal crossfade error listener (see
@@ -1808,8 +1833,8 @@ class MpvPlayerAdapter(
 
         // Promote secondary to current
         currentPlayer = nextPlayer
-        currentPlayerIsVideo = nextPlayer.videoSurface != null
-        _currentVideoSurface.value = nextPlayer.videoSurface
+        currentPlayerIsVideo = nextPlayer.videoFrames != null
+        _currentVideoFrames.value = nextPlayer.videoFrames
         secondaryPlayer = null
 
         // Now set up the full event listener on the new current player
@@ -2213,7 +2238,8 @@ class MpvPlayerAdapter(
                             // crossfade during queue restore.
                             if (crossfadeEnabled &&
                                 !isCrossfading &&
-                                internalPlayWhenReady
+                                internalPlayWhenReady &&
+                                !isNextTrackVideo()
                             ) {
                                 val player = currentPlayer
                                 if (player != null) {
