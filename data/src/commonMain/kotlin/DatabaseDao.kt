@@ -38,6 +38,14 @@ import com.maxrave.domain.extension.now
 import kotlinx.coroutines.flow.Flow
 import kotlinx.datetime.LocalDateTime
 
+/**
+ * The album name older builds stored when they could not find a real one.
+ *
+ * Kept in step with the copy in [com.maxrave.data.db.datasource.LocalDataSource] and with the
+ * literal baked into [DatabaseDao.refreshAlbumIfPlaceholder]'s WHERE clause.
+ */
+private const val PLACEHOLDER_ALBUM_NAME = "Album"
+
 @Dao
 interface DatabaseDao {
     // Transaction request with multiple queries
@@ -245,6 +253,44 @@ interface DatabaseDao {
 
     @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
     suspend fun insertSong(song: SongEntity): Long
+
+    /**
+     * Stores a batch of tracks in one transaction.
+     *
+     * Every other path inserts one song at a time through
+     * [com.maxrave.data.db.datasource.LocalDataSource.insertSong], which is right when a track
+     * arrives on its own but costs a commit each time. An import writes thousands in a row, so the
+     * batch collapses them into a handful of commits instead.
+     *
+     * The per-row semantics are deliberately identical to that single-song path: the insert is
+     * IGNORE, and a row that was dropped because it already exists (rowId -1) gets the same two
+     * self-repair passes — see [refreshAlbumIfPlaceholder] and [refreshArtists] for why they exist
+     * and why their WHERE clauses are what keep good data from being overwritten.
+     */
+    @Transaction
+    suspend fun insertSongs(songs: List<SongEntity>) {
+        songs.forEach { song ->
+            val rowId = insertSong(song)
+            if (rowId == -1L) {
+                val albumName = song.albumName
+                if (!albumName.isNullOrBlank() && albumName != PLACEHOLDER_ALBUM_NAME) {
+                    refreshAlbumIfPlaceholder(
+                        videoId = song.videoId,
+                        albumName = albumName,
+                        albumId = song.albumId,
+                    )
+                }
+                val artistName = song.artistName
+                if (!artistName.isNullOrEmpty()) {
+                    refreshArtists(
+                        videoId = song.videoId,
+                        artistName = artistName,
+                        artistId = song.artistId,
+                    )
+                }
+            }
+        }
+    }
 
     /**
      * Fills in an album name that an older parse never had.
@@ -514,8 +560,44 @@ interface DatabaseDao {
     @Query("SELECT * FROM local_playlist WHERE id = :id")
     suspend fun getLocalPlaylist(id: Long): LocalPlaylistEntity?
 
+    /**
+     * Returns the generated `local_playlist.id`, or -1 when IGNORE dropped the row.
+     *
+     * `id` is the autoGenerate primary key, so the rowId Room hands back *is* the playlist id.
+     * Callers that only create a playlist can keep ignoring the value.
+     */
     @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
-    suspend fun insertLocalPlaylist(localPlaylist: LocalPlaylistEntity)
+    suspend fun insertLocalPlaylist(localPlaylist: LocalPlaylistEntity): Long
+
+    /**
+     * Creates a playlist and its `pair_song_local_playlist` rows in one transaction.
+     *
+     * [videoIds] must already be filtered down to ids that have a `song` row — the pair table has a
+     * foreign key to `song.videoId` and the insert fails otherwise. Position is the index in
+     * [videoIds], so the caller is responsible for handing over a contiguous list.
+     *
+     * @return the new playlist id, or -1 when the playlist row was not written.
+     */
+    @Transaction
+    suspend fun insertLocalPlaylistWithTracks(
+        localPlaylist: LocalPlaylistEntity,
+        videoIds: List<String>,
+    ): Long {
+        val playlistId = insertLocalPlaylist(localPlaylist)
+        if (playlistId == -1L) return -1L
+        val addedAt = now()
+        videoIds.forEachIndexed { index, videoId ->
+            insertPairSongLocalPlaylist(
+                PairSongLocalPlaylist(
+                    playlistId = playlistId,
+                    songId = videoId,
+                    position = index,
+                    inPlaylist = addedAt,
+                ),
+            )
+        }
+        return playlistId
+    }
 
     @Query("DELETE FROM local_playlist WHERE id = :id")
     suspend fun deleteLocalPlaylist(id: Long)

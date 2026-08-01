@@ -138,6 +138,14 @@ internal class LocalDataSource(
         return rowId
     }
 
+    /**
+     * Batch counterpart of [insertSong], used by the importer.
+     *
+     * The IGNORE-and-self-repair policy above lives inside the DAO method here, because the
+     * transaction has to wrap the whole batch and only a DAO method can be `@Transaction`.
+     */
+    suspend fun insertSongs(songs: List<SongEntity>) = databaseDao.insertSongs(songs)
+
     suspend fun updateThumbnailsSongEntity(
         thumbnail: String,
         videoId: String,
@@ -297,6 +305,11 @@ internal class LocalDataSource(
     suspend fun getLocalPlaylist(id: Long) = databaseDao.getLocalPlaylist(id)
 
     suspend fun insertLocalPlaylist(localPlaylist: LocalPlaylistEntity) = databaseDao.insertLocalPlaylist(localPlaylist)
+
+    suspend fun insertLocalPlaylistWithTracks(
+        localPlaylist: LocalPlaylistEntity,
+        videoIds: List<String>,
+    ) = databaseDao.insertLocalPlaylistWithTracks(localPlaylist, videoIds)
 
     suspend fun deleteLocalPlaylist(id: Long) = databaseDao.deleteLocalPlaylist(id)
 
