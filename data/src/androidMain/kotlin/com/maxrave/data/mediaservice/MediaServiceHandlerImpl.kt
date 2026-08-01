@@ -2080,23 +2080,30 @@ internal class MediaServiceHandlerImpl(
         val unit =
             suspend {
                 if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
-                    dataStoreManager.saveRecentSong(
-                        nowPlayingState.value.songEntity?.videoId ?: "",
-                        player.contentPosition,
-                    )
-                    dataStoreManager.setPlaylistFromSaved(queueData.value.data.playlistName ?: "")
-                    Logger.d(
-                        "Check saved",
-                        player.currentMediaItem
-                            ?.metadata
-                            ?.title
-                            .toString(),
-                    )
-                    val temp: ArrayList<Track> = ArrayList()
-                    temp.clear()
-                    temp.addAll(_queueData.value.data.listTracks)
-                    Logger.w("Check recover queue", temp.toString())
-                    songRepository.recoverQueue(temp)
+                    // Skip while the playing song is unknown or the queue is mid-rebuild:
+                    // updateCatalog clears listTracks and re-inserts the current track only at
+                    // the end, so saving in that window persists a queue missing the current
+                    // track (plus a blank media id), which desyncs the next restore.
+                    val videoId = nowPlayingState.value.songEntity?.videoId
+                    if (videoId != null && queueData.value.queueState == QueueData.StateSource.STATE_INITIALIZED) {
+                        dataStoreManager.saveRecentSong(
+                            videoId,
+                            player.contentPosition,
+                        )
+                        dataStoreManager.setPlaylistFromSaved(queueData.value.data.playlistName ?: "")
+                        Logger.d(
+                            "Check saved",
+                            player.currentMediaItem
+                                ?.metadata
+                                ?.title
+                                .toString(),
+                        )
+                        val temp: ArrayList<Track> = ArrayList()
+                        temp.clear()
+                        temp.addAll(_queueData.value.data.listTracks)
+                        Logger.w("Check recover queue", temp.toString())
+                        songRepository.recoverQueue(temp)
+                    }
                 }
             }
         if (runBlocking) {
@@ -2222,10 +2229,33 @@ internal class MediaServiceHandlerImpl(
             if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
                 val currentPlayingTrack = songRepository.getSongById(dataStoreManager.recentMediaId.first()).lastOrNull()?.toTrack()
                 if (currentPlayingTrack != null) {
-                    val queue = songRepository.getSavedQueue().singleOrNull()
+                    // Snapshot the position before touching the player: loading the queue fires
+                    // onMediaItemTransition -> mayBeSaveRecentSong, which rewrites the stored
+                    // position before the seek below would otherwise read it.
+                    val savedPosition = dataStoreManager.recentPosition.first().toLongOrNull() ?: 0L
+                    val savedTracks =
+                        songRepository
+                            .getSavedQueue()
+                            .singleOrNull()
+                            ?.firstOrNull()
+                            ?.listTrack
+                            .orEmpty()
+                    // The saved queue may not contain the saved track (e.g. persisted while the
+                    // queue was being rebuilt). Put the track at the front then: updateCatalog
+                    // skips listTracks[index] as "already in the player", so index must point at
+                    // the playing track or the UI queue and the player playlist end up shifted
+                    // against each other.
+                    var index = savedTracks.indexOfFirst { it.videoId == currentPlayingTrack.videoId }
+                    val listTracks =
+                        if (index == -1) {
+                            index = 0
+                            (listOf(currentPlayingTrack) + savedTracks).toCollection(arrayListOf())
+                        } else {
+                            savedTracks.toCollection(arrayListOf())
+                        }
                     setQueueData(
                         QueueData.Data(
-                            listTracks = queue?.firstOrNull()?.listTrack?.toCollection(arrayListOf()) ?: arrayListOf(currentPlayingTrack),
+                            listTracks = listTracks,
                             firstPlayedTrack = currentPlayingTrack,
                             playlistId = LOCAL_PLAYLIST_ID_SAVED_QUEUE,
                             playlistName = dataStoreManager.playlistFromSaved.first(),
@@ -2233,15 +2263,9 @@ internal class MediaServiceHandlerImpl(
                             continuation = null,
                         ),
                     )
-                    var index =
-                        queue?.firstOrNull()?.listTrack?.map { it.videoId }?.indexOf(
-                            currentPlayingTrack.videoId,
-                        )
-                    if (index == null || index == -1) index = 0
                     addMediaItem(currentPlayingTrack.toGenericMediaItem(), playWhenReady = false)
                     loadPlaylistOrAlbum(index = index)
                     loadJob?.join()
-                    val savedPosition = dataStoreManager.recentPosition.first().toLong()
                     resetCrossfade()
                     player.seekTo(index, savedPosition)
                 }
