@@ -91,6 +91,32 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val moodAndGenresCache: Flow<String?> =
+        settingsDataStore.data.map { preferences ->
+            preferences[MOOD_AND_GENRES_CACHE]
+        }
+
+    override suspend fun setMoodAndGenresCache(json: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[MOOD_AND_GENRES_CACHE] = json
+            }
+        }
+    }
+
+    override val moodArtworkCache: Flow<String?> =
+        settingsDataStore.data.map { preferences ->
+            preferences[MOOD_ARTWORK_CACHE]
+        }
+
+    override suspend fun setMoodArtworkCache(json: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[MOOD_ARTWORK_CACHE] = json
+            }
+        }
+    }
+
     override val quality: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[QUALITY] ?: COMMON_QUALITY.items[0].toString()
@@ -1459,6 +1485,8 @@ internal class DataStoreManagerImpl(
         val PAGE_ID = stringPreferencesKey("page_id")
         val LOGGED_IN = stringPreferencesKey("logged_in")
         val LOCATION = stringPreferencesKey("location")
+        val MOOD_AND_GENRES_CACHE = stringPreferencesKey("mood_and_genres_cache")
+        val MOOD_ARTWORK_CACHE = stringPreferencesKey("mood_artwork_cache")
         val QUALITY = stringPreferencesKey("quality")
         val DOWNLOAD_QUALITY = stringPreferencesKey("download_quality")
         val VIDEO_DOWNLOAD_QUALITY = stringPreferencesKey("video_download_quality")

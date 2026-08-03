@@ -34,6 +34,24 @@ interface DataStoreManager {
 
     val language: Flow<String>
 
+    /**
+     * Serialized "Moods & Genres" browse result, so the search and home screens can paint their
+     * category grid immediately instead of waiting on the network every time. Null until the
+     * first successful fetch.
+     */
+    val moodAndGenresCache: Flow<String?>
+
+    suspend fun setMoodAndGenresCache(json: String)
+
+    /**
+     * Cover art resolved per browse category, keyed by its params. The category list itself
+     * carries no artwork, so each cover costs one full category browse — worth remembering on
+     * disk rather than paying again every time the search screen opens.
+     */
+    val moodArtworkCache: Flow<String?>
+
+    suspend fun setMoodArtworkCache(json: String)
+
     fun getString(key: String): Flow<String?>
 
     suspend fun putString(
