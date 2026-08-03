@@ -214,7 +214,7 @@ interface DataStoreManager {
 
     suspend fun setCombineLocalAndYouTubeLiked(combine: Boolean)
 
-    /** Replace AA previous transport with Like; wheel previous likes. Default on. */
+    /** Replace previous transport with Like (media notification + Android Auto). Default off. */
     val androidAutoLikeInsteadOfPrevious: Flow<String>
 
     suspend fun setAndroidAutoLikeInsteadOfPrevious(enabled: Boolean)

@@ -155,8 +155,8 @@ fun GenericCommandButton.toCommandButton(
             builder.build()
         }
         GenericCommandButton.Previous -> {
-            // Stock previous glyph, but force OVERFLOW: ICON_PREVIOUS defaults to SLOT_BACK
-            // and would otherwise steal the compact previous slot from Like.
+            // No setCustomIconResId: let the host draw ICON_PREVIOUS with the same OEM
+            // asset family as system Next. Force OVERFLOW so we don't steal SLOT_BACK from Like.
             CommandButton
                 .Builder(CommandButton.ICON_PREVIOUS)
                 .setSlots(CommandButton.SLOT_OVERFLOW)

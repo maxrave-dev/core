@@ -902,7 +902,7 @@ internal class DataStoreManagerImpl(
 
     override val androidAutoLikeInsteadOfPrevious: Flow<String> =
         settingsDataStore.data.map { preferences ->
-            preferences[ANDROID_AUTO_LIKE_INSTEAD_OF_PREVIOUS] ?: TRUE
+            preferences[ANDROID_AUTO_LIKE_INSTEAD_OF_PREVIOUS] ?: FALSE
         }
 
     override suspend fun setAndroidAutoLikeInsteadOfPrevious(enabled: Boolean) {
