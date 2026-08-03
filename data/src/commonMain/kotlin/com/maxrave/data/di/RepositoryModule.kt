@@ -78,7 +78,7 @@ val repositoryModule =
         }
 
         single<SongRepository>(createdAtStart = true) {
-            SongRepositoryImpl(get(), get(), get())
+            SongRepositoryImpl(get(), get(), get(), get())
         }
 
         single<StreamRepository>(createdAtStart = true) {

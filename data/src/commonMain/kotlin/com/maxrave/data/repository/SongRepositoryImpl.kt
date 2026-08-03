@@ -14,8 +14,10 @@ import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
+import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
@@ -36,12 +38,16 @@ import kotlinx.coroutines.withContext
 import kotlinx.datetime.LocalDateTime
 
 private const val TAG = "SongRepositoryImpl"
+private const val YT_LIKED_SYNC_TTL_MS = 5 * 60 * 1000L
 
 internal class SongRepositoryImpl(
     private val dataStoreManager: DataStoreManager,
     private val localDataSource: LocalDataSource,
     private val youTube: YouTube,
+    private val playlistRepository: PlaylistRepository,
 ) : SongRepository {
+    @Volatile
+    private var lastYtLikedSyncMs: Long = 0L
     override fun getAllSongs(limit: Int): Flow<List<SongEntity>> =
         flow {
             emit(localDataSource.getAllSongs(limit))
@@ -135,17 +141,19 @@ internal class SongRepositoryImpl(
         likeStatus: Int,
     ) = withContext(Dispatchers.Main) {
         localDataSource.updateLiked(likeStatus, videoId)
-//        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
-//            if (likeStatus == 1) {
-//                addToYouTubeLiked(videoId).collect { result ->
-//                    Logger.d(TAG, "updateLikeStatus -> addToYouTubeLiked: $result")
-//                }
-//            } else {
-//                removeFromYouTubeLiked(videoId).collect { result ->
-//                    Logger.d(TAG, "updateLikeStatus -> removeFromYouTubeLiked: $result")
-//                }
-//            }
-//        }
+        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE &&
+            dataStoreManager.loggedIn.first() == TRUE
+        ) {
+            if (likeStatus == 1) {
+                addToYouTubeLiked(videoId).collect { result ->
+                    Logger.d(TAG, "updateLikeStatus -> addToYouTubeLiked: $result")
+                }
+            } else {
+                removeFromYouTubeLiked(videoId).collect { result ->
+                    Logger.d(TAG, "updateLikeStatus -> removeFromYouTubeLiked: $result")
+                }
+            }
+        }
     }
 
     override fun updateSongInLibrary(
@@ -350,6 +358,46 @@ internal class SongRepositoryImpl(
                 }
             }
         }.flowOn(Dispatchers.IO)
+
+    override suspend fun syncYouTubeLikedToLocal(force: Boolean): Int =
+        withContext(Dispatchers.IO) {
+            if (dataStoreManager.combineLocalAndYouTubeLiked.first() != TRUE) {
+                return@withContext 0
+            }
+            if (dataStoreManager.loggedIn.first() != TRUE) {
+                return@withContext 0
+            }
+            val now = System.currentTimeMillis()
+            if (!force && now - lastYtLikedSyncMs < YT_LIKED_SYNC_TTL_MS) {
+                Logger.d(TAG, "syncYouTubeLikedToLocal: skipped (TTL)")
+                return@withContext 0
+            }
+            runCatching {
+                val resource =
+                    playlistRepository
+                        .getFullPlaylistData("LM", "")
+                        .lastOrNull()
+                val tracks =
+                    (resource as? Resource.Success)?.data?.tracks.orEmpty()
+                if (tracks.isEmpty()) {
+                    Logger.w(TAG, "syncYouTubeLikedToLocal: empty LM or error=$resource")
+                    return@runCatching 0
+                }
+                var applied = 0
+                for (track in tracks) {
+                    val entity = track.toSongEntity().copy(liked = true)
+                    localDataSource.insertSong(entity)
+                    localDataSource.updateLiked(1, track.videoId)
+                    applied++
+                }
+                lastYtLikedSyncMs = now
+                Logger.d(TAG, "syncYouTubeLikedToLocal: applied=$applied")
+                applied
+            }.getOrElse {
+                Logger.e(TAG, "syncYouTubeLikedToLocal failed: ${it.message}")
+                0
+            }
+        }
 
     override fun downloadToFile(
         track: Track,

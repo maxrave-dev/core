@@ -498,6 +498,8 @@ object MEDIA_CUSTOM_COMMAND {
     const val REPEAT = "repeat"
     const val RADIO = "radio"
     const val SHUFFLE = "shuffle"
+    /** Custom previous for Android Auto when Like occupies SLOT_BACK. */
+    const val PREVIOUS = "previous"
 
     // Android Auto (Car App Library): asks the session for its platform token
     const val GET_PLATFORM_TOKEN = "get_platform_token"

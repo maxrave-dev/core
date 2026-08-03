@@ -2,8 +2,10 @@ package com.maxrave.media3.service.callback
 
 import android.content.ContentResolver
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.annotation.DrawableRes
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
@@ -12,8 +14,10 @@ import androidx.media3.common.Player
 import androidx.media3.common.Player.COMMAND_GET_TIMELINE
 import androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT
 import androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS
+import androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.CommandButton
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
@@ -29,6 +33,8 @@ import com.maxrave.common.MEDIA_CUSTOM_COMMAND
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.home.HomeItem
+import com.maxrave.domain.data.player.GenericCommandButton
+import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.domain.mediaservice.handler.PlayerEvent
 import com.maxrave.domain.mediaservice.handler.PlaylistType
@@ -49,6 +55,7 @@ import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
 import com.maxrave.media3.R
+import com.maxrave.media3.extension.toMediaButtonPreferences
 import com.maxrave.media3.extension.toMediaItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +65,7 @@ import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 private const val TAG = "AndroidAuto"
 
@@ -66,6 +74,7 @@ internal class SimpleMediaSessionCallback(
     private val context: Context,
     private val scope: CoroutineScope,
     private val mediaPlayerHandler: MediaPlayerHandler,
+    private val dataStoreManager: DataStoreManager,
     private val searchRepository: SearchRepository,
     private val songRepository: SongRepository,
     private val localPlaylistRepository: LocalPlaylistRepository,
@@ -82,24 +91,56 @@ internal class SimpleMediaSessionCallback(
     private val searchTempList = mutableListOf<Track>()
     private val listHomeItem = mutableListOf<HomeItem>()
 
+    private fun isAaLikeInsteadOfPreviousEnabled(): Boolean =
+        runBlocking {
+            dataStoreManager.androidAutoLikeInsteadOfPrevious.first() == DataStoreManager.TRUE
+        }
+
+    private fun isCarOrPlatformMediaController(
+        session: MediaSession,
+        controller: MediaSession.ControllerInfo,
+    ): Boolean =
+        session.isMediaNotificationController(controller) ||
+            session.isAutoCompanionController(controller) ||
+            session.isAutomotiveController(controller) ||
+            isAndroidAutoHost(controller.packageName)
+
+    private fun buildMediaButtonPreferences(aaLikeInsteadOfPrevious: Boolean): List<CommandButton> {
+        val control = mediaPlayerHandler.controlState.value
+        return listOf(
+            GenericCommandButton.Like(control.isLiked),
+            GenericCommandButton.Shuffle(isShuffled = control.isShuffle),
+            GenericCommandButton.Repeat(repeatState = control.repeatState),
+            GenericCommandButton.Radio,
+        ).toMediaButtonPreferences(context, aaLikeInsteadOfPrevious)
+    }
+
     override fun onConnect(
         session: MediaSession,
         controller: MediaSession.ControllerInfo,
     ): MediaSession.ConnectionResult {
-        Logger.w(TAG, "onConnect: ${controller.packageName}")
+        val aaLikeInsteadOfPrevious = isAaLikeInsteadOfPreviousEnabled()
+        val customizeForCar = isCarOrPlatformMediaController(session, controller)
+        Logger.w(
+            TAG,
+            "onConnect pkg=${controller.packageName} aaLike=$aaLikeInsteadOfPrevious " +
+                "carOrPlatform=$customizeForCar " +
+                "notif=${session.isMediaNotificationController(controller)} " +
+                "auto=${session.isAutoCompanionController(controller)}",
+        )
         val sessionCommands =
             MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
                 .buildUpon()
-                // Add custom commands
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.LIKE, Bundle()))
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.REPEAT, Bundle()))
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.RADIO, Bundle()))
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.SHUFFLE, Bundle()))
+                .add(SessionCommand(MEDIA_CUSTOM_COMMAND.PREVIOUS, Bundle()))
                 .add(SessionCommand(MEDIA_CUSTOM_COMMAND.GET_PLATFORM_TOKEN, Bundle()))
                 .build()
         // Backup for MODE: when Gearhead rebinds after AA returns, resume only if we were
         // interrupted while playing (adapter also watches CarConnection).
-        if (isAndroidAutoHost(controller.packageName)) {
+        if (customizeForCar && !session.isMediaNotificationController(controller)) {
             scope.launch {
                 delay(500)
                 runCatching {
@@ -110,16 +151,72 @@ internal class SimpleMediaSessionCallback(
                 }
             }
         }
-        return MediaSession.ConnectionResult
-            .AcceptedResultBuilder(session)
-            .setAvailableSessionCommands(sessionCommands)
-            .setAvailablePlayerCommands(
-                Player.Commands
-                    .Builder()
-                    .addAllCommands()
-                    .remove(COMMAND_GET_TIMELINE)
-                    .build(),
-            ).build()
+
+        val playerCommandsBuilder =
+            Player.Commands
+                .Builder()
+                .addAllCommands()
+                .remove(COMMAND_GET_TIMELINE)
+        // Withhold system previous so Like in SLOT_BACK can occupy the compact back slot.
+        // Steering-wheel previous still arrives via onMediaButtonEvent / remapped seek.
+        if (aaLikeInsteadOfPrevious && customizeForCar) {
+            playerCommandsBuilder
+                .remove(COMMAND_SEEK_TO_PREVIOUS)
+                .remove(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+        }
+
+        val resultBuilder =
+            MediaSession.ConnectionResult
+                .AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(sessionCommands)
+                .setAvailablePlayerCommands(playerCommandsBuilder.build())
+
+        // Platform media notification + AA hosts share this session for transport UI.
+        if (aaLikeInsteadOfPrevious && customizeForCar) {
+            // Like in SLOT_BACK; custom Previous first in overflow (old Like spot).
+            resultBuilder.setMediaButtonPreferences(buildMediaButtonPreferences(true))
+        }
+        return resultBuilder.build()
+    }
+
+    /**
+     * Steering-wheel "previous" arrives as [KeyEvent.KEYCODE_MEDIA_PREVIOUS].
+     * Map it to like when the AA setting is on.
+     */
+    override fun onMediaButtonEvent(
+        session: MediaSession,
+        controllerInfo: MediaSession.ControllerInfo,
+        intent: Intent,
+    ): Boolean {
+        if (!isAaLikeInsteadOfPreviousEnabled() ||
+            !isCarOrPlatformMediaController(session, controllerInfo)
+        ) {
+            return super.onMediaButtonEvent(session, controllerInfo, intent)
+        }
+        val keyEvent =
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT) as? KeyEvent
+            }
+        if (keyEvent != null &&
+            keyEvent.action == KeyEvent.ACTION_DOWN &&
+            keyEvent.repeatCount == 0 &&
+            (
+                keyEvent.keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS ||
+                    keyEvent.keyCode == KeyEvent.KEYCODE_MEDIA_REWIND
+            )
+        ) {
+            Logger.w(
+                TAG,
+                "onMediaButtonEvent: mapping keyCode=${keyEvent.keyCode} from " +
+                    "${controllerInfo.packageName} → like",
+            )
+            toggleLike()
+            return true
+        }
+        return super.onMediaButtonEvent(session, controllerInfo, intent)
     }
 
     override fun onPlayerCommandRequest(
@@ -127,17 +224,29 @@ internal class SimpleMediaSessionCallback(
         controller: MediaSession.ControllerInfo,
         playerCommand: Int,
     ): Int {
-        Logger.w(TAG, "Player Command $playerCommand")
-        scope.launch {
-            when (playerCommand) {
-                COMMAND_SEEK_TO_NEXT -> {
+        Logger.w(TAG, "Player Command $playerCommand from ${controller.packageName}")
+        val remapPreviousToLike =
+            isAaLikeInsteadOfPreviousEnabled() &&
+                isCarOrPlatformMediaController(session, controller)
+        when (playerCommand) {
+            COMMAND_SEEK_TO_PREVIOUS, COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> {
+                if (remapPreviousToLike) {
+                    Logger.w(TAG, "Player previous → like (blocking seek)")
+                    toggleLike()
+                    return SessionResult.RESULT_INFO_SKIPPED
+                }
+            }
+            COMMAND_SEEK_TO_NEXT -> {
+                scope.launch {
                     mediaPlayerHandler.onPlayerEvent(PlayerEvent.Next)
                 }
-                COMMAND_SEEK_TO_PREVIOUS -> {
-                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Previous)
-                }
-                COMMAND_GET_TIMELINE -> {
-                }
+            }
+            COMMAND_GET_TIMELINE -> {
+            }
+        }
+        if (playerCommand == COMMAND_SEEK_TO_PREVIOUS && !remapPreviousToLike) {
+            scope.launch {
+                mediaPlayerHandler.onPlayerEvent(PlayerEvent.Previous)
             }
         }
         return super.onPlayerCommandRequest(session, controller, playerCommand)
@@ -153,6 +262,12 @@ internal class SimpleMediaSessionCallback(
         when (customCommand.customAction) {
             MEDIA_CUSTOM_COMMAND.LIKE -> {
                 toggleLike()
+            }
+
+            MEDIA_CUSTOM_COMMAND.PREVIOUS -> {
+                scope.launch {
+                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Previous)
+                }
             }
 
             MEDIA_CUSTOM_COMMAND.REPEAT -> {
@@ -331,6 +446,7 @@ internal class SimpleMediaSessionCallback(
                     }
 
                     FAVORITE -> {
+                        songRepository.syncYouTubeLikedToLocal(force = false)
                         songRepository
                             .getLikedSongs()
                             .first()
@@ -554,6 +670,7 @@ internal class SimpleMediaSessionCallback(
 
                 FAVORITE -> {
                     val songId = path.getOrNull(1) ?: return@future defaultResult
+                    songRepository.syncYouTubeLikedToLocal(force = false)
                     val likedSongs = songRepository.getLikedSongs().first()
                     if (likedSongs.isEmpty()) {
                         defaultResult

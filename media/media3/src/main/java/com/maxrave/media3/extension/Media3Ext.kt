@@ -116,34 +116,52 @@ fun MediaItem.isSong(): Boolean = this.mediaMetadata.description?.contains(MERGI
 @UnstableApi
 fun MediaItem.isVideo(): Boolean = this.mediaMetadata.description?.contains(MERGING_DATA_TYPE.VIDEO) == true
 
-fun GenericCommandButton.toCommandButton(context: Context): CommandButton =
+@UnstableApi
+fun GenericCommandButton.toCommandButton(
+    context: Context,
+    putLikeInBackSlot: Boolean = false,
+): CommandButton =
     when (this) {
         is GenericCommandButton.Like -> {
             val liked = this.isLiked
+            val builder =
+                CommandButton
+                    .Builder(
+                        if (liked) {
+                            CommandButton.ICON_HEART_FILLED
+                        } else {
+                            CommandButton.ICON_HEART_UNFILLED
+                        },
+                        // Resource fallback for hosts (e.g. AA templated surface) that
+                        // don't map the media3 icon constants
+                    ).setCustomIconResId(
+                        if (liked) {
+                            R.drawable.baseline_favorite_24
+                        } else {
+                            R.drawable.baseline_favorite_border_24
+                        },
+                    ).setDisplayName(
+                        if (liked) {
+                            context.getString(R.string.liked)
+                        } else {
+                            context.getString(R.string.like)
+                        },
+                    ).setSessionCommand(SessionCommand(MEDIA_CUSTOM_COMMAND.LIKE, Bundle()))
+            if (putLikeInBackSlot) {
+                // Compact back/previous slot only — do not also claim overflow, and do not
+                // compete with a custom Previous that uses ICON_PREVIOUS (defaults to BACK).
+                builder.setSlots(CommandButton.SLOT_BACK)
+            }
+            builder.build()
+        }
+        GenericCommandButton.Previous -> {
+            // Stock previous glyph, but force OVERFLOW: ICON_PREVIOUS defaults to SLOT_BACK
+            // and would otherwise steal the compact previous slot from Like.
             CommandButton
-                .Builder(
-                    if (liked) {
-                        CommandButton.ICON_HEART_FILLED
-                    } else {
-                        CommandButton.ICON_HEART_UNFILLED
-                    },
-                    // Resource fallback for hosts (e.g. AA templated surface) that
-                    // don't map the media3 icon constants
-                ).setCustomIconResId(
-                    if (liked) {
-                        R.drawable.baseline_favorite_24
-                    } else {
-                        R.drawable.baseline_favorite_border_24
-                    },
-                ).setDisplayName(
-                    if (liked) {
-                        context.getString(R.string.liked)
-                    } else {
-                        context.getString(
-                            R.string.like,
-                        )
-                    },
-                ).setSessionCommand(SessionCommand(MEDIA_CUSTOM_COMMAND.LIKE, Bundle()))
+                .Builder(CommandButton.ICON_PREVIOUS)
+                .setSlots(CommandButton.SLOT_OVERFLOW)
+                .setDisplayName(context.getString(R.string.previous))
+                .setSessionCommand(SessionCommand(MEDIA_CUSTOM_COMMAND.PREVIOUS, Bundle()))
                 .build()
         }
         GenericCommandButton.Radio -> {
@@ -204,3 +222,34 @@ fun GenericCommandButton.toCommandButton(context: Context): CommandButton =
                 ).build()
         }
     }
+
+/**
+ * Default: Like first (fullscreen / overflow position).
+ * AA swap: Previous first in overflow (Like's old spot); Like alone in [CommandButton.SLOT_BACK].
+ */
+@UnstableApi
+fun List<GenericCommandButton>.toMediaButtonPreferences(
+    context: Context,
+    androidAutoLikeInsteadOfPrevious: Boolean,
+): List<CommandButton> {
+    if (!androidAutoLikeInsteadOfPrevious) {
+        return map { it.toCommandButton(context, putLikeInBackSlot = false) }
+    }
+    val like = filterIsInstance<GenericCommandButton.Like>().firstOrNull()
+    val rest =
+        filterNot { it is GenericCommandButton.Like || it is GenericCommandButton.Previous }
+    // Like listed before other BACK-capable icons so SLOT_BACK assignment is unambiguous;
+    // Previous is constrained to OVERFLOW and listed first among overflow customs.
+    val ordered =
+        buildList {
+            if (like != null) add(like)
+            add(GenericCommandButton.Previous)
+            addAll(rest)
+        }
+    return ordered.map {
+        it.toCommandButton(
+            context,
+            putLikeInBackSlot = it is GenericCommandButton.Like,
+        )
+    }
+}

@@ -30,7 +30,7 @@ import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
 import com.maxrave.media3.R
-import com.maxrave.media3.extension.toCommandButton
+import com.maxrave.media3.extension.toMediaButtonPreferences
 import com.maxrave.media3.utils.CoilBitmapLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -114,11 +114,20 @@ internal class SimpleMediaService :
                 )
         }
 
-        simpleMediaServiceHandler.onUpdateNotification = { list ->
-            val commandButtonList = list.map { it.toCommandButton(this) }
+        fun applyMediaButtonPreferences(list: List<com.maxrave.domain.data.player.GenericCommandButton>) {
+            val aaLikeEnabled =
+                runBlocking {
+                    dataStoreManager.androidAutoLikeInsteadOfPrevious.first() == DataStoreManager.TRUE
+                }
+            // AA now-playing is driven by the same platform/media-notification session as the
+            // phone notification, so the AA layout must be applied session-wide when enabled.
             mediaSession?.setMediaButtonPreferences(
-                commandButtonList,
+                list.toMediaButtonPreferences(this, aaLikeEnabled),
             )
+        }
+
+        simpleMediaServiceHandler.onUpdateNotification = { list ->
+            applyMediaButtonPreferences(list)
         }
 
         val sessionToken = SessionToken(this, ComponentName(this, SimpleMediaService::class.java))
@@ -173,10 +182,7 @@ internal class SimpleMediaService :
         }
 
         simpleMediaServiceHandler.onUpdateNotification = { list ->
-            val commandButtonList = list.map { it.toCommandButton(this) }
-            mediaSession?.setMediaButtonPreferences(
-                commandButtonList,
-            )
+            applyMediaButtonPreferences(list)
         }
     }
 
