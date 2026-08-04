@@ -24,6 +24,7 @@ import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.isRadioMix
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
@@ -136,7 +137,7 @@ internal class PlaylistRepositoryImpl(
         originalTrack: SongEntity?,
         artist: ArtistEntity?,
     ): Flow<Resource<Pair<PlaylistBrowse, String?>>> =
-        if (radioId.startsWith("RDAT")) {
+        if (radioId.isRadioMix()) {
             getRDATRadioData(radioId, viewString)
         } else {
             flow {
