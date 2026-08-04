@@ -16,24 +16,31 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.content.getSystemService
 import androidx.media3.common.Player
+import androidx.media3.common.Player.COMMAND_GET_TIMELINE
+import androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS
+import androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import androidx.media3.ui.DefaultMediaDescriptionAdapter
 import androidx.media3.ui.PlayerNotificationManager
 import com.google.common.util.concurrent.MoreExecutors
+import com.maxrave.common.MEDIA_CUSTOM_COMMAND
 import com.maxrave.common.MEDIA_NOTIFICATION
+import com.maxrave.domain.data.player.GenericCommandButton
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
 import com.maxrave.media3.R
-import com.maxrave.media3.extension.toCommandButton
+import com.maxrave.media3.extension.toMediaButtonPreferences
 import com.maxrave.media3.utils.CoilBitmapLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -114,11 +121,86 @@ internal class SimpleMediaService :
                 )
         }
 
-        simpleMediaServiceHandler.onUpdateNotification = { list ->
-            val commandButtonList = list.map { it.toCommandButton(this) }
-            mediaSession?.setMediaButtonPreferences(
-                commandButtonList,
+        fun currentCommandButtons(): List<GenericCommandButton> {
+            val control = simpleMediaServiceHandler.controlState.value
+            return listOf(
+                GenericCommandButton.Like(control.isLiked),
+                GenericCommandButton.Shuffle(isShuffled = control.isShuffle),
+                GenericCommandButton.Repeat(repeatState = control.repeatState),
+                GenericCommandButton.Radio,
             )
+        }
+
+        fun isCarOrPlatformController(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): Boolean =
+            session.isMediaNotificationController(controller) ||
+                session.isAutoCompanionController(controller) ||
+                session.isAutomotiveController(controller) ||
+                controller.packageName == "com.google.android.projection.gearhead" ||
+                controller.packageName.contains("projection", ignoreCase = true) ||
+                controller.packageName.contains("gearhead", ignoreCase = true)
+
+        fun sessionCommandsWithCustoms() =
+            MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
+                .buildUpon()
+                .add(SessionCommand(MEDIA_CUSTOM_COMMAND.LIKE, android.os.Bundle()))
+                .add(SessionCommand(MEDIA_CUSTOM_COMMAND.REPEAT, android.os.Bundle()))
+                .add(SessionCommand(MEDIA_CUSTOM_COMMAND.RADIO, android.os.Bundle()))
+                .add(SessionCommand(MEDIA_CUSTOM_COMMAND.SHUFFLE, android.os.Bundle()))
+                .add(SessionCommand(MEDIA_CUSTOM_COMMAND.PREVIOUS, android.os.Bundle()))
+                .add(SessionCommand(MEDIA_CUSTOM_COMMAND.GET_PLATFORM_TOKEN, android.os.Bundle()))
+                .build()
+
+        fun applyTransportLayout(list: List<GenericCommandButton> = currentCommandButtons()) {
+            val session = mediaSession ?: return
+            val aaLikeEnabled =
+                runBlocking {
+                    dataStoreManager.androidAutoLikeInsteadOfPrevious.first() == DataStoreManager.TRUE
+                }
+            // AA now-playing shares the platform/media-notification session with the phone
+            // notification, so apply the AA layout session-wide when the setting is on.
+            session.setMediaButtonPreferences(
+                list.toMediaButtonPreferences(this, aaLikeEnabled),
+            )
+            // onConnect may have withheld SEEK_TO_PREVIOUS while the setting was on; restore
+            // or re-withhold it when the toggle changes so system Prev comes back when off.
+            val sessionCommands = sessionCommandsWithCustoms()
+            for (controller in session.connectedControllers) {
+                val playerCommandsBuilder =
+                    Player.Commands
+                        .Builder()
+                        .addAllCommands()
+                        .remove(COMMAND_GET_TIMELINE)
+                if (aaLikeEnabled && isCarOrPlatformController(session, controller)) {
+                    playerCommandsBuilder
+                        .remove(COMMAND_SEEK_TO_PREVIOUS)
+                        .remove(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                }
+                session.setAvailableCommands(
+                    controller,
+                    sessionCommands,
+                    playerCommandsBuilder.build(),
+                )
+            }
+            Logger.w(
+                "Service",
+                "applyTransportLayout aaLike=$aaLikeEnabled controllers=${session.connectedControllers.size}",
+            )
+        }
+
+        simpleMediaServiceHandler.onUpdateNotification = { list ->
+            applyTransportLayout(list)
+        }
+
+        // Re-apply layout/commands when the setting toggles (no reconnect required).
+        coroutineScope.launch {
+            dataStoreManager.androidAutoLikeInsteadOfPrevious
+                .distinctUntilChanged()
+                .collect {
+                    applyTransportLayout()
+                }
         }
 
         val sessionToken = SessionToken(this, ComponentName(this, SimpleMediaService::class.java))
@@ -173,10 +255,7 @@ internal class SimpleMediaService :
         }
 
         simpleMediaServiceHandler.onUpdateNotification = { list ->
-            val commandButtonList = list.map { it.toCommandButton(this) }
-            mediaSession?.setMediaButtonPreferences(
-                commandButtonList,
-            )
+            applyTransportLayout(list)
         }
     }
 

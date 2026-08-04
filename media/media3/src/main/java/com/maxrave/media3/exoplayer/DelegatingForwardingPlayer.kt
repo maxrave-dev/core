@@ -78,6 +78,46 @@ internal class DelegatingForwardingPlayer(
      */
     var playlistNavigationProvider: PlaylistNavigationProvider? = null
 
+    /**
+     * Routes MediaSession / Android Auto transport controls through the adapter so
+     * app-level audio focus is requested. Each ExoPlayer is built with
+     * `handleAudioFocus=false`; without this bridge, [play] would hit ExoPlayer
+     * directly and resume visually with no car audio (silent AA startup).
+     */
+    interface PlaybackControlProvider {
+        fun play()
+
+        fun pause()
+
+        var playWhenReady: Boolean
+    }
+
+    /**
+     * Set by [CrossfadeExoPlayerAdapter]. When null, play/pause fall back to the
+     * underlying ExoPlayer (no adapter-level audio focus).
+     */
+    var playbackControlProvider: PlaybackControlProvider? = null
+
+    override fun play() {
+        playbackControlProvider?.play() ?: super.play()
+    }
+
+    override fun pause() {
+        playbackControlProvider?.pause() ?: super.pause()
+    }
+
+    override fun setPlayWhenReady(playWhenReady: Boolean) {
+        val provider = playbackControlProvider
+        if (provider != null) {
+            provider.playWhenReady = playWhenReady
+        } else {
+            super.setPlayWhenReady(playWhenReady)
+        }
+    }
+
+    override fun getPlayWhenReady(): Boolean =
+        playbackControlProvider?.playWhenReady ?: super.getPlayWhenReady()
+
     // ========== Playback-Ended Suppression ==========
 
     /**

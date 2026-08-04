@@ -4,6 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
+import android.os.Handler
+import android.os.Looper
+import androidx.car.app.connection.CarConnection
+import androidx.lifecycle.Observer
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -187,9 +192,56 @@ internal class CrossfadeExoPlayerAdapter(
     @Volatile
     private var hasAudioFocus = false
 
-    /** True when focus was lost transiently so playback should auto-resume on regain. */
+    /** True when focus/route was lost while playing so we should resume on AA reconnect. */
     @Volatile
     private var resumeOnFocusGain = false
+
+    /**
+     * True while [pause] was requested by the app/user (not AudioBecomingNoisy / focus).
+     * Used so an ExoPlayer-driven pause from route loss can still arm auto-resume.
+     */
+    @Volatile
+    private var intentionalPause = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var carConnection: CarConnection? = null
+
+    private var carResumeJob: Job? = null
+
+    /**
+     * When AA projection returns after MODE (USB/radio), resume only if we were interrupted
+     * while playing — not if the user paused or another music app took over.
+     */
+    private val carConnectionObserver =
+        Observer<Int> { connectionType ->
+            Logger.d(TAG, "CarConnection type=$connectionType resumePending=$resumeOnFocusGain")
+            if (connectionType != CarConnection.CONNECTION_TYPE_PROJECTION) return@Observer
+            carResumeJob?.cancel()
+            carResumeJob =
+                coroutineScope.launch {
+                    // Let the wireless AA audio route settle after MODE.
+                    delay(600)
+                    resumeIfInterrupted()
+                }
+        }
+
+    /**
+     * If YouTube Music / Spotify starts playing after we lost focus, drop auto-resume so we
+     * don't steal their session when AA reconnects.
+     */
+    private val audioPlaybackCallback =
+        object : AudioManager.AudioPlaybackCallback() {
+            override fun onPlaybackConfigChanged(configs: List<AudioPlaybackConfiguration>) {
+                if (!resumeOnFocusGain) return
+                // Public AudioPlaybackConfiguration has no client uid; if music is active while
+                // we are not playing, another app took the stream.
+                if (internalState != InternalState.PLAYING && audioManager?.isMusicActive == true) {
+                    resumeOnFocusGain = false
+                    Logger.d(TAG, "Cleared resumeOnFocusGain: another app is playing media")
+                }
+            }
+        }
 
     private val audioFocusListener =
         AudioManager.OnAudioFocusChangeListener { focusChange ->
@@ -204,16 +256,30 @@ internal class CrossfadeExoPlayerAdapter(
                 }
 
                 AudioManager.AUDIOFOCUS_LOSS -> {
-                    // Permanent loss (another app took over): pause and stop tracking focus.
-                    resumeOnFocusGain = false
+                    // Car MODE → USB/radio reports permanent loss. Remember to resume when
+                    // AA reconnects unless the user already paused intentionally.
                     hasAudioFocus = false
-                    pause()
+                    when {
+                        internalState == InternalState.PLAYING -> {
+                            resumeOnFocusGain = true
+                            pauseInternal(intentional = false)
+                            Logger.d(TAG, "AUDIOFOCUS_LOSS while playing → resume armed")
+                        }
+                        resumeOnFocusGain && !intentionalPause -> {
+                            // AudioBecomingNoisy already paused and armed resume — keep it.
+                            Logger.d(TAG, "AUDIOFOCUS_LOSS keeping resumeOnFocusGain")
+                        }
+                        else -> {
+                            resumeOnFocusGain = false
+                            Logger.d(TAG, "AUDIOFOCUS_LOSS (no auto-resume)")
+                        }
+                    }
                 }
 
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                     // Temporary loss (e.g. an incoming call): pause and remember to resume.
-                    resumeOnFocusGain = internalState == InternalState.PLAYING
-                    pause()
+                    resumeOnFocusGain = internalState == InternalState.PLAYING || resumeOnFocusGain
+                    pauseInternal(intentional = false)
                 }
 
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
@@ -223,6 +289,16 @@ internal class CrossfadeExoPlayerAdapter(
                 }
             }
         }
+
+    init {
+        runCatching {
+            carConnection = CarConnection(context.applicationContext)
+            carConnection?.type?.observeForever(carConnectionObserver)
+        }.onFailure {
+            Logger.e(TAG, "CarConnection setup failed: ${it.message}")
+        }
+        audioManager?.registerAudioPlaybackCallback(audioPlaybackCallback, mainHandler)
+    }
 
     private val audioFocusRequest: AudioFocusRequest by lazy {
         AudioFocusRequest
@@ -238,10 +314,13 @@ internal class CrossfadeExoPlayerAdapter(
             .build()
     }
 
-    /** Request app-level audio focus once; idempotent while focus is held. */
+    /**
+     * Request app-level audio focus. Always re-issues the system request (even if we
+     * already believe we hold focus) so Android Auto / Bluetooth route switches re-attach
+     * the media stream to the car — skipping the call left playback "playing" with silence.
+     */
     private fun requestAudioFocusInternal(): Boolean {
         val am = audioManager ?: return true
-        if (hasAudioFocus) return true
         val granted = am.requestAudioFocus(audioFocusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         hasAudioFocus = granted
         Logger.d(TAG, "requestAudioFocus -> granted=$granted")
@@ -370,6 +449,21 @@ internal class CrossfadeExoPlayerAdapter(
                 override fun seekToPrevious(): Unit = this@CrossfadeExoPlayerAdapter.seekToPrevious()
 
                 override fun seekToPreviousMediaItem(): Unit = this@CrossfadeExoPlayerAdapter.seekToPreviousMediaItem()
+            }
+
+        // MediaSession / Android Auto call Player.play() on forwardingPlayer. Route those
+        // through the adapter so audio focus is requested (ExoPlayers use handleAudioFocus=false).
+        forwardingPlayer.playbackControlProvider =
+            object : DelegatingForwardingPlayer.PlaybackControlProvider {
+                override fun play(): Unit = this@CrossfadeExoPlayerAdapter.play()
+
+                override fun pause(): Unit = this@CrossfadeExoPlayerAdapter.pause()
+
+                override var playWhenReady: Boolean
+                    get() = this@CrossfadeExoPlayerAdapter.playWhenReady
+                    set(value) {
+                        this@CrossfadeExoPlayerAdapter.playWhenReady = value
+                    }
             }
     }
 
@@ -523,6 +617,8 @@ internal class CrossfadeExoPlayerAdapter(
 
     override fun play() {
         Logger.d(TAG, "play() called (state: $internalState, playWhenReady: $internalPlayWhenReady)")
+        resumeOnFocusGain = false
+        intentionalPause = false
         castRemotePlayer?.let { remote ->
             internalPlayWhenReady = true
             remote.play()
@@ -532,7 +628,11 @@ internal class CrossfadeExoPlayerAdapter(
             when (internalState) {
                 InternalState.READY, InternalState.ENDED, InternalState.PAUSED -> {
                     currentPlayer?.let { player ->
-                        requestAudioFocusInternal()
+                        if (!requestAudioFocusInternal()) {
+                            Logger.w(TAG, "Play aborted: audio focus not granted")
+                            internalPlayWhenReady = false
+                            return@launch
+                        }
                         player.play()
                         transitionToState(InternalState.PLAYING)
                         internalPlayWhenReady = true
@@ -557,7 +657,40 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     override fun pause() {
-        Logger.d(TAG, "pause() called (state: $internalState, playWhenReady: $internalPlayWhenReady)")
+        pauseInternal(intentional = true)
+    }
+
+    /**
+     * Resume after a car audio-source switch (MODE → USB/radio → AA) if playback was
+     * interrupted rather than paused by the user / taken over by another music app.
+     */
+    fun resumeIfInterrupted() {
+        if (!resumeOnFocusGain) {
+            Logger.d(TAG, "resumeIfInterrupted: nothing pending")
+            return
+        }
+        if (otherAppPlayingMedia()) {
+            resumeOnFocusGain = false
+            Logger.d(TAG, "resumeIfInterrupted: skipped — other app playing")
+            return
+        }
+        Logger.w(TAG, "resumeIfInterrupted: resuming after car/source interruption")
+        resumeOnFocusGain = false
+        play()
+    }
+
+    private fun otherAppPlayingMedia(): Boolean {
+        // We're paused for resume; active music means another app owns playback.
+        if (internalState == InternalState.PLAYING) return false
+        return audioManager?.isMusicActive == true
+    }
+
+    private fun pauseInternal(intentional: Boolean) {
+        Logger.d(TAG, "pause() called intentional=$intentional (state: $internalState, playWhenReady: $internalPlayWhenReady)")
+        if (intentional) {
+            resumeOnFocusGain = false
+            intentionalPause = true
+        }
         castRemotePlayer?.let { remote ->
             internalPlayWhenReady = false
             remote.pause()
@@ -1186,6 +1319,15 @@ internal class CrossfadeExoPlayerAdapter(
         currentLoadJob?.cancel()
         precacheJob?.cancel()
         positionUpdateJob?.cancel()
+        carResumeJob?.cancel()
+
+        runCatching {
+            carConnection?.type?.removeObserver(carConnectionObserver)
+        }
+        carConnection = null
+        runCatching {
+            audioManager?.unregisterAudioPlaybackCallback(audioPlaybackCallback)
+        }
 
         // Cancel crossfade
         crossfadeJob?.cancel()
@@ -1411,9 +1553,15 @@ internal class CrossfadeExoPlayerAdapter(
 
                     // Auto-play if requested
                     if (shouldPlay) {
-                        requestAudioFocusInternal()
-                        player.play()
-                        transitionToState(InternalState.PLAYING)
+                        if (!requestAudioFocusInternal()) {
+                            Logger.w(TAG, "Auto-play aborted: audio focus not granted")
+                            player.pause()
+                            transitionToState(InternalState.READY)
+                            internalPlayWhenReady = false
+                        } else {
+                            player.play()
+                            transitionToState(InternalState.PLAYING)
+                        }
                     } else {
                         player.pause()
                         transitionToState(InternalState.READY)
@@ -1506,6 +1654,13 @@ internal class CrossfadeExoPlayerAdapter(
                     } else {
                         if (internalState == InternalState.PLAYING) {
                             if (!player.playWhenReady) {
+                                // ExoPlayer paused itself (AudioBecomingNoisy on MODE/USB switch,
+                                // etc.) — arm auto-resume unless we paused on purpose.
+                                if (!intentionalPause) {
+                                    resumeOnFocusGain = true
+                                    Logger.d(TAG, "External pause → resumeOnFocusGain=true")
+                                }
+                                intentionalPause = false
                                 transitionToState(InternalState.PAUSED)
                                 notifyEqualizerIntent(false)
                             }
@@ -1812,8 +1967,13 @@ internal class CrossfadeExoPlayerAdapter(
                 forwardingPlayer.swapDelegate(nextPlayer)
 
                 // 2. Now play - MediaSession's listener is attached and receives state change events
-                requestAudioFocusInternal()
-                nextPlayer.play()
+                if (!requestAudioFocusInternal()) {
+                    Logger.w(TAG, "Crossfade play aborted: audio focus not granted")
+                    nextPlayer.pause()
+                    // Still commit the incoming track as current so UI/queue stay consistent.
+                } else {
+                    nextPlayer.play()
+                }
 
                 forwardingPlayer.suppressPlaybackEnded = false
 

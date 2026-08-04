@@ -98,6 +98,14 @@ interface SongRepository {
 
     suspend fun removeFromYouTubeLiked(mediaId: String?): Flow<Int>
 
+    /**
+     * When "Replace Favorite by YouTube Liked" is enabled and the user is logged in,
+     * fetch YouTube Liked Music (LM) and mark those tracks as liked in Room.
+     * @param force ignore the short TTL cache used to avoid refetching on every AA browse
+     * @return number of tracks applied, or 0 if skipped/failed
+     */
+    suspend fun syncYouTubeLikedToLocal(force: Boolean = false): Int
+
     fun downloadToFile(
         track: Track,
         path: String,

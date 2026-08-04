@@ -16,4 +16,7 @@ sealed class GenericCommandButton {
     ) : GenericCommandButton()
 
     data object Radio : GenericCommandButton()
+
+    /** On-screen previous when Like has taken the compact back slot on Android Auto. */
+    data object Previous : GenericCommandButton()
 }

@@ -212,6 +212,7 @@ private val mediaServiceModule =
                 androidApplication(),
                 get<CoroutineScope>(named(SERVICE_SCOPE)),
                 get<MediaPlayerHandler>(),
+                get<DataStoreManager>(),
                 get<SearchRepository>(),
                 get<SongRepository>(),
                 get<LocalPlaylistRepository>(),
