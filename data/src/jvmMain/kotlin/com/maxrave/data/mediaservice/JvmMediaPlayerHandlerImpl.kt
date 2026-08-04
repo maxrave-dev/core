@@ -65,7 +65,6 @@ import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
 import com.my.kizzy.DiscordRPC
-import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -97,6 +96,7 @@ import org.koin.mp.KoinPlatform.getKoin
 import org.simpmusic.nowplayingcenter.NPYC
 import org.simpmusic.nowplayingcenter.domain.NowPlayingListener
 import org.simpmusic.nowplayingcenter.domain.Platform
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.pow
 
 private val TAG = "JvmMediaPlayerHandler"
@@ -111,6 +111,7 @@ class JvmMediaPlayerHandlerImpl(
 ) : MediaPlayerHandler,
     MediaPlayerListener {
     private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     // Linux (MPRIS) and Windows (SMTC) both go through NPYC/JMTC; macOS uses the
     // dedicated MacOSMediaIntegration below. runCatching keeps a failed native
     // init from taking down the whole handler — every nypc call site is already
@@ -146,6 +147,7 @@ class JvmMediaPlayerHandlerImpl(
     }
 
     override val player: MediaPlayerInterface = getKoin().get()
+
     @Volatile
     private var discordRPC: DiscordRPC? = null
 
@@ -275,6 +277,7 @@ class JvmMediaPlayerHandlerImpl(
         val speed: Float,
         val seq: Long,
     )
+
     private val rpcSnapshotFlow = MutableStateFlow<RpcSnapshot?>(null)
 
     @Volatile
@@ -491,7 +494,8 @@ class JvmMediaPlayerHandlerImpl(
                                                 // RPC (Fix 1). controlState.value is a safe field
                                                 // read from Dispatchers.IO, unlike player.isPlaying.
                                                 if (!controlState.value.isPlaying) return@collectLatest
-                                                discordRPC?.updateSong(snap.progressMs, snap.durationMs, snap.speed, snap.song)
+                                                discordRPC
+                                                    ?.updateSong(snap.progressMs, snap.durationMs, snap.speed, snap.song)
                                                     ?.onFailure { Logger.e(TAG, "Discord RPC update failed: ${it.message}") }
                                             }
                                         }
@@ -2004,9 +2008,7 @@ class JvmMediaPlayerHandlerImpl(
         var thumbUrl =
             track.thumbnails?.lastOrNull()?.url
                 ?: "http://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg"
-        if (thumbUrl.contains("w120")) {
-            thumbUrl = Regex("([wh])120").replace(thumbUrl, "$1544")
-        }
+        thumbUrl = Regex("([=-][wh])\\d+").replace(thumbUrl, "$1544")
         val artistName: String = track.artists.toListName().connectArtists()
         val isSong =
             (
@@ -2101,14 +2103,18 @@ class JvmMediaPlayerHandlerImpl(
                 "updateCatalog: ${track.title}, ${catalogMetadata.size}",
             )
             Logger.d("MusicSource", "updateCatalog: ${track.title}")
-            _queueData.update {
-                it
-                    .copy(
-                        queueState = QueueData.StateSource.STATE_INITIALIZED,
-                    ).addTrackList(catalogMetadata)
-            }
-            reorderShuffledQueue(player.getCurrentMediaTimeLine())
         }
+        _queueData.update {
+            it
+                .copy(
+                    data =
+                        it.data.copy(
+                            listTracks = catalogMetadata,
+                        ),
+                    queueState = QueueData.StateSource.STATE_INITIALIZED,
+                )
+        }
+        reorderShuffledQueue(player.getCurrentMediaTimeLine())
     }
 
     override suspend fun <T> loadMediaItem(
