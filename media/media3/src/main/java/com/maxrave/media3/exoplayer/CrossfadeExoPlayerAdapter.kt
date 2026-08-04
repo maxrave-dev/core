@@ -1523,11 +1523,27 @@ internal class CrossfadeExoPlayerAdapter(
                     // ERROR_CODE_PARSING_CONTAINER_MALFORMED (3001) = server returned non-media response (e.g. HTML error page)
                     // ERROR_CODE_IO_BAD_HTTP_STATUS (2004) = HTTP 403/410 from expired URL
                     // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED (2001) = connection refused
+                    // ERROR_CODE_IO_FILE_NOT_FOUND (2005) = the resolver served a cache hit as a bare
+                    //   media id and the cached spans were evicted (or cleared) mid-read, so
+                    //   DefaultDataSource fell through to FileDataSource on a scheme-less URI. Media3
+                    //   lists FileNotFoundException as non-retriable, so this layer is the only chance
+                    //   to recover; reloading re-runs the resolver, which now sees an incomplete cache
+                    //   and resolves a real URL.
                     val isRetryableSourceError =
                         error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
-                            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+                            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                            error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
 
                     val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
+                    if (error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND) {
+                        // Without this the crash report is a bare FileDataSourceException with
+                        // nothing tying it back to a cache decision made three layers up.
+                        Logger.w(
+                            TAG,
+                            "Cache disappeared mid-read for $currentVideoId — the resolver had served it " +
+                                "as a fully cached bare media id. Retrying to resolve a real URL.",
+                        )
+                    }
                     if (isRetryableSourceError && currentVideoId != null) {
                         // Reset retry count if this is a different track
                         if (retryVideoId != currentVideoId) {

@@ -20,7 +20,9 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
+import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.ContentMetadata
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.NoOpCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
@@ -230,6 +232,35 @@ private val mediaServiceModule =
         }
     }
 
+/**
+ * True only when every byte of [key] is on disk *at this moment* and [position] falls
+ * inside the resource.
+ *
+ * KEY_CONTENT_LENGTH only says the resource length is known — CacheDataSource writes it
+ * as soon as an unbounded request resolves a length, long before the download finishes.
+ * The `isCached(0, total)` range check is what actually proves completeness, so both
+ * halves are load-bearing; dropping either one lets a partial resource pass.
+ *
+ * [position] is checked because the recorded length can itself be short: an upstream that
+ * closes its body early makes CacheDataSource store the truncated length as if it were the
+ * whole resource. Serving that as a cache hit means the extractor eventually asks for a
+ * position past the end, where CacheDataSource computes a negative remainder and throws
+ * ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE — another error Media3 refuses to retry.
+ * Falling through to a real URL instead costs one wasted resolve at end of track.
+ *
+ * The answer is a snapshot, not a lease: nothing here locks the spans, and an evictor or
+ * a "clear cache" tap can delete them straight afterwards. Callers must keep the window
+ * they trust this for short.
+ */
+@UnstableApi
+private fun Cache.isFullyCached(
+    key: String,
+    position: Long,
+): Boolean {
+    val total = ContentMetadata.getContentLength(getContentMetadata(key))
+    return total > 0L && position < total && isCached(key, 0L, total)
+}
+
 @UnstableApi
 private fun provideResolvingDataSourceFactory(
     cacheDataSourceFactory: CacheDataSource.Factory,
@@ -244,40 +275,53 @@ private fun provideResolvingDataSourceFactory(
         val mediaId = dataSpec.key ?: error("No media id")
         Logger.w("Stream", mediaId)
         Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
-        val length = if (dataSpec.length >= 0) dataSpec.length else 1
-        if (downloadCache.isCached(
-                mediaId,
-                dataSpec.position,
-                length,
-            )
-        ) {
-            coroutineScope.launch(Dispatchers.IO) {
-                streamRepository.updateFormat(
-                    if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
-                        mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                    } else {
-                        mediaId
-                    },
-                )
+        if (downloadCache.isFullyCached(mediaId, dataSpec.position)) {
+            // Only on the first chunk: the subrange below makes the resolver run once per
+            // chunk, and updateFormat is a fire-and-forget youTube.player() call with no
+            // in-flight dedup, so leaving it ungated would fan out one request per 5 MiB.
+            if (dataSpec.position == 0L) {
+                coroutineScope.launch(Dispatchers.IO) {
+                    streamRepository.updateFormat(
+                        if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
+                            mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                        } else {
+                            mediaId
+                        },
+                    )
+                }
             }
             Logger.w("Stream", "Downloaded $mediaId")
-            return@Factory dataSpec
+            return@Factory dataSpec.subrange(dataSpec.uriPositionOffset, chunkLength)
         }
-        val playerCached = playerCache.isCached(mediaId, dataSpec.position, chunkLength)
-        if (playerCached) {
-            coroutineScope.launch(Dispatchers.IO) {
-                streamRepository.updateFormat(
-                    if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
-                        mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                    } else {
-                        mediaId
-                    },
-                )
+        if (playerCache.isFullyCached(mediaId, dataSpec.position)) {
+            // See the note above: once per track, not once per chunk.
+            if (dataSpec.position == 0L) {
+                coroutineScope.launch(Dispatchers.IO) {
+                    streamRepository.updateFormat(
+                        if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
+                            mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                        } else {
+                            mediaId
+                        },
+                    )
+                }
             }
             Logger.w("Stream", "Cached $mediaId")
-            // Don't return bare video ID as URI — CacheDataSource.openNextSource()
-            // may need a valid HTTP URL for uncached spans beyond this chunk.
-            // Fall through to resolve actual stream URL.
+            // Every byte is on disk right now, so CacheDataSource can serve this chunk
+            // without ever reaching upstream, and the bare media id is safe as the URI.
+            //
+            // It is only safe for ONE chunk though. A bare id has no scheme, so
+            // DefaultDataSource routes it to FileDataSource, not to OkHttp — the failure
+            // is FileNotFoundException (ERROR_CODE_IO_FILE_NOT_FOUND), which Media3 lists
+            // as non-retriable and which CrossfadeExoPlayerAdapter does not recover from
+            // either. Meanwhile CacheDataSource.read() walks span to span inside a single
+            // open() without consulting this resolver again, so an unbounded DataSpec
+            // would stake the whole remaining track on a snapshot taken here: one LRU
+            // eviction (precache and downloads write to playerCache concurrently) or one
+            // "clear cache" tap mid-song and playback dies with no way back.
+            // Capping to chunkLength forces a re-check at every chunk boundary, so a
+            // cache that shrinks under us falls back to resolving a real URL.
+            return@Factory dataSpec.subrange(dataSpec.uriPositionOffset, chunkLength)
         }
         var dataSpecReturn: DataSpec = dataSpec
         var resolved = false

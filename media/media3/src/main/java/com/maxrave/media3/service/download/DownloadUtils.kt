@@ -69,11 +69,18 @@ internal class DownloadUtils(
             val mediaId = dataSpec.key ?: error("No media id")
             Logger.w("Stream", mediaId)
             Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
-            val length = if (dataSpec.length >= 0) dataSpec.length else 1
-            if (downloadCache.isCached(mediaId, dataSpec.position, length) || playerCache.isCached(mediaId, dataSpec.position, length)) {
-                return@Factory dataSpec
-            }
+            // Always resolve a real URL, and never hand back the incoming DataSpec: its URI is
+            // the bare media id. Skipping already-downloaded bytes is not this resolver's job
+            // anyway — CacheWriter skips cached spans via cache.getCachedLength(), and the
+            // CacheDataSource wrapping this resolver still serves whatever playerCache holds.
+            //
+            // The upstream here is OkHttpDataSource (not DefaultDataSource, as on the playback
+            // side), so a scheme-less URI dies in HttpUrl.parse as
+            // HttpDataSourceException("Malformed URL", ERROR_CODE_FAILED_RUNTIME_CHECK) — a
+            // misleading error for what is really "we could not get a stream URL". Fail loudly
+            // instead, and let DownloadManager mark the download failed for the true reason.
             var dataSpecReturn: DataSpec = dataSpec
+            var resolved = false
             runBlocking(Dispatchers.IO) {
                 if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
                     val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
@@ -85,6 +92,7 @@ internal class DownloadUtils(
                             val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
                             if (!is403Url) {
                                 dataSpecReturn = dataSpec.withUri(videoUrl.toUri())
+                                resolved = true
                                 return@runBlocking
                             }
                         }
@@ -98,6 +106,7 @@ internal class DownloadUtils(
                         ).lastOrNull()
                         ?.let {
                             dataSpecReturn = dataSpec.withUri(it.toUri())
+                            resolved = true
                         }
                 } else {
                     streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
@@ -108,6 +117,7 @@ internal class DownloadUtils(
                             val is403Url = streamRepository.is403Url(audioUrl).firstOrNull() != false
                             if (!is403Url) {
                                 dataSpecReturn = dataSpec.withUri(audioUrl.toUri())
+                                resolved = true
                                 return@runBlocking
                             }
                         }
@@ -127,8 +137,13 @@ internal class DownloadUtils(
                                 )
                             }
                             dataSpecReturn = dataSpec.withUri(it.toUri())
+                            resolved = true
                         }
                 }
+            }
+            if (!resolved) {
+                Logger.e("Stream", "Failed to resolve download stream URL for $mediaId")
+                throw java.io.IOException("Failed to resolve stream URL for $mediaId")
             }
             return@Factory dataSpecReturn
         }
