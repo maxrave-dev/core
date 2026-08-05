@@ -1735,6 +1735,9 @@ internal class CrossfadeExoPlayerAdapter(
      */
     private fun isNextTrackVideo(): Boolean = watchVideoEnabled && playlist.getOrNull(getNextMediaItemIndex())?.isVideo() == true
 
+    /** Same skip rule for the CURRENT track: a video should play out to its last frame instead of fading out under the incoming song. */
+    private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
+
     /**
      * Handle track end - mirrors GstreamerPlayerAdapter.handleTrackEndInternal()
      */
@@ -1746,6 +1749,7 @@ internal class CrossfadeExoPlayerAdapter(
             crossfadeEnabled &&
                 hasNextMediaItem() &&
                 !isCrossfading &&
+                !isCurrentTrackVideo() &&
                 !isNextTrackVideo()
 
         if (shouldCrossfade) {
@@ -2601,6 +2605,7 @@ internal class CrossfadeExoPlayerAdapter(
                                     player.isPlaying &&
                                     dur > 0 &&
                                     pos > 0 &&
+                                    !isCurrentTrackVideo() &&
                                     !isNextTrackVideo()
                                 ) {
                                     // Account for playback speed: at higher speed, media time

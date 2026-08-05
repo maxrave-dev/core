@@ -1370,6 +1370,9 @@ class MpvPlayerAdapter(
      */
     private fun isNextTrackVideo(): Boolean = watchVideoEnabled && playlist.getOrNull(getNextMediaItemIndex())?.isVideo() == true
 
+    /** Same skip rule for the CURRENT track: a video should play out to its last frame instead of fading out under the incoming song. */
+    private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
+
     /**
      * Handle track end
      */
@@ -1385,6 +1388,7 @@ class MpvPlayerAdapter(
         val shouldCrossfade =
             crossfadeEnabled &&
                 hasNextMediaItem() &&
+                !isCurrentTrackVideo() &&
                 !isNextTrackVideo()
 
         if (shouldCrossfade) {
@@ -2239,6 +2243,7 @@ class MpvPlayerAdapter(
                             if (crossfadeEnabled &&
                                 !isCrossfading &&
                                 internalPlayWhenReady &&
+                                !isCurrentTrackVideo() &&
                                 !isNextTrackVideo()
                             ) {
                                 val player = currentPlayer
