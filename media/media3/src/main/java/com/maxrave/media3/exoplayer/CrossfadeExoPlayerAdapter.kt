@@ -24,6 +24,7 @@ import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
+import com.maxrave.domain.extension.isPodcast
 import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
@@ -1426,7 +1427,11 @@ internal class CrossfadeExoPlayerAdapter(
 
                     // Eagerly load audio metadata for auto crossfade calculations
                     // so it's available when position updates check the trigger threshold
-                    if (crossfadeEnabled && crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO) {
+                    if (
+                        crossfadeEnabled &&
+                        !mediaItem.isPodcast() &&
+                        crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO
+                    ) {
                         loadAudioMetaIfNeeded(videoId)
                     }
 
@@ -1738,6 +1743,10 @@ internal class CrossfadeExoPlayerAdapter(
     /** Same skip rule for the CURRENT track: a video should play out to its last frame instead of fading out under the incoming song. */
     private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
 
+    private fun isNextTrackPodcast(): Boolean = playlist.getOrNull(getNextMediaItemIndex())?.isPodcast() == true
+
+    private fun isCurrentTrackPodcast(): Boolean = currentMediaItem?.isPodcast() == true
+
     /**
      * Handle track end - mirrors GstreamerPlayerAdapter.handleTrackEndInternal()
      */
@@ -1750,7 +1759,9 @@ internal class CrossfadeExoPlayerAdapter(
                 hasNextMediaItem() &&
                 !isCrossfading &&
                 !isCurrentTrackVideo() &&
-                !isNextTrackVideo()
+                !isNextTrackVideo() &&
+                !isCurrentTrackPodcast() &&
+                !isNextTrackPodcast()
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -2618,7 +2629,9 @@ internal class CrossfadeExoPlayerAdapter(
                                     dur > 0 &&
                                     pos > 0 &&
                                     !isCurrentTrackVideo() &&
-                                    !isNextTrackVideo()
+                                    !isNextTrackVideo() &&
+                                    !isCurrentTrackPodcast() &&
+                                    !isNextTrackPodcast()
                                 ) {
                                     // Account for playback speed: at higher speed, media time
                                     // is consumed faster, so wall-clock remaining is shorter

@@ -46,6 +46,18 @@ fun GenericMediaItem.isSong(): Boolean = this.metadata.description?.contains(MER
 
 fun GenericMediaItem.isVideo(): Boolean = this.metadata.description?.contains(MERGING_DATA_TYPE.VIDEO) == true
 
+fun GenericMediaItem.isPodcast(): Boolean = this.metadata.description?.contains(MERGING_DATA_TYPE.PODCAST) == true
+
+fun Track.isPodcast(): Boolean =
+    category.equals(MERGING_DATA_TYPE.PODCAST, ignoreCase = true) ||
+        videoType.equals(MERGING_DATA_TYPE.PODCAST, ignoreCase = true) ||
+        resultType.equals(MERGING_DATA_TYPE.PODCAST, ignoreCase = true)
+
+fun SongEntity.isPodcast(): Boolean =
+    category.equals(MERGING_DATA_TYPE.PODCAST, ignoreCase = true) ||
+        videoType.equals(MERGING_DATA_TYPE.PODCAST, ignoreCase = true) ||
+        resultType.equals(MERGING_DATA_TYPE.PODCAST, ignoreCase = true)
+
 fun GenericMediaItem.toSongEntity(): SongEntity =
     SongEntity(
         videoId = this.mediaId,
@@ -60,9 +72,9 @@ fun GenericMediaItem.toSongEntity(): SongEntity =
         likeStatus = "INDIFFERENT",
         thumbnails = this.metadata.artworkUri.toString(),
         title = this.metadata.title.toString(),
-        videoType = "",
-        category = "",
-        resultType = "",
+        videoType = if (isPodcast()) MERGING_DATA_TYPE.PODCAST else "",
+        category = if (isPodcast()) MERGING_DATA_TYPE.PODCAST else "",
+        resultType = if (isPodcast()) MERGING_DATA_TYPE.PODCAST else "",
         liked = false,
         totalPlayTime = 0,
         downloadState = 0,
@@ -79,7 +91,12 @@ fun SongEntity.toGenericMediaItem(): GenericMediaItem {
                 artist = this.artistName?.connectArtists(),
                 albumTitle = this.albumName,
                 artworkUri = this.thumbnails,
-                description = if (isSong) MERGING_DATA_TYPE.SONG else MERGING_DATA_TYPE.VIDEO,
+                description =
+                    when {
+                        isPodcast() -> MERGING_DATA_TYPE.PODCAST
+                        isSong -> MERGING_DATA_TYPE.SONG
+                        else -> MERGING_DATA_TYPE.VIDEO
+                    },
             ),
         customCacheKey = this.videoId,
     )
@@ -109,7 +126,12 @@ fun Track.toGenericMediaItem(): GenericMediaItem {
                 artist = artistName,
                 albumTitle = this.album?.name,
                 artworkUri = thumbUrl,
-                description = if (isSong) MERGING_DATA_TYPE.SONG else MERGING_DATA_TYPE.VIDEO,
+                description =
+                    when {
+                        isPodcast() -> MERGING_DATA_TYPE.PODCAST
+                        isSong -> MERGING_DATA_TYPE.SONG
+                        else -> MERGING_DATA_TYPE.VIDEO
+                    },
             ),
         customCacheKey = this.videoId,
     )

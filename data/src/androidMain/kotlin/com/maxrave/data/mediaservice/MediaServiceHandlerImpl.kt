@@ -20,6 +20,7 @@ import com.maxrave.common.DESC
 import com.maxrave.common.LOCAL_PLAYLIST_ID
 import com.maxrave.common.LOCAL_PLAYLIST_ID_SAVED_QUEUE
 import com.maxrave.common.MERGING_DATA_TYPE
+import com.maxrave.common.PODCAST_PROGRESS_KEY_PREFIX
 import com.maxrave.common.TITLE
 import com.maxrave.data.db.Converters
 import com.maxrave.data.lastfm.LastfmScrobbler
@@ -38,6 +39,7 @@ import com.maxrave.domain.data.player.GenericTracks
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
 import com.maxrave.domain.extension.isVideo
+import com.maxrave.domain.extension.isPodcast
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.extension.toGenericMediaItem
 import com.maxrave.domain.extension.toSongEntity
@@ -216,6 +218,8 @@ internal class MediaServiceHandlerImpl(
     private var progressJob: Job? = null
 
     private var bufferedJob: Job? = null
+
+    private var podcastResumeJob: Job? = null
 
     private var updateNotificationJob: Job? = null
 
@@ -720,9 +724,18 @@ internal class MediaServiceHandlerImpl(
         mediaItem: GenericMediaItem,
         index: Int? = null,
     ) {
+        val queueTrack = queueData.value.data.listTracks.find { it.videoId == mediaItem.mediaId }
+        val item =
+            if (queueData.value.isPodcast() || queueTrack?.isPodcast() == true) {
+                mediaItem.copy(
+                    metadata = mediaItem.metadata.copy(description = MERGING_DATA_TYPE.PODCAST),
+                )
+            } else {
+                mediaItem
+            }
         index?.let {
-            player.addMediaItem(it, mediaItem)
-        } ?: player.addMediaItem(mediaItem)
+            player.addMediaItem(it, item)
+        } ?: player.addMediaItem(item)
         if (player.mediaItemCount == 1) {
             player.prepare()
             player.playWhenReady = true
@@ -816,6 +829,7 @@ internal class MediaServiceHandlerImpl(
                     if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
                         sinceLastPositionSaveMs = 0
                         mayBeSaveRecentPosition()
+                        mayBeSavePodcastPosition()
                         // Riding the existing 5s tick instead of adding one: the scrobble point is
                         // half the track or four minutes, so five seconds of granularity is plenty
                         // and the 100ms loop stays as cheap as it was.
@@ -2128,11 +2142,59 @@ internal class MediaServiceHandlerImpl(
         }
     }
 
+    private fun mayBeSavePodcastPosition(
+        mediaItem: GenericMediaItem? = player.currentMediaItem,
+        position: Long = player.contentPosition,
+    ) {
+        if (mediaItem?.isPodcast() != true || position < 0L) return
+        coroutineScope.launch {
+            dataStoreManager.putString(
+                "$PODCAST_PROGRESS_KEY_PREFIX${mediaItem.mediaId}",
+                position.toString(),
+            )
+        }
+    }
+
+    private fun clearPodcastPosition(mediaItem: GenericMediaItem?) {
+        if (mediaItem?.isPodcast() != true) return
+        coroutineScope.launch {
+            dataStoreManager.putString("$PODCAST_PROGRESS_KEY_PREFIX${mediaItem.mediaId}", "0")
+        }
+    }
+
+    private fun restorePodcastPosition(mediaItem: GenericMediaItem) {
+        podcastResumeJob?.cancel()
+        if (!mediaItem.isPodcast()) return
+        podcastResumeJob =
+            coroutineScope.launch {
+                val savedPosition =
+                    dataStoreManager
+                        .getString("$PODCAST_PROGRESS_KEY_PREFIX${mediaItem.mediaId}")
+                        .first()
+                        ?.toLongOrNull()
+                        ?: return@launch
+                if (savedPosition < 5_000L) return@launch
+
+                repeat(150) {
+                    if (player.currentMediaItem?.mediaId != mediaItem.mediaId) return@launch
+                    val duration = player.duration
+                    if (duration > 0L) {
+                        if (savedPosition < duration - 10_000L && player.currentPosition < 5_000L) {
+                            player.seekTo(savedPosition)
+                        }
+                        return@launch
+                    }
+                    delay(100)
+                }
+            }
+    }
+
     override fun mayBeNormalizeVolume() {
         runBlocking {
             normalizeVolume = dataStoreManager.normalizeVolume.first() == TRUE
         }
-        if (!normalizeVolume) {
+        val isPodcast = player.currentMediaItem?.isPodcast() == true
+        if (!normalizeVolume && !isPodcast) {
             loudnessEnhancer?.enabled = false
             loudnessEnhancer?.release()
             loudnessEnhancer = null
@@ -2184,9 +2246,15 @@ internal class MediaServiceHandlerImpl(
                                             it
                                         }
                                     }
+                                val targetGainMb =
+                                    if (isPodcast) {
+                                        maxOf(400, 0f.toMb() - loudnessMb)
+                                    } else {
+                                        0f.toMb() - loudnessMb
+                                    }
                                 Logger.d(TAG, "Loudness: ${format.loudnessDb} db, $loudnessMb")
                                 try {
-                                    loudnessEnhancer?.setTargetGain(0f.toMb() - loudnessMb)
+                                    loudnessEnhancer?.setTargetGain(targetGainMb)
                                     loudnessEnhancer?.enabled = true
                                     Logger.w(
                                         TAG,
@@ -2197,7 +2265,7 @@ internal class MediaServiceHandlerImpl(
                                     e.printStackTrace()
                                 }
                                 try {
-                                    secondLoudnessEnhancer?.setTargetGain(0f.toMb() - loudnessMb)
+                                    secondLoudnessEnhancer?.setTargetGain(targetGainMb)
                                     secondLoudnessEnhancer?.enabled = true
                                     Logger.w(
                                         TAG,
@@ -2313,6 +2381,8 @@ internal class MediaServiceHandlerImpl(
             progressJob = null
             bufferedJob?.cancel()
             bufferedJob = null
+            podcastResumeJob?.cancel()
+            podcastResumeJob = null
             sleepTimerJob?.cancel()
             sleepTimerJob = null
             volumeNormalizationJob?.cancel()
@@ -2370,6 +2440,7 @@ internal class MediaServiceHandlerImpl(
             }
 
             PlayerConstants.STATE_ENDED -> {
+                clearPodcastPosition(player.currentMediaItem)
                 _simpleMediaState.value = SimpleMediaState.Ended
                 Logger.d(TAG, "onPlaybackStateChanged: Ended")
             }
@@ -2396,6 +2467,9 @@ internal class MediaServiceHandlerImpl(
         } else {
             stopProgressUpdate()
             mayBeSaveRecentSong()
+            if (player.playbackState != PlayerConstants.STATE_ENDED) {
+                mayBeSavePodcastPosition()
+            }
             mayBeSavePlaybackState()
             if (discordRPC?.isRpcRunning() == true) {
                 discordRPC?.closeRPC()
@@ -2422,6 +2496,9 @@ internal class MediaServiceHandlerImpl(
         if (currentState is SimpleMediaState.Progress && lastPlayed != null && lastPlayed.durationSeconds > 0) {
             mayBeTrackingListeningLocal(lastPlayed, currentState.progress)
         }
+        if (currentState is SimpleMediaState.Progress && lastPlayed?.isPodcast() == true) {
+            mayBeSavePodcastPosition(nowPlayingState.value.mediaItem, currentState.progress)
+        }
         Logger.w(TAG, "Smooth Switching Transition Current Position: ${player.currentPosition}")
         mayBeNormalizeVolume()
         Logger.w(TAG, "REASON onMediaItemTransition: $reason")
@@ -2433,6 +2510,7 @@ internal class MediaServiceHandlerImpl(
             Logger.w(TAG, "onMediaItemTransition: ${mediaItem?.mediaId}")
             if (mediaItem != null) {
                 getDataOfNowPlayingState(mediaItem)
+                restorePodcastPosition(mediaItem)
             } else {
                 _nowPlayingState.update {
                     NowPlayingTrackState
