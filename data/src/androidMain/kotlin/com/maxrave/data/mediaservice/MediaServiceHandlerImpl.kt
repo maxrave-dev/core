@@ -327,6 +327,19 @@ internal class MediaServiceHandlerImpl(
                         updateNotification()
                     }
                 }
+            val podcastSeekSettingsJob =
+                launch {
+                    combine(
+                        dataStoreManager.podcastRewindSeconds,
+                        dataStoreManager.podcastForwardSeconds,
+                    ) { rewind, forward ->
+                        rewind to forward
+                    }.distinctUntilChanged().collect {
+                        if (player.currentMediaItem?.isPodcast() == true) {
+                            updateNotification()
+                        }
+                    }
+                }
             val skipSegmentsJob =
                 launch {
                     simpleMediaState
@@ -469,6 +482,7 @@ internal class MediaServiceHandlerImpl(
                     }
                 }
             controlStateJob.join()
+            podcastSeekSettingsJob.join()
             skipSegmentsJob.join()
             playbackJob.join()
             playbackSpeedPitchJob.join()
@@ -796,13 +810,24 @@ internal class MediaServiceHandlerImpl(
                         ?.liked ?: false
                 Logger.w("Check liked", liked.toString())
                 _controlState.value = _controlState.value.copy(isLiked = liked)
+                val isPodcast = player.currentMediaItem?.isPodcast() == true
+                val podcastButtons =
+                    if (isPodcast) {
+                        listOf(
+                            GenericCommandButton.SeekBack(dataStoreManager.podcastRewindSeconds.first()),
+                            GenericCommandButton.SeekForward(dataStoreManager.podcastForwardSeconds.first()),
+                        )
+                    } else {
+                        emptyList()
+                    }
                 onUpdateNotification.invoke(
-                    listOf(
-                        GenericCommandButton.Like(liked),
-                        GenericCommandButton.Shuffle(isShuffled = _controlState.value.isShuffle),
-                        GenericCommandButton.Repeat(repeatState = _controlState.value.repeatState),
-                        GenericCommandButton.Radio,
-                    ),
+                    podcastButtons +
+                        listOf(
+                            GenericCommandButton.Like(liked),
+                            GenericCommandButton.Shuffle(isShuffled = _controlState.value.isShuffle),
+                            GenericCommandButton.Repeat(repeatState = _controlState.value.repeatState),
+                            GenericCommandButton.Radio,
+                        ),
                 )
             }
     }

@@ -15,5 +15,13 @@ sealed class GenericCommandButton {
         val repeatState: RepeatState,
     ) : GenericCommandButton()
 
+    data class SeekBack(
+        val seconds: Int,
+    ) : GenericCommandButton()
+
+    data class SeekForward(
+        val seconds: Int,
+    ) : GenericCommandButton()
+
     data object Radio : GenericCommandButton()
 }

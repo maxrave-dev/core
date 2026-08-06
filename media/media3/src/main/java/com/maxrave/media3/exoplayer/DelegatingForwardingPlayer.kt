@@ -78,6 +78,29 @@ internal class DelegatingForwardingPlayer(
      */
     var playlistNavigationProvider: PlaylistNavigationProvider? = null
 
+    interface SeekIncrementProvider {
+        fun getSeekBackIncrementMs(): Long
+
+        fun getSeekForwardIncrementMs(): Long
+    }
+
+    var seekIncrementProvider: SeekIncrementProvider? = null
+
+    override fun getSeekBackIncrement(): Long =
+        seekIncrementProvider?.getSeekBackIncrementMs() ?: super.getSeekBackIncrement()
+
+    override fun getSeekForwardIncrement(): Long =
+        seekIncrementProvider?.getSeekForwardIncrementMs() ?: super.getSeekForwardIncrement()
+
+    override fun seekBack() {
+        seekTo((currentPosition - seekBackIncrement).coerceAtLeast(0L))
+    }
+
+    override fun seekForward() {
+        val target = currentPosition + seekForwardIncrement
+        seekTo(if (duration > 0L) target.coerceAtMost(duration) else target)
+    }
+
     // ========== Playback-Ended Suppression ==========
 
     /**

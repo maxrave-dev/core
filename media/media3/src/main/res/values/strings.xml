@@ -7,6 +7,8 @@
     <string name="repeat_all">Repeat All</string>
     <string name="repeat_off">Repeat Off</string>
     <string name="shuffle">Shuffle</string>
+    <string name="seek_back_seconds">Back %1$d seconds</string>
+    <string name="seek_forward_seconds">Forward %1$d seconds</string>
     <string name="notification_channel_name" translatable="false">SimpMusic Playback Notification</string>
     <string name="home">Home</string>
     <string name="search">Search</string>

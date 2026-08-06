@@ -94,6 +94,12 @@ internal class CrossfadeExoPlayerAdapter(
 
     // ========== Crossfade Settings (loaded from DataStore) ==========
 
+    @Volatile
+    private var podcastRewindMs = DataStoreManager.DEFAULT_PODCAST_SEEK_SECONDS * 1_000L
+
+    @Volatile
+    private var podcastForwardMs = DataStoreManager.DEFAULT_PODCAST_SEEK_SECONDS * 1_000L
+
     init {
         coroutineScope.launch {
             dataStoreManager.crossfadeEnabled.collect { enabled ->
@@ -117,6 +123,16 @@ internal class CrossfadeExoPlayerAdapter(
             dataStoreManager.watchVideoInsteadOfPlayingAudio.collect { enabled ->
                 watchVideoEnabled = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "Watch video enabled: $watchVideoEnabled")
+            }
+        }
+        coroutineScope.launch {
+            dataStoreManager.podcastRewindSeconds.collect { seconds ->
+                podcastRewindMs = seconds * 1_000L
+            }
+        }
+        coroutineScope.launch {
+            dataStoreManager.podcastForwardSeconds.collect { seconds ->
+                podcastForwardMs = seconds * 1_000L
             }
         }
     }
@@ -373,6 +389,12 @@ internal class CrossfadeExoPlayerAdapter(
                 override fun seekToPrevious(): Unit = this@CrossfadeExoPlayerAdapter.seekToPrevious()
 
                 override fun seekToPreviousMediaItem(): Unit = this@CrossfadeExoPlayerAdapter.seekToPreviousMediaItem()
+            }
+        forwardingPlayer.seekIncrementProvider =
+            object : DelegatingForwardingPlayer.SeekIncrementProvider {
+                override fun getSeekBackIncrementMs(): Long = podcastRewindMs
+
+                override fun getSeekForwardIncrementMs(): Long = podcastForwardMs
             }
     }
 
@@ -663,13 +685,13 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     override fun seekBack() {
-        val newPosition = (currentPosition - 5000).coerceAtLeast(0)
+        val newPosition = (currentPosition - podcastRewindMs).coerceAtLeast(0)
         seekTo(newPosition)
     }
 
     override fun seekForward() {
         val end = duration.takeIf { it > 0 } ?: cachedDuration
-        val newPosition = (currentPosition + 5000).coerceAtMost(end)
+        val newPosition = (currentPosition + podcastForwardMs).coerceAtMost(end)
         seekTo(newPosition)
     }
 
