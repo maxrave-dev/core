@@ -14,6 +14,7 @@ import com.maxrave.logger.Logger
 
 private const val TAG = "DelegatingForwardingPlayer"
 private const val SEEK_BUFFERING_SUPPRESSION_TIMEOUT_MS = 2_000L
+private const val TRACK_TRANSITION_BUFFERING_SUPPRESSION_TIMEOUT_MS = 15_000L
 
 /**
  * A [ForwardingPlayer] that allows runtime swapping of its underlying delegate.
@@ -130,6 +131,12 @@ internal class DelegatingForwardingPlayer(
     @Volatile
     private var seekWasPlaying = false
 
+    @Volatile
+    private var suppressTrackTransitionBuffering = false
+
+    @Volatile
+    private var trackTransitionWasPlaying = false
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private var seekSuppressionGeneration = 0
 
@@ -147,19 +154,39 @@ internal class DelegatingForwardingPlayer(
         )
     }
 
+    fun beginTrackTransitionBufferingSuppression() {
+        val generation = ++seekSuppressionGeneration
+        trackTransitionWasPlaying = isPlaying || playWhenReady
+        suppressTrackTransitionBuffering = true
+        mainHandler.postDelayed(
+            {
+                if (seekSuppressionGeneration == generation) {
+                    suppressTrackTransitionBuffering = false
+                }
+            },
+            TRACK_TRANSITION_BUFFERING_SUPPRESSION_TIMEOUT_MS,
+        )
+    }
+
     override fun getPlaybackState(): Int {
         val state = super.getPlaybackState()
         if (state == Player.STATE_ENDED && suppressPlaybackEnded) {
             return Player.STATE_BUFFERING
         }
-        if (state == Player.STATE_BUFFERING && suppressSeekBuffering) {
+        if (state == Player.STATE_BUFFERING && (suppressSeekBuffering || suppressTrackTransitionBuffering)) {
             return Player.STATE_READY
         }
         return state
     }
 
     override fun isPlaying(): Boolean =
-        if (suppressSeekBuffering && seekWasPlaying) true else super.isPlaying()
+        if ((suppressSeekBuffering && seekWasPlaying) ||
+            (suppressTrackTransitionBuffering && trackTransitionWasPlaying)
+        ) {
+            true
+        } else {
+            super.isPlaying()
+        }
 
     // ========== Listener Tracking ==========
 
@@ -181,6 +208,7 @@ internal class DelegatingForwardingPlayer(
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     suppressSeekBuffering = false
+                    suppressTrackTransitionBuffering = false
                 }
             }
         }

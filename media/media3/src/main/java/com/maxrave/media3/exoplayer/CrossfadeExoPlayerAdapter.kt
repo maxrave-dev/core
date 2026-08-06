@@ -1354,6 +1354,9 @@ internal class CrossfadeExoPlayerAdapter(
         currentLoadJob =
             coroutineScope.launch {
                 try {
+                    if (currentPlayer != null) {
+                        forwardingPlayer.beginTrackTransitionBufferingSuppression()
+                    }
                     transitionToState(InternalState.PREPARING)
 
                     // Notify media item transition
