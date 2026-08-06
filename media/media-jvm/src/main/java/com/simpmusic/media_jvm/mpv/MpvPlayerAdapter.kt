@@ -1948,8 +1948,10 @@ class MpvPlayerAdapter(
         val currentKey = currentMeta?.key ?: return UNKNOWN_GAP_DEFAULT_FACTOR
         val nextKey = nextMeta?.key ?: return UNKNOWN_GAP_DEFAULT_FACTOR
 
-        val currentCamelot = keyToCamelot(currentKey, currentMeta.keyScale) ?: return 1.0
-        val nextCamelot = keyToCamelot(nextKey, nextMeta.keyScale) ?: return 1.0
+        // An unparseable key tells us nothing about compatibility — treat it like a missing
+        // key instead of like a perfect match, otherwise it silently shortens the blend.
+        val currentCamelot = keyToCamelot(currentKey, currentMeta.keyScale) ?: return UNKNOWN_GAP_DEFAULT_FACTOR
+        val nextCamelot = keyToCamelot(nextKey, nextMeta.keyScale) ?: return UNKNOWN_GAP_DEFAULT_FACTOR
 
         val dist = camelotDistance(currentCamelot, nextCamelot)
         return when {
@@ -1992,13 +1994,22 @@ class MpvPlayerAdapter(
         return circularDist + typeDiff
     }
 
-    private fun keyToSemitone(key: String): Int =
-        when (key.trim()) {
+    // Tidal spells accidentals out ("FSharp", "CSharp") instead of using symbols,
+    // so the name is normalised before matching.
+    private fun keyToSemitone(key: String): Int {
+        val normalized =
+            key
+                .trim()
+                .replace("Sharp", "#", ignoreCase = true)
+                .replace("Flat", "b", ignoreCase = true)
+                .replaceFirstChar { it.uppercaseChar() }
+        return when (normalized) {
             "C" -> 0; "C#", "Db" -> 1; "D" -> 2; "D#", "Eb" -> 3
             "E" -> 4; "F" -> 5; "F#", "Gb" -> 6; "G" -> 7
             "G#", "Ab" -> 8; "A" -> 9; "A#", "Bb" -> 10; "B" -> 11
             else -> -1
         }
+    }
 
     companion object {
         private const val AUTO_FALLBACK_DURATION_MS = 30000

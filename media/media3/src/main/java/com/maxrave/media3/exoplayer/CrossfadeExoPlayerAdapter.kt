@@ -2248,8 +2248,10 @@ internal class CrossfadeExoPlayerAdapter(
         val currentKey = currentMeta?.key ?: return UNKNOWN_GAP_DEFAULT_FACTOR
         val nextKey = nextMeta?.key ?: return UNKNOWN_GAP_DEFAULT_FACTOR
 
-        val currentCamelot = keyToCamelot(currentKey, currentMeta.keyScale) ?: return 1.0
-        val nextCamelot = keyToCamelot(nextKey, nextMeta.keyScale) ?: return 1.0
+        // An unparseable key tells us nothing about compatibility — treat it like a missing
+        // key instead of like a perfect match, otherwise it silently shortens the blend.
+        val currentCamelot = keyToCamelot(currentKey, currentMeta.keyScale) ?: return UNKNOWN_GAP_DEFAULT_FACTOR
+        val nextCamelot = keyToCamelot(nextKey, nextMeta.keyScale) ?: return UNKNOWN_GAP_DEFAULT_FACTOR
 
         val dist = camelotDistance(currentCamelot, nextCamelot)
         return when {
@@ -2453,9 +2455,18 @@ internal class CrossfadeExoPlayerAdapter(
     /**
      * Map a musical key name to its chromatic semitone number (0-11).
      * C=0, C#/Db=1, D=2, ..., B=11. Returns -1 for unknown keys.
+     *
+     * Tidal spells accidentals out ("FSharp", "CSharp") instead of using symbols,
+     * so the name is normalised before matching.
      */
-    private fun keyToSemitone(key: String): Int =
-        when (key.trim()) {
+    private fun keyToSemitone(key: String): Int {
+        val normalized =
+            key
+                .trim()
+                .replace("Sharp", "#", ignoreCase = true)
+                .replace("Flat", "b", ignoreCase = true)
+                .replaceFirstChar { it.uppercaseChar() }
+        return when (normalized) {
             "C" -> 0
             "C#", "Db" -> 1
             "D" -> 2
@@ -2470,6 +2481,7 @@ internal class CrossfadeExoPlayerAdapter(
             "B" -> 11
             else -> -1
         }
+    }
 
     companion object {
         // DJ crossfade sigmoid steepness (higher = sharper S-curve transition)
