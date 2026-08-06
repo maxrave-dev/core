@@ -445,14 +445,25 @@ class JvmMediaPlayerHandlerImpl(
                 }
             val playbackSpeedPitchJob =
                 launch {
-                    combine(dataStoreManager.playbackSpeed, dataStoreManager.pitch) { speed, pitch ->
-                        Pair(speed, pitch)
-                    }.distinctUntilChanged().collectLatest { pair ->
-                        Logger.w(TAG, "Playback speed: ${pair.first}, Pitch: ${pair.second}")
+                    combine(
+                        combine(dataStoreManager.playbackSpeed, dataStoreManager.pitch) { speed, pitch -> speed to pitch },
+                        combine(dataStoreManager.podcastPlaybackSpeed, dataStoreManager.podcastPitch) { speed, pitch -> speed to pitch },
+                        combine(nowPlaying, dataStoreManager.crossfadeEnabled) { mediaItem, crossfade ->
+                            (mediaItem?.isPodcast() == true) to (crossfade == TRUE)
+                        },
+                    ) { music, podcast, playbackContext ->
+                        val (isPodcast, crossfadeEnabled) = playbackContext
+                        when {
+                            isPodcast -> podcast
+                            crossfadeEnabled -> 1f to 0
+                            else -> music
+                        }
+                    }.distinctUntilChanged().collectLatest { (speed, pitch) ->
+                        Logger.w(TAG, "Playback speed: $speed, Pitch: $pitch")
                         player.playbackParameters =
                             GenericPlaybackParameters(
-                                pair.first,
-                                2f.pow(pair.second.toFloat() / 12),
+                                speed,
+                                2f.pow(pitch.toFloat() / 12),
                             )
                         Logger.w(TAG, "Playback current speed: ${player.playbackParameters.speed}, Pitch: ${player.playbackParameters.pitch}")
                         // A speed change shifts the RPC start/end timestamps (Discord renders the bar
@@ -2661,12 +2672,11 @@ class JvmMediaPlayerHandlerImpl(
                     song = song,
                     progressMs = getProgress(),
                     durationMs = getPlayerDuration(),
-                    speed = dataStoreManager.playbackSpeed.first(),
+                    speed = player.playbackParameters.speed,
                     seq = seq,
                 )
-            // Compare-and-keep-newest: the playbackSpeed.first() suspend above means two calls to
-            // updateDiscordRpc() can interleave and resolve out of order, so a plain `.value = ...`
-            // write could let an older call clobber a newer one. Keep whichever has the higher seq.
+            // Keep whichever snapshot has the higher event sequence so a delayed older update
+            // cannot overwrite the latest playback state.
             rpcSnapshotFlow.update { cur -> if (cur == null || seq >= cur.seq) snapshot else cur }
         }
     }

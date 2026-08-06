@@ -248,6 +248,10 @@ interface DataStoreManager {
 
     fun setPlaybackSpeed(speed: Float)
 
+    val podcastPlaybackSpeed: Flow<Float>
+
+    suspend fun setPodcastPlaybackSpeed(speed: Float)
+
     val podcastRewindSeconds: Flow<Int>
 
     suspend fun setPodcastRewindSeconds(seconds: Int)
@@ -259,6 +263,10 @@ interface DataStoreManager {
     val pitch: Flow<Int>
 
     fun setPitch(pitch: Int)
+
+    val podcastPitch: Flow<Int>
+
+    suspend fun setPodcastPitch(pitch: Int)
 
     val dataSyncId: Flow<String>
 

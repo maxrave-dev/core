@@ -990,6 +990,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val podcastPlaybackSpeed =
+        settingsDataStore.data.map { preferences ->
+            preferences[PODCAST_PLAYBACK_SPEED] ?: 1.0f
+        }
+
+    override suspend fun setPodcastPlaybackSpeed(speed: Float) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[PODCAST_PLAYBACK_SPEED] = speed
+            }
+        }
+    }
+
     override val podcastRewindSeconds =
         settingsDataStore.data.map { preferences ->
             DataStoreManager.normalizePodcastSeekSeconds(
@@ -1029,6 +1042,19 @@ internal class DataStoreManagerImpl(
         runBlocking {
             settingsDataStore.edit { settings ->
                 settings[PITCH] = pitch
+            }
+        }
+    }
+
+    override val podcastPitch =
+        settingsDataStore.data.map { preferences ->
+            preferences[PODCAST_PITCH] ?: 0
+        }
+
+    override suspend fun setPodcastPitch(pitch: Int) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[PODCAST_PITCH] = pitch
             }
         }
     }
@@ -1574,9 +1600,11 @@ internal class DataStoreManagerImpl(
         val AUTO_CHECK_FOR_UPDATES = stringPreferencesKey("auto_check_for_updates")
         val UPDATE_CHANNEL = stringPreferencesKey("update_channel")
         val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
+        val PODCAST_PLAYBACK_SPEED = floatPreferencesKey("podcast_playback_speed")
         val PODCAST_REWIND_SECONDS = intPreferencesKey("podcast_rewind_seconds")
         val PODCAST_FORWARD_SECONDS = intPreferencesKey("podcast_forward_seconds")
         val PITCH = intPreferencesKey("pitch")
+        val PODCAST_PITCH = intPreferencesKey("podcast_pitch")
         val OPEN_APP_TIME = intPreferencesKey("open_app_time")
         val DATA_SYNC_ID = stringPreferencesKey("data_sync_id")
         val VISITOR_DATA = stringPreferencesKey("visitor_data")
