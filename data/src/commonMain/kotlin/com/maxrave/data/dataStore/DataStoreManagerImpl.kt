@@ -990,6 +990,36 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val podcastRewindSeconds =
+        settingsDataStore.data.map { preferences ->
+            DataStoreManager.normalizePodcastSeekSeconds(
+                preferences[PODCAST_REWIND_SECONDS] ?: DataStoreManager.DEFAULT_PODCAST_SEEK_SECONDS,
+            )
+        }
+
+    override suspend fun setPodcastRewindSeconds(seconds: Int) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[PODCAST_REWIND_SECONDS] = DataStoreManager.normalizePodcastSeekSeconds(seconds)
+            }
+        }
+    }
+
+    override val podcastForwardSeconds =
+        settingsDataStore.data.map { preferences ->
+            DataStoreManager.normalizePodcastSeekSeconds(
+                preferences[PODCAST_FORWARD_SECONDS] ?: DataStoreManager.DEFAULT_PODCAST_SEEK_SECONDS,
+            )
+        }
+
+    override suspend fun setPodcastForwardSeconds(seconds: Int) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[PODCAST_FORWARD_SECONDS] = DataStoreManager.normalizePodcastSeekSeconds(seconds)
+            }
+        }
+    }
+
     override val pitch =
         settingsDataStore.data.map { preferences ->
             preferences[PITCH] ?: 0
@@ -1544,6 +1574,8 @@ internal class DataStoreManagerImpl(
         val AUTO_CHECK_FOR_UPDATES = stringPreferencesKey("auto_check_for_updates")
         val UPDATE_CHANNEL = stringPreferencesKey("update_channel")
         val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
+        val PODCAST_REWIND_SECONDS = intPreferencesKey("podcast_rewind_seconds")
+        val PODCAST_FORWARD_SECONDS = intPreferencesKey("podcast_forward_seconds")
         val PITCH = intPreferencesKey("pitch")
         val OPEN_APP_TIME = intPreferencesKey("open_app_time")
         val DATA_SYNC_ID = stringPreferencesKey("data_sync_id")

@@ -5,6 +5,7 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericMediaMetadata
+import com.maxrave.domain.manager.DataStoreManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -38,6 +39,15 @@ class PodcastMediaTypeTest {
             )
 
         assertTrue(mediaItem.toSongEntity().isPodcast())
+    }
+
+    @Test
+    fun podcastSeekIntervalsRejectUnsupportedValues() {
+        assertEquals(30, DataStoreManager.normalizePodcastSeekSeconds(30))
+        assertEquals(
+            DataStoreManager.DEFAULT_PODCAST_SEEK_SECONDS,
+            DataStoreManager.normalizePodcastSeekSeconds(12),
+        )
     }
 
     private fun track(category: String) =

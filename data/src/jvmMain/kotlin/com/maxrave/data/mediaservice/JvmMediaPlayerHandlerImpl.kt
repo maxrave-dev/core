@@ -957,6 +957,14 @@ class JvmMediaPlayerHandlerImpl(
                 }
             }
 
+            is PlayerEvent.SeekBy -> {
+                val endPosition = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+                player.seekTo((player.currentPosition + playerEvent.offsetMs).coerceIn(0L, endPosition))
+                if (player.isPlaying) {
+                    nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
+                }
+            }
+
             PlayerEvent.PlayPause -> {
                 if (player.isPlaying) {
                     stopProgressUpdate()

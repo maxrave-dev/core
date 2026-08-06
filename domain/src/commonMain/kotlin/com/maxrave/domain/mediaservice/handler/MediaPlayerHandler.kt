@@ -173,6 +173,10 @@ sealed class PlayerEvent {
 
     data object Forward : PlayerEvent()
 
+    data class SeekBy(
+        val offsetMs: Long,
+    ) : PlayerEvent()
+
     data object Stop : PlayerEvent()
 
     data object Next : PlayerEvent()

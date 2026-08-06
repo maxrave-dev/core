@@ -884,6 +884,11 @@ internal class MediaServiceHandlerImpl(
                 player.seekForward()
             }
 
+            is PlayerEvent.SeekBy -> {
+                val endPosition = player.duration.takeIf { it > 0L } ?: Long.MAX_VALUE
+                player.seekTo((player.currentPosition + playerEvent.offsetMs).coerceIn(0L, endPosition))
+            }
+
             PlayerEvent.PlayPause -> {
                 if (player.isPlaying) {
                     player.pause()
