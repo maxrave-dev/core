@@ -555,6 +555,7 @@ class MpvPlayer private constructor(
     // own crossfade ramp. [applyVolume] decides how each reaches mpv.
     private var masterPercent = 100
     private var fadePercent = 100
+    private var speechBoostPercent = 100
 
     /**
      * The pipeline volume — what the volume slider controls. Must NOT be touched while a crossfade
@@ -579,6 +580,13 @@ class MpvPlayer private constructor(
         applyVolume()
     }
 
+    /** Adds modest software gain for spoken-word content without changing the user's volume setting. */
+    fun setSpeechBoost(enabled: Boolean) {
+        if (isReleased) return
+        speechBoostPercent = if (enabled) 125 else 100
+        applyVolume()
+    }
+
     /**
      * `volume` is mpv's *software* volume: applied inside the filter chain, so audio already queued
      * in the audio-output buffer keeps playing at the previous level — audible as a couple of
@@ -590,9 +598,9 @@ class MpvPlayer private constructor(
      */
     private fun applyVolume() {
         if (setPropertyDouble("ao-volume", masterPercent.toDouble(), logFailure = false) >= 0) {
-            setPropertyDouble("volume", fadePercent.toDouble())
+            setPropertyDouble("volume", fadePercent * speechBoostPercent / 100.0)
         } else {
-            setPropertyDouble("volume", masterPercent * fadePercent / 100.0)
+            setPropertyDouble("volume", masterPercent * fadePercent * speechBoostPercent / 10_000.0)
         }
     }
 

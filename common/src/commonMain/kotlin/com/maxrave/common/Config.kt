@@ -551,7 +551,10 @@ const val TITLE = "TITLE"
 object MERGING_DATA_TYPE {
     const val SONG = "Song"
     const val VIDEO = "Video"
+    const val PODCAST = "Podcast"
 }
+
+const val PODCAST_PROGRESS_KEY_PREFIX = "podcast_progress_"
 
 enum class LibraryChipType {
     YOUR_LIBRARY,

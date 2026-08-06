@@ -24,6 +24,7 @@ import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
+import com.maxrave.domain.extension.isPodcast
 import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
@@ -93,6 +94,12 @@ internal class CrossfadeExoPlayerAdapter(
 
     // ========== Crossfade Settings (loaded from DataStore) ==========
 
+    @Volatile
+    private var podcastRewindMs = DataStoreManager.DEFAULT_PODCAST_SEEK_SECONDS * 1_000L
+
+    @Volatile
+    private var podcastForwardMs = DataStoreManager.DEFAULT_PODCAST_SEEK_SECONDS * 1_000L
+
     init {
         coroutineScope.launch {
             dataStoreManager.crossfadeEnabled.collect { enabled ->
@@ -118,6 +125,16 @@ internal class CrossfadeExoPlayerAdapter(
                 Logger.d(TAG, "Watch video enabled: $watchVideoEnabled")
             }
         }
+        coroutineScope.launch {
+            dataStoreManager.podcastRewindSeconds.collect { seconds ->
+                podcastRewindMs = seconds * 1_000L
+            }
+        }
+        coroutineScope.launch {
+            dataStoreManager.podcastForwardSeconds.collect { seconds ->
+                podcastForwardMs = seconds * 1_000L
+            }
+        }
     }
 
     // ========== State Management ==========
@@ -126,6 +143,8 @@ internal class CrossfadeExoPlayerAdapter(
 
     @Volatile
     private var currentPlayer: ExoPlayer? = null
+
+    private var reportedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
 
     @Volatile
     private var internalState = InternalState.IDLE
@@ -370,6 +389,12 @@ internal class CrossfadeExoPlayerAdapter(
                 override fun seekToPrevious(): Unit = this@CrossfadeExoPlayerAdapter.seekToPrevious()
 
                 override fun seekToPreviousMediaItem(): Unit = this@CrossfadeExoPlayerAdapter.seekToPreviousMediaItem()
+            }
+        forwardingPlayer.seekIncrementProvider =
+            object : DelegatingForwardingPlayer.SeekIncrementProvider {
+                override fun getSeekBackIncrementMs(): Long = podcastRewindMs
+
+                override fun getSeekForwardIncrementMs(): Long = podcastForwardMs
             }
     }
 
@@ -620,6 +645,7 @@ internal class CrossfadeExoPlayerAdapter(
         }
         currentPlayer?.let { player ->
             try {
+                forwardingPlayer.beginSeekBufferingSuppression()
                 player.seekTo(positionMs)
                 cachedPosition = positionMs
             } catch (e: Exception) {
@@ -660,13 +686,13 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     override fun seekBack() {
-        val newPosition = (currentPosition - 5000).coerceAtLeast(0)
+        val newPosition = (currentPosition - podcastRewindMs).coerceAtLeast(0)
         seekTo(newPosition)
     }
 
     override fun seekForward() {
         val end = duration.takeIf { it > 0 } ?: cachedDuration
-        val newPosition = (currentPosition + 5000).coerceAtMost(end)
+        val newPosition = (currentPosition + podcastForwardMs).coerceAtMost(end)
         seekTo(newPosition)
     }
 
@@ -1328,6 +1354,9 @@ internal class CrossfadeExoPlayerAdapter(
         currentLoadJob =
             coroutineScope.launch {
                 try {
+                    if (currentPlayer != null) {
+                        forwardingPlayer.beginTrackTransitionBufferingSuppression()
+                    }
                     transitionToState(InternalState.PREPARING)
 
                     // Notify media item transition
@@ -1370,9 +1399,11 @@ internal class CrossfadeExoPlayerAdapter(
                     // 3. Set new player as current
                     currentPlayer = player
                     currentPlayerFilter = playerFilter
+                    reportedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
 
                     // 4. Setup our listener on new player
                     setupPlayerListenerInternal(player)
+                    reportActiveAudioSession(player)
 
                     // 5. Swap ForwardingPlayer delegate (moves MediaSession's listeners from old to new)
                     forwardingPlayer.swapDelegate(player)
@@ -1426,7 +1457,11 @@ internal class CrossfadeExoPlayerAdapter(
 
                     // Eagerly load audio metadata for auto crossfade calculations
                     // so it's available when position updates check the trigger threshold
-                    if (crossfadeEnabled && crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO) {
+                    if (
+                        crossfadeEnabled &&
+                        !mediaItem.isPodcast() &&
+                        crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO
+                    ) {
                         loadAudioMetaIfNeeded(videoId)
                     }
 
@@ -1485,6 +1520,7 @@ internal class CrossfadeExoPlayerAdapter(
                             // Reset retry counter on successful playback
                             retryCount = 0
                             retryVideoId = null
+                            reportActiveAudioSession(player)
                         }
 
                         Player.STATE_BUFFERING -> {
@@ -1511,6 +1547,10 @@ internal class CrossfadeExoPlayerAdapter(
                             }
                         }
                     }
+                }
+
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    reportActiveAudioSession(player, audioSessionId)
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
@@ -1646,6 +1686,21 @@ internal class CrossfadeExoPlayerAdapter(
         activePlayerListener = listener
     }
 
+    private fun reportActiveAudioSession(
+        player: ExoPlayer,
+        audioSessionId: Int = player.audioSessionId,
+    ) {
+        if (
+            player != currentPlayer ||
+            audioSessionId == C.AUDIO_SESSION_ID_UNSET ||
+            audioSessionId == reportedAudioSessionId
+        ) {
+            return
+        }
+        reportedAudioSessionId = audioSessionId
+        listeners.forEach { it.onAudioSessionIdChanged(audioSessionId) }
+    }
+
     /**
      * Clean up active player listener from whichever player has it.
      * During crossfade the listener is on secondaryPlayer, not currentPlayer.
@@ -1709,8 +1764,10 @@ internal class CrossfadeExoPlayerAdapter(
         // Promote incoming (A+1) to current.
         currentPlayer = secondaryPlayer
         currentPlayerFilter = secondaryPlayerFilter
+        reportedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
         secondaryPlayer = null
         secondaryPlayerFilter = null
+        currentPlayer?.let(::reportActiveAudioSession)
 
         // The incoming player was fading in: reduced volume + DJ filter on (and the
         // outgoing one carried any tempo/pitch match). Restore normal playback on A+1.
@@ -1738,6 +1795,10 @@ internal class CrossfadeExoPlayerAdapter(
     /** Same skip rule for the CURRENT track: a video should play out to its last frame instead of fading out under the incoming song. */
     private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
 
+    private fun isNextTrackPodcast(): Boolean = playlist.getOrNull(getNextMediaItemIndex())?.isPodcast() == true
+
+    private fun isCurrentTrackPodcast(): Boolean = currentMediaItem?.isPodcast() == true
+
     /**
      * Handle track end - mirrors GstreamerPlayerAdapter.handleTrackEndInternal()
      */
@@ -1750,7 +1811,9 @@ internal class CrossfadeExoPlayerAdapter(
                 hasNextMediaItem() &&
                 !isCrossfading &&
                 !isCurrentTrackVideo() &&
-                !isNextTrackVideo()
+                !isNextTrackVideo() &&
+                !isCurrentTrackPodcast() &&
+                !isNextTrackPodcast()
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -2551,8 +2614,10 @@ internal class CrossfadeExoPlayerAdapter(
         // Promote secondary to current
         currentPlayer = nextPlayer
         currentPlayerFilter = secondaryPlayerFilter
+        reportedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
         secondaryPlayer = null
         secondaryPlayerFilter = null
+        currentPlayer?.let(::reportActiveAudioSession)
         // localCurrentMediaItemIndex already updated in triggerCrossfadeTransition()
 
         // Audio focus is held at the adapter level (see Audio Focus section),
@@ -2618,7 +2683,9 @@ internal class CrossfadeExoPlayerAdapter(
                                     dur > 0 &&
                                     pos > 0 &&
                                     !isCurrentTrackVideo() &&
-                                    !isNextTrackVideo()
+                                    !isNextTrackVideo() &&
+                                    !isCurrentTrackPodcast() &&
+                                    !isNextTrackPodcast()
                                 ) {
                                     // Account for playback speed: at higher speed, media time
                                     // is consumed faster, so wall-clock remaining is shorter

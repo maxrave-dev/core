@@ -173,6 +173,10 @@ sealed class PlayerEvent {
 
     data object Forward : PlayerEvent()
 
+    data class SeekBy(
+        val offsetMs: Long,
+    ) : PlayerEvent()
+
     data object Stop : PlayerEvent()
 
     data object Next : PlayerEvent()
@@ -338,12 +342,15 @@ data class QueueData(
     fun isRadio(): Boolean = this.data.playlistType == PlaylistType.RADIO
 
     fun isPlaylist(): Boolean = this.data.playlistType == PlaylistType.PLAYLIST
+
+    fun isPodcast(): Boolean = this.data.playlistType == PlaylistType.PODCAST
 }
 
 enum class PlaylistType {
     PLAYLIST,
     LOCAL_PLAYLIST,
     RADIO,
+    PODCAST,
 }
 
 sealed class ToastType(

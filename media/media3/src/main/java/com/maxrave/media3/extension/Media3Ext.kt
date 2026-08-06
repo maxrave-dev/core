@@ -5,6 +5,7 @@ import android.os.Bundle
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.ContentMetadata
@@ -205,6 +206,40 @@ fun GenericCommandButton.toCommandButton(context: Context): CommandButton =
                     ),
                 ).build()
         }
+        is GenericCommandButton.SeekBack -> {
+            CommandButton
+                .Builder(skipBackIcon(this.seconds))
+                .setDisplayName(context.getString(R.string.seek_back_seconds, this.seconds))
+                .setPlayerCommand(Player.COMMAND_SEEK_BACK)
+                .setSlots(CommandButton.SLOT_BACK)
+                .build()
+        }
+        is GenericCommandButton.SeekForward -> {
+            CommandButton
+                .Builder(skipForwardIcon(this.seconds))
+                .setDisplayName(context.getString(R.string.seek_forward_seconds, this.seconds))
+                .setPlayerCommand(Player.COMMAND_SEEK_FORWARD)
+                .setSlots(CommandButton.SLOT_FORWARD)
+                .build()
+        }
+    }
+
+private fun skipBackIcon(seconds: Int): Int =
+    when (seconds) {
+        5 -> CommandButton.ICON_SKIP_BACK_5
+        10 -> CommandButton.ICON_SKIP_BACK_10
+        15 -> CommandButton.ICON_SKIP_BACK_15
+        30 -> CommandButton.ICON_SKIP_BACK_30
+        else -> CommandButton.ICON_SKIP_BACK
+    }
+
+private fun skipForwardIcon(seconds: Int): Int =
+    when (seconds) {
+        5 -> CommandButton.ICON_SKIP_FORWARD_5
+        10 -> CommandButton.ICON_SKIP_FORWARD_10
+        15 -> CommandButton.ICON_SKIP_FORWARD_15
+        30 -> CommandButton.ICON_SKIP_FORWARD_30
+        else -> CommandButton.ICON_SKIP_FORWARD
     }
 
 /**

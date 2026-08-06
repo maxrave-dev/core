@@ -5,6 +5,7 @@ import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
+import com.maxrave.domain.extension.isPodcast
 import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
@@ -1063,6 +1064,7 @@ class MpvPlayerAdapter(
                     _currentVideoFrames.value = player.videoFrames
                     setupPlayerEventsInternal(player)
                     player.setMasterVolume((internalVolume * 100).toInt())
+                    player.setSpeechBoost(mediaItem.isPodcast())
 
                     if (cachedPrecache != null) {
                         // The precached handle already has the file loaded and held paused;
@@ -1097,7 +1099,11 @@ class MpvPlayerAdapter(
                     startPositionUpdates()
 
                     // Eagerly load audio metadata for auto crossfade / DJ mode calculations
-                    if (crossfadeEnabled && (crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO || djCrossfadeEnabled)) {
+                    if (
+                        crossfadeEnabled &&
+                        !mediaItem.isPodcast() &&
+                        (crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO || djCrossfadeEnabled)
+                    ) {
                         val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId ?: ""
                         loadAudioMetaIfNeeded(currentVideoId)
                     }
@@ -1373,6 +1379,10 @@ class MpvPlayerAdapter(
     /** Same skip rule for the CURRENT track: a video should play out to its last frame instead of fading out under the incoming song. */
     private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
 
+    private fun isNextTrackPodcast(): Boolean = playlist.getOrNull(getNextMediaItemIndex())?.isPodcast() == true
+
+    private fun isCurrentTrackPodcast(): Boolean = currentMediaItem?.isPodcast() == true
+
     /**
      * Handle track end
      */
@@ -1389,7 +1399,9 @@ class MpvPlayerAdapter(
             crossfadeEnabled &&
                 hasNextMediaItem() &&
                 !isCurrentTrackVideo() &&
-                !isNextTrackVideo()
+                !isNextTrackVideo() &&
+                !isCurrentTrackPodcast() &&
+                !isNextTrackPodcast()
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -2255,7 +2267,9 @@ class MpvPlayerAdapter(
                                 !isCrossfading &&
                                 internalPlayWhenReady &&
                                 !isCurrentTrackVideo() &&
-                                !isNextTrackVideo()
+                                !isNextTrackVideo() &&
+                                !isCurrentTrackPodcast() &&
+                                !isNextTrackPodcast()
                             ) {
                                 val player = currentPlayer
                                 if (player != null) {

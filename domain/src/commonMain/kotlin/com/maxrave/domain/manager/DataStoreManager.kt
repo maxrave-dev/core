@@ -248,9 +248,25 @@ interface DataStoreManager {
 
     fun setPlaybackSpeed(speed: Float)
 
+    val podcastPlaybackSpeed: Flow<Float>
+
+    suspend fun setPodcastPlaybackSpeed(speed: Float)
+
+    val podcastRewindSeconds: Flow<Int>
+
+    suspend fun setPodcastRewindSeconds(seconds: Int)
+
+    val podcastForwardSeconds: Flow<Int>
+
+    suspend fun setPodcastForwardSeconds(seconds: Int)
+
     val pitch: Flow<Int>
 
     fun setPitch(pitch: Int)
+
+    val podcastPitch: Flow<Int>
+
+    suspend fun setPodcastPitch(pitch: Int)
 
     val dataSyncId: Flow<String>
 
@@ -429,6 +445,12 @@ interface DataStoreManager {
         const val DEFAULT_THEME_COLOR_HEX = "FF8ECAE6"
 
         const val CROSSFADE_DURATION_AUTO = 0
+
+        const val DEFAULT_PODCAST_SEEK_SECONDS = 5
+        val PODCAST_SEEK_INTERVALS = listOf(5, 10, 15, 30, 60)
+
+        fun normalizePodcastSeekSeconds(seconds: Int): Int =
+            seconds.takeIf { it in PODCAST_SEEK_INTERVALS } ?: DEFAULT_PODCAST_SEEK_SECONDS
 
         const val PROXY_TYPE_HTTP = "http"
         const val PROXY_TYPE_SOCKS = "socks"

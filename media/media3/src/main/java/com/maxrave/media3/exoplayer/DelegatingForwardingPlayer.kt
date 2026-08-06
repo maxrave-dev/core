@@ -1,5 +1,7 @@
 package com.maxrave.media3.exoplayer
 
+import android.os.Handler
+import android.os.Looper
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -11,6 +13,8 @@ import androidx.media3.common.util.UnstableApi
 import com.maxrave.logger.Logger
 
 private const val TAG = "DelegatingForwardingPlayer"
+private const val SEEK_BUFFERING_SUPPRESSION_TIMEOUT_MS = 2_000L
+private const val TRACK_TRANSITION_BUFFERING_SUPPRESSION_TIMEOUT_MS = 15_000L
 
 /**
  * A [ForwardingPlayer] that allows runtime swapping of its underlying delegate.
@@ -78,6 +82,34 @@ internal class DelegatingForwardingPlayer(
      */
     var playlistNavigationProvider: PlaylistNavigationProvider? = null
 
+    interface SeekIncrementProvider {
+        fun getSeekBackIncrementMs(): Long
+
+        fun getSeekForwardIncrementMs(): Long
+    }
+
+    var seekIncrementProvider: SeekIncrementProvider? = null
+
+    override fun getSeekBackIncrement(): Long =
+        seekIncrementProvider?.getSeekBackIncrementMs() ?: super.getSeekBackIncrement()
+
+    override fun getSeekForwardIncrement(): Long =
+        seekIncrementProvider?.getSeekForwardIncrementMs() ?: super.getSeekForwardIncrement()
+
+    override fun seekBack() {
+        seekTo((currentPosition - seekBackIncrement).coerceAtLeast(0L))
+    }
+
+    override fun seekForward() {
+        val target = currentPosition + seekForwardIncrement
+        seekTo(if (duration > 0L) target.coerceAtMost(duration) else target)
+    }
+
+    override fun seekTo(positionMs: Long) {
+        beginSeekBufferingSuppression()
+        super.seekTo(positionMs)
+    }
+
     // ========== Playback-Ended Suppression ==========
 
     /**
@@ -93,13 +125,68 @@ internal class DelegatingForwardingPlayer(
     @Volatile
     var suppressPlaybackEnded = false
 
+    @Volatile
+    private var suppressSeekBuffering = false
+
+    @Volatile
+    private var seekWasPlaying = false
+
+    @Volatile
+    private var suppressTrackTransitionBuffering = false
+
+    @Volatile
+    private var trackTransitionWasPlaying = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var seekSuppressionGeneration = 0
+
+    fun beginSeekBufferingSuppression() {
+        val generation = ++seekSuppressionGeneration
+        seekWasPlaying = isPlaying
+        suppressSeekBuffering = true
+        mainHandler.postDelayed(
+            {
+                if (seekSuppressionGeneration == generation) {
+                    suppressSeekBuffering = false
+                }
+            },
+            SEEK_BUFFERING_SUPPRESSION_TIMEOUT_MS,
+        )
+    }
+
+    fun beginTrackTransitionBufferingSuppression() {
+        val generation = ++seekSuppressionGeneration
+        trackTransitionWasPlaying = isPlaying || playWhenReady
+        suppressTrackTransitionBuffering = true
+        mainHandler.postDelayed(
+            {
+                if (seekSuppressionGeneration == generation) {
+                    suppressTrackTransitionBuffering = false
+                }
+            },
+            TRACK_TRANSITION_BUFFERING_SUPPRESSION_TIMEOUT_MS,
+        )
+    }
+
     override fun getPlaybackState(): Int {
         val state = super.getPlaybackState()
         if (state == Player.STATE_ENDED && suppressPlaybackEnded) {
             return Player.STATE_BUFFERING
         }
+        if (state == Player.STATE_BUFFERING && (suppressSeekBuffering || suppressTrackTransitionBuffering)) {
+            return Player.STATE_READY
+        }
         return state
     }
+
+    override fun isPlaying(): Boolean =
+        if ((suppressSeekBuffering && seekWasPlaying) ||
+            (suppressTrackTransitionBuffering && trackTransitionWasPlaying)
+        ) {
+            true
+        } else {
+            super.isPlaying()
+        }
 
     // ========== Listener Tracking ==========
 
@@ -114,6 +201,20 @@ internal class DelegatingForwardingPlayer(
     override fun removeListener(listener: Player.Listener) {
         trackedListeners.remove(listener)
         super.removeListener(listener)
+    }
+
+    private val seekBufferingListener =
+        object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    suppressSeekBuffering = false
+                    suppressTrackTransitionBuffering = false
+                }
+            }
+        }
+
+    init {
+        addListener(seekBufferingListener)
     }
 
     // ========== Video Surface Tracking ==========
