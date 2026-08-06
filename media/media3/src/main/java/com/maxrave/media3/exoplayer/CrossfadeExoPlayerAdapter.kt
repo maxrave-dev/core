@@ -128,6 +128,8 @@ internal class CrossfadeExoPlayerAdapter(
     @Volatile
     private var currentPlayer: ExoPlayer? = null
 
+    private var reportedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
+
     @Volatile
     private var internalState = InternalState.IDLE
 
@@ -1371,9 +1373,11 @@ internal class CrossfadeExoPlayerAdapter(
                     // 3. Set new player as current
                     currentPlayer = player
                     currentPlayerFilter = playerFilter
+                    reportedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
 
                     // 4. Setup our listener on new player
                     setupPlayerListenerInternal(player)
+                    reportActiveAudioSession(player)
 
                     // 5. Swap ForwardingPlayer delegate (moves MediaSession's listeners from old to new)
                     forwardingPlayer.swapDelegate(player)
@@ -1490,6 +1494,7 @@ internal class CrossfadeExoPlayerAdapter(
                             // Reset retry counter on successful playback
                             retryCount = 0
                             retryVideoId = null
+                            reportActiveAudioSession(player)
                         }
 
                         Player.STATE_BUFFERING -> {
@@ -1516,6 +1521,10 @@ internal class CrossfadeExoPlayerAdapter(
                             }
                         }
                     }
+                }
+
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    reportActiveAudioSession(player, audioSessionId)
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
@@ -1651,6 +1660,21 @@ internal class CrossfadeExoPlayerAdapter(
         activePlayerListener = listener
     }
 
+    private fun reportActiveAudioSession(
+        player: ExoPlayer,
+        audioSessionId: Int = player.audioSessionId,
+    ) {
+        if (
+            player != currentPlayer ||
+            audioSessionId == C.AUDIO_SESSION_ID_UNSET ||
+            audioSessionId == reportedAudioSessionId
+        ) {
+            return
+        }
+        reportedAudioSessionId = audioSessionId
+        listeners.forEach { it.onAudioSessionIdChanged(audioSessionId) }
+    }
+
     /**
      * Clean up active player listener from whichever player has it.
      * During crossfade the listener is on secondaryPlayer, not currentPlayer.
@@ -1714,8 +1738,10 @@ internal class CrossfadeExoPlayerAdapter(
         // Promote incoming (A+1) to current.
         currentPlayer = secondaryPlayer
         currentPlayerFilter = secondaryPlayerFilter
+        reportedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
         secondaryPlayer = null
         secondaryPlayerFilter = null
+        currentPlayer?.let(::reportActiveAudioSession)
 
         // The incoming player was fading in: reduced volume + DJ filter on (and the
         // outgoing one carried any tempo/pitch match). Restore normal playback on A+1.
@@ -2562,8 +2588,10 @@ internal class CrossfadeExoPlayerAdapter(
         // Promote secondary to current
         currentPlayer = nextPlayer
         currentPlayerFilter = secondaryPlayerFilter
+        reportedAudioSessionId = C.AUDIO_SESSION_ID_UNSET
         secondaryPlayer = null
         secondaryPlayerFilter = null
+        currentPlayer?.let(::reportActiveAudioSession)
         // localCurrentMediaItemIndex already updated in triggerCrossfadeTransition()
 
         // Audio focus is held at the adapter level (see Audio Focus section),

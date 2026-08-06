@@ -2199,6 +2199,7 @@ internal class MediaServiceHandlerImpl(
             normalizeVolume = dataStoreManager.normalizeVolume.first() == TRUE
         }
         val isPodcast = player.currentMediaItem?.isPodcast() == true
+        val audioSessionId = player.audioSessionId
         if (!normalizeVolume && !isPodcast) {
             loudnessEnhancer?.enabled = false
             loudnessEnhancer?.release()
@@ -2213,13 +2214,14 @@ internal class MediaServiceHandlerImpl(
         // The old LoudnessEnhancer becomes attached to a released session and has no effect.
         // Skip entirely while casting: a Cast session has no local audio session, and
         // constructing a LoudnessEnhancer with session id 0 (AUDIO_SESSION_ID_UNSET) throws.
-        if (!_castState.value.isRemote && player.audioSessionId != PlayerConstants.AUDIO_SESSION_ID_UNSET) {
+        if (!_castState.value.isRemote && audioSessionId != PlayerConstants.AUDIO_SESSION_ID_UNSET) {
             try {
                 loudnessEnhancer?.release()
             } catch (_: Exception) {
             }
             try {
-                loudnessEnhancer = LoudnessEnhancer(player.audioSessionId)
+                loudnessEnhancer = LoudnessEnhancer(audioSessionId)
+                Logger.d(TAG, "LoudnessEnhancer attached to active session $audioSessionId")
             } catch (e: Exception) {
                 Logger.e(TAG, "mayBeNormalizeVolume: ${e.message}")
                 e.printStackTrace()
@@ -2491,6 +2493,18 @@ internal class MediaServiceHandlerImpl(
         }
     }
 
+    override fun onAudioSessionIdChanged(audioSessionId: Int) {
+        if (audioSessionId == PlayerConstants.AUDIO_SESSION_ID_UNSET || _castState.value.isRemote) return
+        coroutineScope.launch {
+            if (player.audioSessionId != audioSessionId) return@launch
+            Logger.d(
+                TAG,
+                "Active audio session ready: $audioSessionId, podcast=${player.currentMediaItem?.isPodcast() == true}",
+            )
+            mayBeNormalizeVolume()
+        }
+    }
+
     override fun onMediaItemTransition(
         mediaItem: GenericMediaItem?,
         reason: Int,
@@ -2505,7 +2519,6 @@ internal class MediaServiceHandlerImpl(
             mayBeSavePodcastPosition(nowPlayingState.value.mediaItem, currentState.progress)
         }
         Logger.w(TAG, "Smooth Switching Transition Current Position: ${player.currentPosition}")
-        mayBeNormalizeVolume()
         Logger.w(TAG, "REASON onMediaItemTransition: $reason")
         Logger.d(TAG, "Media Item Transition Media Item: ${mediaItem?.metadata?.title}")
         if (mediaItem?.mediaId != _nowPlaying.value?.mediaId) {

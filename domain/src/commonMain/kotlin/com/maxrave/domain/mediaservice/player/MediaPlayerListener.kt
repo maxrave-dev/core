@@ -16,6 +16,10 @@ interface MediaPlayerListener {
     // Default no-op so non-emitting implementors (e.g. the JVM adapter) don't have to override it.
     fun onSeeked(positionMs: Long) {}
 
+    // Android audio effects must be attached to the active player's real session, which is only
+    // available after ExoPlayer has prepared the stream.
+    fun onAudioSessionIdChanged(audioSessionId: Int) {}
+
     fun onMediaItemTransition(
         mediaItem: GenericMediaItem?,
         reason: Int,
