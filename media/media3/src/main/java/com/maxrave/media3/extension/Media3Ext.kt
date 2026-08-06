@@ -119,6 +119,8 @@ fun MediaItem.isSong(): Boolean = this.mediaMetadata.description?.contains(MERGI
 @UnstableApi
 fun MediaItem.isVideo(): Boolean = this.mediaMetadata.description?.contains(MERGING_DATA_TYPE.VIDEO) == true
 
+fun MediaItem.isPodcast(): Boolean = this.mediaMetadata.description?.contains(MERGING_DATA_TYPE.PODCAST) == true
+
 fun GenericCommandButton.toCommandButton(context: Context): CommandButton =
     when (this) {
         is GenericCommandButton.Like -> {

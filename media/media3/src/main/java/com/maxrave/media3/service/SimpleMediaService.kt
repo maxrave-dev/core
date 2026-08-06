@@ -31,6 +31,7 @@ import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
 import com.maxrave.media3.R
 import com.maxrave.media3.extension.toCommandButton
+import com.maxrave.media3.extension.isPodcast
 import com.maxrave.media3.utils.CoilBitmapLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -63,7 +64,17 @@ internal class SimpleMediaService :
 
     private val binder = MusicBinder()
 
-    private lateinit var playerNotificationManager: PlayerNotificationManager
+    private var playerNotificationManager: PlayerNotificationManager? = null
+
+    private val keepAliveNotificationPlayerListener =
+        object : Player.Listener {
+            override fun onMediaItemTransition(
+                mediaItem: androidx.media3.common.MediaItem?,
+                reason: Int,
+            ) {
+                updateKeepAliveNotificationPlayer(mediaItem)
+            }
+        }
 
     inner class MusicBinder : Binder() {
         val service: SimpleMediaService
@@ -167,9 +178,10 @@ internal class SimpleMediaService :
                         },
                     ).setMediaDescriptionAdapter(DefaultMediaDescriptionAdapter(mediaSession?.sessionActivity))
                     .build()
-            playerNotificationManager.setPlayer(player)
-            playerNotificationManager.setSmallIcon(R.drawable.mono)
-            mediaSession?.platformToken?.let { playerNotificationManager.setMediaSessionToken(it) }
+            player.addListener(keepAliveNotificationPlayerListener)
+            updateKeepAliveNotificationPlayer(player.currentMediaItem)
+            playerNotificationManager?.setSmallIcon(R.drawable.mono)
+            mediaSession?.platformToken?.let { playerNotificationManager?.setMediaSessionToken(it) }
         }
 
         simpleMediaServiceHandler.onUpdateNotification = { list ->
@@ -203,6 +215,9 @@ internal class SimpleMediaService :
     @UnstableApi
     fun release() {
         Logger.w("Service", "Starting release process")
+        player.removeListener(keepAliveNotificationPlayerListener)
+        playerNotificationManager?.setPlayer(null)
+        playerNotificationManager = null
         runBlocking {
             try {
                 // Release MediaSession (don't release player - CrossfadeExoPlayerAdapter manages it)
@@ -266,5 +281,13 @@ internal class SimpleMediaService :
         val appProcessInfo = RunningAppProcessInfo()
         ActivityManager.getMyMemoryState(appProcessInfo)
         return appProcessInfo.importance == RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    }
+
+    private fun updateKeepAliveNotificationPlayer(mediaItem: androidx.media3.common.MediaItem?) {
+        // PlayerNotificationManager predates Media3's session notification and publishes a
+        // second set of transport controls. On podcasts that duplicate notification can take
+        // over while paused, replacing the configured timed seek buttons with generic controls.
+        // Keep the legacy keep-alive behavior for music, but let the session own podcast media.
+        playerNotificationManager?.setPlayer(if (mediaItem?.isPodcast() == true) null else player)
     }
 }

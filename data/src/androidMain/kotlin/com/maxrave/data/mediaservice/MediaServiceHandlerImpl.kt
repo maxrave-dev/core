@@ -203,6 +203,7 @@ internal class MediaServiceHandlerImpl(
 
     private var skipSilent = false
 
+    @Volatile
     private var normalizeVolume = false
 
     private var watchTimeList: ArrayList<Float> = arrayListOf()
@@ -289,8 +290,6 @@ internal class MediaServiceHandlerImpl(
         getFormatJob = Job()
         jobWatchtime = Job()
         skipSilent = runBlocking { dataStoreManager.skipSilent.first() == TRUE }
-        normalizeVolume =
-            runBlocking { dataStoreManager.normalizeVolume.first() == TRUE }
         _nowPlaying.value = player.currentMediaItem
         if (runBlocking { dataStoreManager.saveStateOfPlayback.first() } == TRUE) {
             Logger.d(TAG, "SaveStateOfPlayback TRUE")
@@ -338,6 +337,13 @@ internal class MediaServiceHandlerImpl(
                         if (player.currentMediaItem?.isPodcast() == true) {
                             updateNotification()
                         }
+                    }
+                }
+            val normalizeVolumeSettingJob =
+                launch {
+                    dataStoreManager.normalizeVolume.distinctUntilChanged().collectLatest { enabled ->
+                        normalizeVolume = enabled == TRUE
+                        mayBeNormalizeVolume()
                     }
                 }
             val skipSegmentsJob =
@@ -483,6 +489,7 @@ internal class MediaServiceHandlerImpl(
                 }
             controlStateJob.join()
             podcastSeekSettingsJob.join()
+            normalizeVolumeSettingJob.join()
             skipSegmentsJob.join()
             playbackJob.join()
             playbackSpeedPitchJob.join()
@@ -2220,9 +2227,6 @@ internal class MediaServiceHandlerImpl(
     }
 
     override fun mayBeNormalizeVolume() {
-        runBlocking {
-            normalizeVolume = dataStoreManager.normalizeVolume.first() == TRUE
-        }
         val isPodcast = player.currentMediaItem?.isPodcast() == true
         val audioSessionId = player.audioSessionId
         if (!normalizeVolume && !isPodcast) {
