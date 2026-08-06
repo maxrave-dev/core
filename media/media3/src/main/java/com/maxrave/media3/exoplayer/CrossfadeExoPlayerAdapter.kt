@@ -645,6 +645,7 @@ internal class CrossfadeExoPlayerAdapter(
         }
         currentPlayer?.let { player ->
             try {
+                forwardingPlayer.beginSeekBufferingSuppression()
                 player.seekTo(positionMs)
                 cachedPosition = positionMs
             } catch (e: Exception) {
