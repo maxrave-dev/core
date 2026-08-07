@@ -78,6 +78,40 @@ internal class DelegatingForwardingPlayer(
      */
     var playlistNavigationProvider: PlaylistNavigationProvider? = null
 
+    /**
+     * Routes MediaSession transport controls through [CrossfadeExoPlayerAdapter].
+     *
+     * The underlying ExoPlayers deliberately use `handleAudioFocus=false` because
+     * focus belongs to the adapter for the lifetime of the crossfade session. Calling
+     * the delegate directly would therefore start playback without requesting focus.
+     */
+    interface PlaybackControlProvider {
+        fun play()
+
+        fun pause()
+
+        var playWhenReady: Boolean
+    }
+
+    var playbackControlProvider: PlaybackControlProvider? = null
+
+    override fun play() {
+        playbackControlProvider?.play() ?: super.play()
+    }
+
+    override fun pause() {
+        playbackControlProvider?.pause() ?: super.pause()
+    }
+
+    override fun setPlayWhenReady(playWhenReady: Boolean) {
+        playbackControlProvider?.let {
+            it.playWhenReady = playWhenReady
+        } ?: super.setPlayWhenReady(playWhenReady)
+    }
+
+    override fun getPlayWhenReady(): Boolean =
+        playbackControlProvider?.playWhenReady ?: super.getPlayWhenReady()
+
     // ========== Playback-Ended Suppression ==========
 
     /**

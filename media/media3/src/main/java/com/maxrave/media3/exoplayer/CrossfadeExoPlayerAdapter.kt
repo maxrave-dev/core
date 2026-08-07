@@ -131,7 +131,7 @@ internal class CrossfadeExoPlayerAdapter(
     private var internalState = InternalState.IDLE
 
     @Volatile
-    private var internalPlayWhenReady = true
+    private var internalPlayWhenReady = false
 
     @Volatile
     private var internalVolume = 1.0f
@@ -238,10 +238,15 @@ internal class CrossfadeExoPlayerAdapter(
             .build()
     }
 
-    /** Request app-level audio focus once; idempotent while focus is held. */
+    /**
+     * Request app-level audio focus before every playback start.
+     *
+     * Reissuing the request is intentional: Android Auto and Bluetooth route changes
+     * can leave a stale local `hasAudioFocus` flag while the car owns a different media
+     * route. The platform request is cheap and restores the correct focus owner.
+     */
     private fun requestAudioFocusInternal(): Boolean {
         val am = audioManager ?: return true
-        if (hasAudioFocus) return true
         val granted = am.requestAudioFocus(audioFocusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         hasAudioFocus = granted
         Logger.d(TAG, "requestAudioFocus -> granted=$granted")
@@ -370,6 +375,21 @@ internal class CrossfadeExoPlayerAdapter(
                 override fun seekToPrevious(): Unit = this@CrossfadeExoPlayerAdapter.seekToPrevious()
 
                 override fun seekToPreviousMediaItem(): Unit = this@CrossfadeExoPlayerAdapter.seekToPreviousMediaItem()
+            }
+
+        // MediaSession and Android Auto control forwardingPlayer, while manual audio
+        // focus belongs to this adapter. Keep all transport commands on the same path.
+        forwardingPlayer.playbackControlProvider =
+            object : DelegatingForwardingPlayer.PlaybackControlProvider {
+                override fun play(): Unit = this@CrossfadeExoPlayerAdapter.play()
+
+                override fun pause(): Unit = this@CrossfadeExoPlayerAdapter.pause()
+
+                override var playWhenReady: Boolean
+                    get() = this@CrossfadeExoPlayerAdapter.playWhenReady
+                    set(value) {
+                        this@CrossfadeExoPlayerAdapter.playWhenReady = value
+                    }
             }
     }
 
@@ -523,8 +543,10 @@ internal class CrossfadeExoPlayerAdapter(
 
     override fun play() {
         Logger.d(TAG, "play() called (state: $internalState, playWhenReady: $internalPlayWhenReady)")
+        // Record playback intent immediately. This is important when a controller sends
+        // Play while the saved queue is still being restored and the adapter is IDLE.
+        internalPlayWhenReady = true
         castRemotePlayer?.let { remote ->
-            internalPlayWhenReady = true
             remote.play()
             return
         }
@@ -532,10 +554,13 @@ internal class CrossfadeExoPlayerAdapter(
             when (internalState) {
                 InternalState.READY, InternalState.ENDED, InternalState.PAUSED -> {
                     currentPlayer?.let { player ->
-                        requestAudioFocusInternal()
+                        if (!requestAudioFocusInternal()) {
+                            Logger.w(TAG, "Play deferred: audio focus not granted")
+                            internalPlayWhenReady = false
+                            return@launch
+                        }
                         player.play()
                         transitionToState(InternalState.PLAYING)
-                        internalPlayWhenReady = true
                     } ?: Logger.w(TAG, "Play called but currentPlayer is null")
                 }
 
@@ -545,9 +570,19 @@ internal class CrossfadeExoPlayerAdapter(
                 }
 
                 InternalState.PLAYING -> {
-                    internalPlayWhenReady = true
-                    cachedIsLoading = false
+                    if (!requestAudioFocusInternal()) {
+                        Logger.w(TAG, "Play stopped: audio focus not granted")
+                        currentPlayer?.pause()
+                        internalPlayWhenReady = false
+                        transitionToState(InternalState.PAUSED)
+                    } else {
+                        currentPlayer?.play()
+                        cachedIsLoading = false
+                    }
                 }
+
+                InternalState.IDLE ->
+                    Logger.d(TAG, "Play: During IDLE - will auto-play when an item is restored")
 
                 else -> {
                     Logger.w(TAG, "Play: Called in invalid state: $internalState")
@@ -1409,11 +1444,18 @@ internal class CrossfadeExoPlayerAdapter(
                         cachedPosition = startPositionMs
                     }
 
-                    // Auto-play if requested
-                    if (shouldPlay) {
-                        requestAudioFocusInternal()
-                        player.play()
-                        transitionToState(InternalState.PLAYING)
+                    // Use the latest intent, not only the value captured when loading began:
+                    // Play/Pause can arrive from Android Auto while URL resolution is running.
+                    if (internalPlayWhenReady) {
+                        if (requestAudioFocusInternal()) {
+                            player.play()
+                            transitionToState(InternalState.PLAYING)
+                        } else {
+                            Logger.w(TAG, "Auto-play aborted: audio focus not granted")
+                            player.pause()
+                            internalPlayWhenReady = false
+                            transitionToState(InternalState.READY)
+                        }
                     } else {
                         player.pause()
                         transitionToState(InternalState.READY)
@@ -1832,8 +1874,12 @@ internal class CrossfadeExoPlayerAdapter(
                 forwardingPlayer.swapDelegate(nextPlayer)
 
                 // 2. Now play - MediaSession's listener is attached and receives state change events
-                requestAudioFocusInternal()
-                nextPlayer.play()
+                if (requestAudioFocusInternal()) {
+                    nextPlayer.play()
+                } else {
+                    Logger.w(TAG, "Crossfade aborted: audio focus not granted")
+                    nextPlayer.pause()
+                }
 
                 forwardingPlayer.suppressPlaybackEnded = false
 
