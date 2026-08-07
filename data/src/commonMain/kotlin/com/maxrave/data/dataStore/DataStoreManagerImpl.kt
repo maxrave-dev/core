@@ -1312,6 +1312,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val ringPlayerEnabled: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[RING_PLAYER_ENABLED] ?: FALSE
+        }
+
+    override suspend fun setRingPlayerEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[RING_PLAYER_ENABLED] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
     override val explicitContentEnabled: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[EXPLICIT_CONTENT_ENABLED] ?: TRUE
@@ -1566,6 +1579,8 @@ internal class DataStoreManagerImpl(
         val BACKUP_DOWNLOADED = stringPreferencesKey("backup_downloaded")
 
         val LIQUID_GLASS = stringPreferencesKey("liquid_glass")
+
+        val RING_PLAYER_ENABLED = stringPreferencesKey("ring_player_enabled")
 
         val EXPLICIT_CONTENT_ENABLED = stringPreferencesKey("explicit_content_enabled")
 

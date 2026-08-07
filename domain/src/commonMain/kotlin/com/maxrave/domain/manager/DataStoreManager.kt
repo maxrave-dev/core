@@ -329,6 +329,11 @@ interface DataStoreManager {
 
     suspend fun setEnableLiquidGlass(enable: Boolean)
 
+    /** Whether the player should use the ring/vinyl UI instead of the normal layout. */
+    val ringPlayerEnabled: Flow<String>
+
+    suspend fun setRingPlayerEnabled(enabled: Boolean)
+
     /** One of [THEME_MODE_SYSTEM], [THEME_MODE_DARK], [THEME_MODE_LIGHT]. */
     val themeMode: Flow<String>
 
