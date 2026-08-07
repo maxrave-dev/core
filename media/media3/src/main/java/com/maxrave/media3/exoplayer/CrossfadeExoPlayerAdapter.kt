@@ -381,16 +381,38 @@ internal class CrossfadeExoPlayerAdapter(
         // focus belongs to this adapter. Keep all transport commands on the same path.
         forwardingPlayer.playbackControlProvider =
             object : DelegatingForwardingPlayer.PlaybackControlProvider {
-                override fun play(): Unit = this@CrossfadeExoPlayerAdapter.play()
-
-                override fun pause(): Unit = this@CrossfadeExoPlayerAdapter.pause()
-
-                override var playWhenReady: Boolean
-                    get() = this@CrossfadeExoPlayerAdapter.playWhenReady
-                    set(value) {
-                        this@CrossfadeExoPlayerAdapter.playWhenReady = value
-                    }
+                override fun setPlayWhenReady(playWhenReady: Boolean): Boolean =
+                    handleMediaSessionPlaybackIntent(playWhenReady)
             }
+
+        forwardingPlayer.mediaItemMutationProvider =
+            object : DelegatingForwardingPlayer.MediaItemMutationProvider {
+                override fun shouldDelegateSetMediaItems(mediaItems: List<MediaItem>): Boolean =
+                    playlist.isEmpty() && currentPlayer?.currentMediaItem == null
+            }
+    }
+
+    /**
+     * Keeps MediaSession's synchronous Player state and this adapter's playback intent
+     * on the same path. The underlying ExoPlayers do not manage focus themselves, so a
+     * controller must not be allowed to set playWhenReady=true before focus is acquired.
+     */
+    private fun handleMediaSessionPlaybackIntent(playWhenReady: Boolean): Boolean {
+        internalPlayWhenReady = playWhenReady
+        if (!playWhenReady) {
+            forwardingPlayer.suppressPlaybackEnded = false
+            return true
+        }
+
+        // A Cast receiver owns its own audio focus. Local playback remains suspended.
+        if (isCastActive) return true
+
+        val granted = requestAudioFocusInternal()
+        if (!granted) {
+            internalPlayWhenReady = false
+            Logger.w(TAG, "MediaSession play rejected: audio focus not granted")
+        }
+        return granted
     }
 
     // ========== Cast Remote Routing ==========
@@ -940,7 +962,7 @@ internal class CrossfadeExoPlayerAdapter(
             localCurrentMediaItemIndex = -1
             clearShuffleOrder()
             notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
-            cleanupCurrentPlayerInternal()
+            resetCurrentPlayerToIdleInternal()
             clearAllPrecacheInternal()
         }
     }
@@ -1722,6 +1744,38 @@ internal class CrossfadeExoPlayerAdapter(
 
         currentPlayer?.let { cleanupPlayerInternal(it) }
         currentPlayer = null
+    }
+
+    /**
+     * Clears the active item without exposing a released/empty READY player through
+     * [forwardingPlayer]. Media3's CastPlayer wrapper rejects that transient state with
+     * `Empty playlist only allowed in STATE_IDLE or STATE_ENDED`.
+     *
+     * Queue replacement calls clear before the replacement player has finished resolving
+     * its stream URL. Move MediaSession's listeners to a fresh idle delegate first, then
+     * release the outgoing player after it is no longer observable.
+     */
+    private fun resetCurrentPlayerToIdleInternal() {
+        stopPositionUpdates()
+        cleanupPlayerListenerInternal()
+
+        crossfadeJob?.cancel()
+        crossfadeJob = null
+        setCrossfading(false)
+        forwardingPlayer.suppressPlaybackEnded = false
+
+        val outgoingPlayer = currentPlayer
+        val idlePlayerWithFilter = createExoPlayerInstance()
+        currentPlayer = idlePlayerWithFilter.player
+        currentPlayerFilter = idlePlayerWithFilter.filter
+        setupPlayerListenerInternal(idlePlayerWithFilter.player)
+        forwardingPlayer.swapDelegate(idlePlayerWithFilter.player)
+        transitionToState(InternalState.IDLE)
+        forwardingPlayer.notifyMediaItemChanged()
+
+        if (outgoingPlayer != null && outgoingPlayer !== idlePlayerWithFilter.player) {
+            cleanupPlayerInternal(outgoingPlayer)
+        }
     }
 
     /**
@@ -2881,5 +2935,10 @@ internal class CrossfadeExoPlayerAdapter(
     private fun notifyTimelineChanged(reason: String) {
         val list = getShuffledMediaItemList()
         listeners.forEach { it.onTimelineChanged(list, reason) }
+        // The stable forwarding player exposes adapter-level next/previous commands,
+        // while each underlying ExoPlayer contains only the active item. Whenever the
+        // app-owned queue grows or shrinks, MediaSession must explicitly re-query those
+        // commands (notably after a Home/Search radio queue adds its second track).
+        forwardingPlayer.notifyAvailableCommandsChanged()
     }
 }

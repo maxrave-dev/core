@@ -4,6 +4,7 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.TextureView
+import androidx.media3.common.FlagSet
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -86,31 +87,77 @@ internal class DelegatingForwardingPlayer(
      * the delegate directly would therefore start playback without requesting focus.
      */
     interface PlaybackControlProvider {
-        fun play()
-
-        fun pause()
-
-        var playWhenReady: Boolean
+        /**
+         * Synchronizes the adapter's playback intent and acquires audio focus before
+         * MediaSession changes the active ExoPlayer's playWhenReady value.
+         *
+         * @return false when a start request must be rejected (for example, focus denied).
+         */
+        fun setPlayWhenReady(playWhenReady: Boolean): Boolean
     }
 
     var playbackControlProvider: PlaybackControlProvider? = null
 
+    /**
+     * Decides whether controller-driven playlist replacement should reach the active
+     * single-item ExoPlayer. Android Auto selections are resolved by the session callback,
+     * which has already rebuilt the adapter-owned queue before Media3 applies its result.
+     */
+    interface MediaItemMutationProvider {
+        fun shouldDelegateSetMediaItems(mediaItems: List<MediaItem>): Boolean
+    }
+
+    var mediaItemMutationProvider: MediaItemMutationProvider? = null
+
     override fun play() {
-        playbackControlProvider?.play() ?: super.play()
+        val provider = playbackControlProvider
+        if (provider == null || provider.setPlayWhenReady(true)) {
+            super.play()
+        }
     }
 
     override fun pause() {
-        playbackControlProvider?.pause() ?: super.pause()
+        playbackControlProvider?.setPlayWhenReady(false)
+        super.pause()
     }
 
     override fun setPlayWhenReady(playWhenReady: Boolean) {
-        playbackControlProvider?.let {
-            it.playWhenReady = playWhenReady
-        } ?: super.setPlayWhenReady(playWhenReady)
+        val provider = playbackControlProvider
+        if (provider == null || provider.setPlayWhenReady(playWhenReady)) {
+            super.setPlayWhenReady(playWhenReady)
+        }
     }
 
-    override fun getPlayWhenReady(): Boolean =
-        playbackControlProvider?.playWhenReady ?: super.getPlayWhenReady()
+    override fun setMediaItems(
+        mediaItems: MutableList<MediaItem>,
+        resetPosition: Boolean,
+    ) {
+        if (shouldDelegateSetMediaItems(mediaItems)) {
+            super.setMediaItems(mediaItems, resetPosition)
+        } else {
+            onAdapterOwnedMediaItemsPreserved(mediaItems)
+        }
+    }
+
+    override fun setMediaItems(
+        mediaItems: MutableList<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ) {
+        if (shouldDelegateSetMediaItems(mediaItems)) {
+            super.setMediaItems(mediaItems, startIndex, startPositionMs)
+        } else {
+            onAdapterOwnedMediaItemsPreserved(mediaItems)
+        }
+    }
+
+    private fun shouldDelegateSetMediaItems(mediaItems: List<MediaItem>): Boolean =
+        mediaItemMutationProvider?.shouldDelegateSetMediaItems(mediaItems) ?: true
+
+    private fun onAdapterOwnedMediaItemsPreserved(mediaItems: List<MediaItem>) {
+        Logger.d(TAG, "Preserving adapter-owned queue; ignored controller setMediaItems(size=${mediaItems.size})")
+        notifyAvailableCommandsChanged()
+    }
 
     // ========== Playback-Ended Suppression ==========
 
@@ -431,6 +478,15 @@ internal class DelegatingForwardingPlayer(
         val mediaItem = player.currentMediaItem ?: MediaItem.EMPTY
         val metadata = player.mediaMetadata
         val commands = getAvailableCommands()
+        val events =
+            Player.Events(
+                FlagSet
+                    .Builder()
+                    .add(Player.EVENT_MEDIA_ITEM_TRANSITION)
+                    .add(Player.EVENT_MEDIA_METADATA_CHANGED)
+                    .add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
+                    .build(),
+            )
 
         Logger.d(TAG, "Manually notifying ${trackedListeners.size} listeners about media item change: ${metadata.title}")
 
@@ -439,8 +495,33 @@ internal class DelegatingForwardingPlayer(
                 listener.onMediaItemTransition(mediaItem, Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
                 listener.onMediaMetadataChanged(metadata)
                 listener.onAvailableCommandsChanged(commands)
+                listener.onEvents(this, events)
             } catch (e: Exception) {
                 Logger.w(TAG, "Error notifying listener about media item change: ${e.message}")
+            }
+        }
+    }
+
+    /** Notify MediaSession that adapter-level next/previous availability changed. */
+    fun notifyAvailableCommandsChanged() {
+        val commands = getAvailableCommands()
+        val events =
+            Player.Events(
+                FlagSet
+                    .Builder()
+                    .add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
+                    .build(),
+            )
+        trackedListeners.toList().forEach { listener ->
+            try {
+                listener.onAvailableCommandsChanged(commands)
+                // ForwardingSimpleBasePlayer (used by Media3 CastPlayer) invalidates its
+                // cached state from the batched onEvents callback. Sending only the
+                // individual callback leaves Android Auto with stale next/previous actions
+                // until the next natural ExoPlayer event (often the track transition).
+                listener.onEvents(this, events)
+            } catch (e: Exception) {
+                Logger.w(TAG, "Error notifying listener about available commands: ${e.message}")
             }
         }
     }
