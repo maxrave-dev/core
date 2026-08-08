@@ -5,6 +5,8 @@ import com.maxrave.spotify.model.response.spotify.CanvasResponse
 import com.maxrave.spotify.model.response.spotify.ClientTokenResponse
 import com.maxrave.spotify.model.response.spotify.PersonalTokenResponse
 import com.maxrave.spotify.model.response.spotify.SpotifyLyricsResponse
+import com.maxrave.spotify.model.response.spotify.playlist.SpotifyLibraryPlaylistsResponse
+import com.maxrave.spotify.model.response.spotify.playlist.SpotifyPlaylistTracksResponse
 import com.maxrave.spotify.model.response.spotify.search.SpotifySearchResponse
 import io.ktor.client.call.body
 import io.ktor.client.engine.ProxyBuilder
@@ -94,5 +96,34 @@ class Spotify {
         clientToken: String,
     ) = runCatching {
         spotifyClient.getSpotifyCanvas(trackId, token, clientToken).body<CanvasResponse>()
+    }
+
+    /**
+     * Fetch the logged-in user's saved Spotify playlists.
+     */
+    suspend fun getUserPlaylists(
+        authToken: String,
+        clientToken: String,
+        offset: Int = 0,
+        limit: Int = 50,
+    ) = runCatching {
+        spotifyClient
+            .getSpotifyUserPlaylists(authToken, clientToken, offset, limit)
+            .body<SpotifyLibraryPlaylistsResponse>()
+    }
+
+    /**
+     * Fetch the tracks of a single Spotify playlist.
+     */
+    suspend fun getPlaylistTracks(
+        playlistId: String,
+        authToken: String,
+        clientToken: String,
+        offset: Int = 0,
+        limit: Int = 25,
+    ) = runCatching {
+        spotifyClient
+            .getSpotifyPlaylistTracks(playlistId, authToken, clientToken, offset, limit)
+            .body<SpotifyPlaylistTracksResponse>()
     }
 }

@@ -7,6 +7,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.maxrave.data.dataStore.DataStoreManagerImpl
 import com.maxrave.data.dataStore.createDataStoreInstance
 import com.maxrave.data.db.Converters
+import com.maxrave.data.spotify.SpotifyTokenProvider
 import com.maxrave.data.db.MusicDatabase
 import com.maxrave.data.db.datasource.AnalyticsDatasource
 import com.maxrave.data.db.datasource.LocalDataSource
@@ -64,6 +65,10 @@ val databaseModule =
 
         single(createdAtStart = true) {
             Spotify()
+        }
+
+        single(createdAtStart = true) {
+            SpotifyTokenProvider(get<Spotify>())
         }
 
         single(createdAtStart = true) {

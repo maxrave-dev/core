@@ -210,6 +210,69 @@ class SpotifyClient {
     // {"searchTerm":"trình+hieuthuhai","offset":0,"limit":20,"numberOfTopResults":20,"includeAudiobooks":true,"includePreReleases":false}
     // {"persistedQuery":{"version":1,"sha256Hash":"e4ed1f91a2cc5415befedb85acf8671dc1a4bf3ca1a5b945a6386101a22e28a6"}}
 
+    /**
+     * Fetch the logged-in user's saved playlists ("Your Library" filtered to Playlists).
+     * Persisted query hash / operation reverse-engineered from Spotify's web player
+     * (same one used by third-party unofficial clients, e.g. spotube's Spotify plugin).
+     */
+    suspend fun getSpotifyUserPlaylists(
+        authToken: String,
+        clientToken: String,
+        offset: Int = 0,
+        limit: Int = 50,
+    ) = spotifyClient.get("https://api-partner.spotify.com/pathfinder/v1/query?operationName=libraryV3") {
+        userAgent(USER_AGENT)
+        contentType(ContentType.Application.Json)
+        header("Authorization", "Bearer $authToken")
+        header("Client-Token", clientToken)
+        header(
+            HttpHeaders
+                .AcceptEncoding,
+            "gzip, deflate, br",
+        )
+        val variable =
+            "{\"filters\":[\"Playlists\"],\"order\":null,\"textFilter\":\"\",\"features\":[]," +
+                "\"limit\":$limit,\"offset\":$offset,\"flatten\":true,\"expandedFolders\":[]," +
+                "\"folderUri\":null,\"includeFoldersWhenFlattening\":true}"
+        val sha = "973e511ca44261fda7eebac8b653155e7caee3675abb4fb110cc1b8c78b091c3"
+        parameter("variables", variable)
+        parameter(
+            "extensions",
+            "{\"persistedQuery\":{\"version\":1,\"sha256Hash\":\"${sha}\"}}",
+        )
+    }
+
+    /**
+     * Fetch the tracks of a single playlist.
+     * Persisted query hash / operation reverse-engineered from Spotify's web player.
+     */
+    suspend fun getSpotifyPlaylistTracks(
+        playlistId: String,
+        authToken: String,
+        clientToken: String,
+        offset: Int = 0,
+        limit: Int = 25,
+    ) = spotifyClient.get("https://api-partner.spotify.com/pathfinder/v1/query?operationName=fetchPlaylist") {
+        userAgent(USER_AGENT)
+        contentType(ContentType.Application.Json)
+        header("Authorization", "Bearer $authToken")
+        header("Client-Token", clientToken)
+        header(
+            HttpHeaders
+                .AcceptEncoding,
+            "gzip, deflate, br",
+        )
+        val variable =
+            "{\"uri\":\"spotify:playlist:$playlistId\",\"offset\":$offset,\"limit\":$limit," +
+                "\"enableWatchFeedEntrypoint\":true}"
+        val sha = "cd2275433b29f7316176e7b5b5e098ae7744724e1a52d63549c76636b3257749"
+        parameter("variables", variable)
+        parameter(
+            "extensions",
+            "{\"persistedQuery\":{\"version\":1,\"sha256Hash\":\"${sha}\"}}",
+        )
+    }
+
     suspend fun getSpotifyCanvas(
         trackId: String,
         token: String,
