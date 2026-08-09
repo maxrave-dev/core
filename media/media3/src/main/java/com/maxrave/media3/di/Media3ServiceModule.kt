@@ -268,7 +268,6 @@ private fun provideResolvingDataSourceFactory(
                     )
                 }
             }
-            }
             Logger.w("Stream", "Downloaded $mediaId")
             return@Factory dataSpec.subrange(dataSpec.uriPositionOffset, chunkLength)
         }
