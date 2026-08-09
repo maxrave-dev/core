@@ -91,6 +91,32 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val moodAndGenresCache: Flow<String?> =
+        settingsDataStore.data.map { preferences ->
+            preferences[MOOD_AND_GENRES_CACHE]
+        }
+
+    override suspend fun setMoodAndGenresCache(json: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[MOOD_AND_GENRES_CACHE] = json
+            }
+        }
+    }
+
+    override val moodArtworkCache: Flow<String?> =
+        settingsDataStore.data.map { preferences ->
+            preferences[MOOD_ARTWORK_CACHE]
+        }
+
+    override suspend fun setMoodArtworkCache(json: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[MOOD_ARTWORK_CACHE] = json
+            }
+        }
+    }
+
     override val quality: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[QUALITY] ?: COMMON_QUALITY.items[0].toString()
@@ -951,44 +977,6 @@ internal class DataStoreManagerImpl(
         }
     }
 
-    override val blurFullscreenLyrics =
-        settingsDataStore.data.map { preferences ->
-            preferences[BLUR_FULLSCREEN_LYRICS] ?: FALSE
-        }
-
-    override suspend fun setBlurFullscreenLyrics(blur: Boolean) {
-        withContext(Dispatchers.IO) {
-            if (blur) {
-                settingsDataStore.edit { settings ->
-                    settings[BLUR_FULLSCREEN_LYRICS] = TRUE
-                }
-            } else {
-                settingsDataStore.edit { settings ->
-                    settings[BLUR_FULLSCREEN_LYRICS] = FALSE
-                }
-            }
-        }
-    }
-
-    override val blurPlayerBackground =
-        settingsDataStore.data.map { preferences ->
-            preferences[BLUR_PLAYER_BACKGROUND] ?: FALSE
-        }
-
-    override suspend fun setBlurPlayerBackground(blur: Boolean) {
-        withContext(Dispatchers.IO) {
-            if (blur) {
-                settingsDataStore.edit { settings ->
-                    settings[BLUR_PLAYER_BACKGROUND] = TRUE
-                }
-            } else {
-                settingsDataStore.edit { settings ->
-                    settings[BLUR_PLAYER_BACKGROUND] = FALSE
-                }
-            }
-        }
-    }
-
     override val playbackSpeed =
         settingsDataStore.data.map { preferences ->
             preferences[PLAYBACK_SPEED] ?: 1.0f
@@ -1369,6 +1357,48 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val lastfmSessionKey: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[LASTFM_SESSION_KEY] ?: ""
+        }
+
+    override val lastfmUsername: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[LASTFM_USERNAME] ?: ""
+        }
+
+    /**
+     * Key and username are written together, and an empty key clears both.
+     *
+     * They only mean anything as a pair: a username with no key cannot scrobble, and a key with no
+     * username leaves settings unable to say whose account is connected. One edit also means
+     * logging out cannot leave half the pair behind if the process dies mid-way.
+     */
+    override suspend fun setLastfmSession(
+        sessionKey: String,
+        username: String,
+    ) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[LASTFM_SESSION_KEY] = sessionKey
+                settings[LASTFM_USERNAME] = if (sessionKey.isEmpty()) "" else username
+            }
+        }
+    }
+
+    override val lastfmScrobbleEnabled: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[LASTFM_SCROBBLE_ENABLED] ?: TRUE
+        }
+
+    override suspend fun setLastfmScrobbleEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[LASTFM_SCROBBLE_ENABLED] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
     override val localTrackingEnabled: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[LOCAL_TRACKING_ENABLED] ?: FALSE
@@ -1455,6 +1485,8 @@ internal class DataStoreManagerImpl(
         val PAGE_ID = stringPreferencesKey("page_id")
         val LOGGED_IN = stringPreferencesKey("logged_in")
         val LOCATION = stringPreferencesKey("location")
+        val MOOD_AND_GENRES_CACHE = stringPreferencesKey("mood_and_genres_cache")
+        val MOOD_ARTWORK_CACHE = stringPreferencesKey("mood_artwork_cache")
         val QUALITY = stringPreferencesKey("quality")
         val DOWNLOAD_QUALITY = stringPreferencesKey("download_quality")
         val VIDEO_DOWNLOAD_QUALITY = stringPreferencesKey("video_download_quality")
@@ -1511,8 +1543,6 @@ internal class DataStoreManagerImpl(
         val SHOULD_SHOW_LOG_IN_REQUIRED_ALERT = stringPreferencesKey("should_show_log_in_required_alert")
         val AUTO_CHECK_FOR_UPDATES = stringPreferencesKey("auto_check_for_updates")
         val UPDATE_CHANNEL = stringPreferencesKey("update_channel")
-        val BLUR_FULLSCREEN_LYRICS = stringPreferencesKey("blur_fullscreen_lyrics")
-        val BLUR_PLAYER_BACKGROUND = stringPreferencesKey("blur_player_background")
         val PLAYBACK_SPEED = floatPreferencesKey("playback_speed")
         val PITCH = intPreferencesKey("pitch")
         val OPEN_APP_TIME = intPreferencesKey("open_app_time")
@@ -1541,6 +1571,10 @@ internal class DataStoreManagerImpl(
 
         val DISCORD_TOKEN = stringPreferencesKey("discord_token")
         val RICH_PRESENCE = stringPreferencesKey("rich_presence")
+
+        val LASTFM_SESSION_KEY = stringPreferencesKey("lastfm_session_key")
+        val LASTFM_USERNAME = stringPreferencesKey("lastfm_username")
+        val LASTFM_SCROBBLE_ENABLED = stringPreferencesKey("lastfm_scrobble_enabled")
 
         val LOCAL_TRACKING_ENABLED = stringPreferencesKey("local_tracking_enabled")
 

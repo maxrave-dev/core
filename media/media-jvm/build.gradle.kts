@@ -20,7 +20,7 @@ kotlin {
         implementation(libs.kotlinx.serialization.json)
         implementation(libs.kotlinx.coroutinesSwing)
 
-        // VLC
-        implementation(libs.vlcj)
+        // mpv — libmpv is bound through JNA (see MpvLibrary).
+        implementation(libs.jna)
     }
 }

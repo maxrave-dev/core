@@ -9,13 +9,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.Image
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,11 +24,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -40,17 +41,13 @@ import coil3.request.crossfade
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.streams.TimeLine
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
-import com.simpmusic.media_jvm.VlcPlayerAdapter
-import com.simpmusic.media_jvm.VlcVideoSurfacePanel
+import com.simpmusic.media_jvm.mpv.MpvPlayer
+import com.simpmusic.media_jvm.mpv.MpvPlayerAdapter
+import com.simpmusic.media_jvm.mpv.MpvVideoFrameSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.swing.Swing
+import kotlinx.coroutines.withContext
 import org.koin.compose.koinInject
-import uk.co.caprica.vlcj.factory.MediaPlayerFactory
-import uk.co.caprica.vlcj.player.base.MediaPlayer
-import uk.co.caprica.vlcj.player.base.MediaPlayerEventAdapter
-import java.awt.Dimension
-import javax.swing.JPanel
 
 @Composable
 fun MediaPlayerViewWithUrl(
@@ -58,42 +55,29 @@ fun MediaPlayerViewWithUrl(
     modifier: Modifier,
 ) {
     val scope = rememberCoroutineScope()
-    var videoPanel by remember { mutableStateOf<VlcVideoSurfacePanel?>(null) }
-    var vlcFactory by remember { mutableStateOf<MediaPlayerFactory?>(null) }
-    var vlcPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var frameSource by remember { mutableStateOf<MpvVideoFrameSource?>(null) }
+    var mpvPlayer by remember { mutableStateOf<MpvPlayer?>(null) }
 
     DisposableEffect(url) {
-        scope.launch(Dispatchers.Swing) {
-            val factory = MediaPlayerFactory()
-            vlcFactory = factory
-            val panel = VlcVideoSurfacePanel()
-
-            val player = factory.mediaPlayers().newEmbeddedMediaPlayer()
-            val surface = panel.createVideoSurface(factory)
-            player.videoSurface().set(surface)
-            vlcPlayer = player
-
-            player.events().addMediaPlayerEventListener(
-                object : MediaPlayerEventAdapter() {
-                    override fun finished(mediaPlayer: MediaPlayer) {
-                        // VLCJ deadlocks if you call player methods from the event callback thread.
-                        // Dispatch replay onto the Swing EDT to avoid the deadlock.
-                        scope.launch(Dispatchers.Swing) {
-                            mediaPlayer.media().play(url)
-                        }
-                    }
-                },
-            )
-
-            videoPanel = panel
-            player.media().play(url)
+        // Creating the handle no longer touches Swing (the render target is a plain frame
+        // flow), so the blocking mpv_create/mpv_initialize pair runs on IO instead of the EDT.
+        scope.launch(Dispatchers.IO) {
+            // audioOnly = false attaches the software render context before the first loadfile,
+            // which render.h requires. Returns null when libmpv is missing; the Box below then
+            // simply renders nothing, and MpvPlayer.create() has already logged why.
+            val player = MpvPlayer.create(audioOnly = false)
+            if (player != null) {
+                mpvPlayer = player
+                // mpv loops natively, so no end-of-file listener is needed.
+                player.setLooping(true)
+                frameSource = player.videoFrames
+                player.loadFile(url, startPaused = false)
+            }
         }
         onDispose {
-            vlcPlayer?.release()
-            vlcFactory?.release()
-            videoPanel = null
-            vlcPlayer = null
-            vlcFactory = null
+            mpvPlayer?.release()
+            frameSource = null
+            mpvPlayer = null
         }
     }
 
@@ -104,23 +88,60 @@ fun MediaPlayerViewWithUrl(
                     .graphicsLayer { clip = true },
             ),
     ) {
-        val panel = videoPanel
-        if (panel != null) {
-            key(panel) {
-                SwingPanel(
-                    factory = {
-                        JPanel(java.awt.BorderLayout()).apply {
-                            background = java.awt.Color.BLACK
-                            add(panel, java.awt.BorderLayout.CENTER)
-                        }
-                    },
-                    modifier =
-                        Modifier
-                            .fillMaxSize()
-                            .align(Alignment.Center),
-                    background = Color.Transparent,
-                )
+        frameSource?.let { source ->
+            MpvVideoFrames(
+                source = source,
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .align(Alignment.Center),
+            )
+        }
+    }
+}
+
+/**
+ * Draws the frames published by an [MpvVideoFrameSource] as a plain Compose [Image].
+ *
+ * Replaces the previous SwingPanel embedding. SwingPanel is a heavyweight AWT overlay: it sits
+ * above every Compose node regardless of z-order, repositions one frame late while scrolling
+ * (the flicker that exposed the transparent window behind it), and as an AWT component could
+ * only have one parent — so two screens composing the player fought over the panel. An Image
+ * participates in normal Compose rendering, and any number of screens can collect the same
+ * source at once.
+ *
+ * The box reports its size to the source, so mpv scales and letterboxes frames to exactly this
+ * box; [ContentScale.Fit] only matters in the moment after a resize while the next
+ * correctly-sized frame is still being rendered.
+ */
+@Composable
+private fun MpvVideoFrames(
+    source: MpvVideoFrameSource,
+    modifier: Modifier = Modifier,
+) {
+    var frame by remember(source) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(source) {
+        withContext(Dispatchers.Default) {
+            // The conversion copies the pixels, so keep it off the UI thread. Every emission is
+            // an immutable snapshot — see [MpvVideoFrameSource.frames].
+            source.frames.collect { image ->
+                frame = image?.toComposeImageBitmap()
             }
+        }
+    }
+    Box(
+        modifier
+            .background(Color.Black)
+            .onSizeChanged { source.setTargetSize(it.width, it.height) },
+        contentAlignment = Alignment.Center,
+    ) {
+        frame?.let {
+            Image(
+                bitmap = it,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
         }
     }
 }
@@ -140,14 +161,12 @@ fun MediaPlayerViewWithSubtitleJvm(
     translatedTextStyle: TextStyle,
     mediaPlayerHandler: MediaPlayerHandler = koinInject(),
 ) {
-    val player: VlcPlayerAdapter = koinInject<VlcPlayerAdapter>()
+    val player: MpvPlayerAdapter = koinInject<MpvPlayerAdapter>()
 
     val state by mediaPlayerHandler.nowPlayingState.collectAsState()
-    val videoCanvas by player.currentVideoSurface.collectAsState()
+    val videoFrames by player.currentVideoFrames.collectAsState()
 
-    var sizePx by remember { mutableStateOf(0 to 0) }
-
-    val showArtwork = videoCanvas == null
+    val showArtwork = videoFrames == null
 
     val artworkUri = state.songEntity?.thumbnails
 
@@ -199,18 +218,9 @@ fun MediaPlayerViewWithSubtitleJvm(
     Box(
         modifier =
             modifier
-                .graphicsLayer { clip = true }
-                .onGloballyPositioned {
-                    val width = it.size.width
-                    val height = it.size.height
-                    sizePx = width to height
-                },
+                .graphicsLayer { clip = true },
         contentAlignment = Alignment.Center,
     ) {
-        // SwingPanel (native Swing component) does not support Compose animation layers
-        // (alpha, z-ordering). Using Crossfade here causes the old and new SwingPanel to
-        // coexist during the animation, leading to the video not visually switching.
-        // Use a simple conditional instead so the old panel is removed immediately.
         if (showArtwork) {
             AsyncImage(
                 model =
@@ -229,24 +239,11 @@ fun MediaPlayerViewWithSubtitleJvm(
                         .align(Alignment.Center),
             )
         } else {
-            val canvas = videoCanvas
-            if (canvas != null && sizePx.first > 0 && sizePx.second > 0) {
-                key(canvas) {
-                    SwingPanel(
-                        factory = {
-                            JPanel(java.awt.BorderLayout()).apply {
-                                background = java.awt.Color.BLACK
-                                isOpaque = true
-                                preferredSize = Dimension(sizePx.first, sizePx.second)
-                                add(canvas, java.awt.BorderLayout.CENTER)
-                            }
-                        },
-                        modifier =
-                            Modifier
-                                .fillMaxSize(),
-                        background = Color.Black,
-                    )
-                }
+            videoFrames?.let { source ->
+                MpvVideoFrames(
+                    source = source,
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
         if (lyricsData != null && shouldShowSubtitle) {

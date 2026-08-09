@@ -24,6 +24,16 @@ import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.FilterState
 import kotlinx.datetime.LocalDateTime
 
+/**
+ * The album name older builds stored when they could not find a real one.
+ *
+ * The playlist parser used to take the album's browse id out of the row's context menu, which
+ * carries an id but no title, and filled the name in with this literal string. It then travelled
+ * out to MediaSession metadata, where external scrobblers read it. The parser no longer does this,
+ * but roughly half the rows already in users' databases still hold it — see [LocalDataSource.insertSong].
+ */
+private const val PLACEHOLDER_ALBUM_NAME = "Album"
+
 internal class LocalDataSource(
     private val databaseDao: DatabaseDao,
 ) {
@@ -89,7 +99,54 @@ internal class LocalDataSource(
 
     fun getSongAsFlow(videoId: String) = databaseDao.getSongAsFlow(videoId)
 
-    suspend fun insertSong(song: SongEntity) = databaseDao.insertSong(song)
+    /**
+     * Every path that stores a track funnels through here — playback, playlist browsing, the
+     * now-playing sheet, local playlist edits — which is why the self-repair below lives at this
+     * level rather than at any one caller.
+     *
+     * The insert itself is IGNORE, so a track already in the database keeps whatever it was first
+     * written with. That is usually right, but it also means a row saved with the old "Album"
+     * placeholder can never learn its real album name, however many times it is seen again.
+     *
+     * Room returns -1 when IGNORE drops the row, which tells us the track already exists without
+     * spending a read to ask. Only then, and only when this copy actually carries a real name, do
+     * we let the database decide whether the stored row is stale — the WHERE clause in
+     * [DatabaseDao.refreshAlbumIfPlaceholder] is what guarantees good data is never overwritten.
+     *
+     * The artist list is refreshed the same way. Rows written before the parser split the subtitle
+     * column on " • " kept its trailing groups too, so the album name and the view count were
+     * stored as extra artists ("JENNIE", "13M plays") and travelled out to MediaSession metadata.
+     */
+    suspend fun insertSong(song: SongEntity): Long {
+        val rowId = databaseDao.insertSong(song)
+        if (rowId == -1L) {
+            val albumName = song.albumName
+            if (!albumName.isNullOrBlank() && albumName != PLACEHOLDER_ALBUM_NAME) {
+                databaseDao.refreshAlbumIfPlaceholder(
+                    videoId = song.videoId,
+                    albumName = albumName,
+                    albumId = song.albumId,
+                )
+            }
+            val artistName = song.artistName
+            if (!artistName.isNullOrEmpty()) {
+                databaseDao.refreshArtists(
+                    videoId = song.videoId,
+                    artistName = artistName,
+                    artistId = song.artistId,
+                )
+            }
+        }
+        return rowId
+    }
+
+    /**
+     * Batch counterpart of [insertSong], used by the importer.
+     *
+     * The IGNORE-and-self-repair policy above lives inside the DAO method here, because the
+     * transaction has to wrap the whole batch and only a DAO method can be `@Transaction`.
+     */
+    suspend fun insertSongs(songs: List<SongEntity>) = databaseDao.insertSongs(songs)
 
     suspend fun updateThumbnailsSongEntity(
         thumbnail: String,
@@ -250,6 +307,11 @@ internal class LocalDataSource(
     suspend fun getLocalPlaylist(id: Long) = databaseDao.getLocalPlaylist(id)
 
     suspend fun insertLocalPlaylist(localPlaylist: LocalPlaylistEntity) = databaseDao.insertLocalPlaylist(localPlaylist)
+
+    suspend fun insertLocalPlaylistWithTracks(
+        localPlaylist: LocalPlaylistEntity,
+        videoIds: List<String>,
+    ) = databaseDao.insertLocalPlaylistWithTracks(localPlaylist, videoIds)
 
     suspend fun deleteLocalPlaylist(id: Long) = databaseDao.deleteLocalPlaylist(id)
 

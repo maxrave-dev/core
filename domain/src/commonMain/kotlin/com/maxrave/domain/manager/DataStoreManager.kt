@@ -34,6 +34,24 @@ interface DataStoreManager {
 
     val language: Flow<String>
 
+    /**
+     * Serialized "Moods & Genres" browse result, so the search and home screens can paint their
+     * category grid immediately instead of waiting on the network every time. Null until the
+     * first successful fetch.
+     */
+    val moodAndGenresCache: Flow<String?>
+
+    suspend fun setMoodAndGenresCache(json: String)
+
+    /**
+     * Cover art resolved per browse category, keyed by its params. The category list itself
+     * carries no artwork, so each cover costs one full category browse — worth remembering on
+     * disk rather than paying again every time the search screen opens.
+     */
+    val moodArtworkCache: Flow<String?>
+
+    suspend fun setMoodArtworkCache(json: String)
+
     fun getString(key: String): Flow<String?>
 
     suspend fun putString(
@@ -226,14 +244,6 @@ interface DataStoreManager {
 
     suspend fun setUpdateChannel(channel: String)
 
-    val blurFullscreenLyrics: Flow<String>
-
-    suspend fun setBlurFullscreenLyrics(blur: Boolean)
-
-    val blurPlayerBackground: Flow<String>
-
-    suspend fun setBlurPlayerBackground(blur: Boolean)
-
     val playbackSpeed: Flow<Float>
 
     fun setPlaybackSpeed(speed: Float)
@@ -345,6 +355,21 @@ interface DataStoreManager {
     val richPresenceEnabled: Flow<String>
 
     suspend fun setRichPresenceEnabled(enabled: Boolean)
+
+    /** Last.fm session key. Has no expiry — it stays valid until the user revokes it on last.fm. */
+    val lastfmSessionKey: Flow<String>
+
+    /** The logged-in Last.fm username, kept only so settings can show whose account is connected. */
+    val lastfmUsername: Flow<String>
+
+    suspend fun setLastfmSession(
+        sessionKey: String,
+        username: String,
+    )
+
+    val lastfmScrobbleEnabled: Flow<String>
+
+    suspend fun setLastfmScrobbleEnabled(enabled: Boolean)
 
     val localTrackingEnabled: Flow<String>
 

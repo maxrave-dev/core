@@ -37,6 +37,10 @@ data class RelatedPage(
                         ?.musicResponsiveListItemFlexColumnRenderer
                         ?.text
                         ?.runs
+                        // The column reads "Artist • Album • 13M plays"; only the first group is
+                        // artists, so everything after the first " • " is dropped.
+                        ?.splitBySeparator()
+                        ?.firstOrNull()
                         ?.oddElements()
                         ?.map {
                             Artist(

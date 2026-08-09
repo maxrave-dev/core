@@ -26,6 +26,7 @@ import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
+import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
@@ -69,11 +70,28 @@ internal class DownloadUtils(
             val mediaId = dataSpec.key ?: error("No media id")
             Logger.w("Stream", mediaId)
             Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
-            val length = if (dataSpec.length >= 0) dataSpec.length else -1L
-            if (downloadCache.isCached(mediaId, dataSpec.position, length) || playerCache.isCached(mediaId, dataSpec.position, length)) {
+            // Already downloaded in full: hand the DataSpec back untouched so the enclosing
+            // CacheDataSource reads straight off disk. Safe precisely because the whole track
+            // is there — it never needs the upstream, which is the only thing the bare media id
+            // in the URI cannot survive. Re-resolving here would re-fetch a track the user
+            // already has.
+            if (downloadCache.isFullyCached(mediaId, dataSpec.position)) {
+                Logger.w("Stream", "Already downloaded $mediaId")
                 return@Factory dataSpec
             }
+            // Anything short of a full copy must resolve a real URL, and must never hand back
+            // the incoming DataSpec: its URI is the bare media id. Skipping the bytes already on
+            // disk is not this resolver's job — CacheWriter does that via cache.getCachedLength(),
+            // and the CacheDataSource wrapping this resolver still serves whatever playerCache
+            // holds.
+            //
+            // The upstream here is OkHttpDataSource (not DefaultDataSource, as on the playback
+            // side), so a scheme-less URI dies in HttpUrl.parse as
+            // HttpDataSourceException("Malformed URL", ERROR_CODE_FAILED_RUNTIME_CHECK) — a
+            // misleading error for what is really "we could not get a stream URL". Fail loudly
+            // instead, and let DownloadManager mark the download failed for the true reason.
             var dataSpecReturn: DataSpec = dataSpec
+            var resolved = false
             runBlocking(Dispatchers.IO) {
                 if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
                     val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
@@ -85,6 +103,7 @@ internal class DownloadUtils(
                             val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
                             if (!is403Url) {
                                 dataSpecReturn = dataSpec.withUri(videoUrl.toUri())
+                                resolved = true
                                 return@runBlocking
                             }
                         }
@@ -98,6 +117,7 @@ internal class DownloadUtils(
                         ).lastOrNull()
                         ?.let {
                             dataSpecReturn = dataSpec.withUri(it.toUri())
+                            resolved = true
                         }
                 } else {
                     streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
@@ -108,6 +128,7 @@ internal class DownloadUtils(
                             val is403Url = streamRepository.is403Url(audioUrl).firstOrNull() != false
                             if (!is403Url) {
                                 dataSpecReturn = dataSpec.withUri(audioUrl.toUri())
+                                resolved = true
                                 return@runBlocking
                             }
                         }
@@ -127,8 +148,13 @@ internal class DownloadUtils(
                                 )
                             }
                             dataSpecReturn = dataSpec.withUri(it.toUri())
+                            resolved = true
                         }
                 }
+            }
+            if (!resolved) {
+                Logger.e("Stream", "Failed to resolve download stream URL for $mediaId")
+                throw java.io.IOException("Failed to resolve stream URL for $mediaId")
             }
             return@Factory dataSpecReturn
         }

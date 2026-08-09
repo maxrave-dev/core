@@ -15,6 +15,7 @@ import com.maxrave.common.LOCAL_PLAYLIST_ID_SAVED_QUEUE
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.common.TITLE
 import com.maxrave.data.db.Converters
+import com.maxrave.data.lastfm.LastfmScrobbler
 import com.maxrave.data.mediaservice.mac.MacOSMediaIntegration
 import com.maxrave.data.mediaservice.mac.MacOSRemoteCommandListener
 import com.maxrave.data.mediaservice.mac.NowPlayingInfo
@@ -64,7 +65,6 @@ import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
 import com.my.kizzy.DiscordRPC
-import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -97,6 +97,7 @@ import org.koin.mp.KoinPlatform.getKoin
 import org.simpmusic.nowplayingcenter.NPYC
 import org.simpmusic.nowplayingcenter.domain.NowPlayingListener
 import org.simpmusic.nowplayingcenter.domain.Platform
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.pow
 
 private val TAG = "JvmMediaPlayerHandler"
@@ -111,6 +112,7 @@ class JvmMediaPlayerHandlerImpl(
 ) : MediaPlayerHandler,
     MediaPlayerListener {
     private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     // Linux (MPRIS) and Windows (SMTC) both go through NPYC/JMTC; macOS uses the
     // dedicated MacOSMediaIntegration below. runCatching keeps a failed native
     // init from taking down the whole handler — every nypc call site is already
@@ -146,8 +148,16 @@ class JvmMediaPlayerHandlerImpl(
     }
 
     override val player: MediaPlayerInterface = getKoin().get()
+
     @Volatile
     private var discordRPC: DiscordRPC? = null
+
+    /**
+     * Built here rather than injected: it needs nothing this handler does not already hold, and
+     * threading it through [createMediaServiceHandler] would mean changing that expect signature
+     * and all three actuals for one dependency.
+     */
+    private val lastfmScrobbler = LastfmScrobbler(dataStoreManager)
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
     override var pushPlayerError: (PlayerError) -> Unit = {}
@@ -268,6 +278,7 @@ class JvmMediaPlayerHandlerImpl(
         val speed: Float,
         val seq: Long,
     )
+
     private val rpcSnapshotFlow = MutableStateFlow<RpcSnapshot?>(null)
 
     @Volatile
@@ -484,7 +495,8 @@ class JvmMediaPlayerHandlerImpl(
                                                 // RPC (Fix 1). controlState.value is a safe field
                                                 // read from Dispatchers.IO, unlike player.isPlaying.
                                                 if (!controlState.value.isPlaying) return@collectLatest
-                                                discordRPC?.updateSong(snap.progressMs, snap.durationMs, snap.speed, snap.song)
+                                                discordRPC
+                                                    ?.updateSong(snap.progressMs, snap.durationMs, snap.speed, snap.song)
                                                     ?.onFailure { Logger.e(TAG, "Discord RPC update failed: ${it.message}") }
                                             }
                                         }
@@ -543,45 +555,63 @@ class JvmMediaPlayerHandlerImpl(
         getDataOfNowPlayingTrackStateJob =
             coroutineScope.launch {
                 Logger.w(TAG, "getDataOfNowPlayingState: $videoId")
-                songRepository.getSongById(videoId).cancellable().firstOrNull().let { songEntity ->
-                    if (songEntity != null) {
-                        _controlState.update { it.copy(isLiked = songEntity.liked) }
-                        var thumbUrl =
-                            track?.thumbnails?.lastOrNull()?.url
-                                ?: songEntity.thumbnails
-                                ?: "http://i.ytimg.com/vi/${songEntity.videoId}/maxresdefault.jpg"
-                        if (thumbUrl.contains("w120")) {
-                            thumbUrl = Regex("([wh])120").replace(thumbUrl, "$1544")
-                        }
-                        if (songEntity.thumbnails != thumbUrl) {
-                            songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).firstOrNull()?.let {
-                                Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                songRepository.getSongById(videoId).cancellable().singleOrNull().let { songEntity ->
+                    // Both branches resolve to an entity that already carries the up-scaled
+                    // thumbnail, so the now-playing state, Discord RPC and the OS media panels
+                    // get the high-res URL immediately instead of waiting for the DB flow to
+                    // re-emit. The regex matches any "=w<n>" / "-h<n>" size segment, not just
+                    // w120, so 60/226/etc. are up-scaled too (parity with Android).
+                    val song: SongEntity =
+                        if (songEntity != null) {
+                            _controlState.update { it.copy(isLiked = songEntity.liked) }
+                            val thumbUrl =
+                                Regex("([=-][wh])\\d+").replace(
+                                    track?.thumbnails?.lastOrNull()?.url
+                                        ?: songEntity.thumbnails
+                                        ?: "http://i.ytimg.com/vi/${songEntity.videoId}/maxresdefault.jpg",
+                                    "$1544",
+                                )
+                            if (songEntity.thumbnails != thumbUrl) {
+                                songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
+                                    Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                                }
                             }
-                        }
-                        songRepository.updateSongInLibrary(now(), songEntity.videoId).firstOrNull().let {
-                            Logger.w(TAG, "getDataOfNowPlayingState: $it")
-                        }
-                        songRepository.updateListenCount(songEntity.videoId)
-                    } else {
-                        _controlState.update { it.copy(isLiked = false) }
-                        songRepository
-                            .insertSong(
-                                track?.toSongEntity() ?: mediaItem.toSongEntity(),
-                            ).firstOrNull()
-                            ?.let {
+                            songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
                                 Logger.w(TAG, "getDataOfNowPlayingState: $it")
                             }
-                    }
+                            songRepository.updateListenCount(songEntity.videoId)
+                            songEntity.copy(thumbnails = thumbUrl)
+                        } else {
+                            _controlState.update { it.copy(isLiked = false) }
+                            val thumbUrl =
+                                Regex("([=-][wh])\\d+").replace(
+                                    track?.thumbnails?.lastOrNull()?.url
+                                        ?: "http://i.ytimg.com/vi/${track?.videoId}/maxresdefault.jpg",
+                                    "$1544",
+                                )
+                            val newSong =
+                                (track?.toSongEntity() ?: mediaItem.toSongEntity()).copy(
+                                    thumbnails = thumbUrl,
+                                )
+                            songRepository
+                                .insertSong(newSong)
+                                .singleOrNull()
+                                ?.let {
+                                    Logger.w(TAG, "getDataOfNowPlayingState: $it")
+                                }
+                            newSong
+                        }
                     Logger.w(TAG, "getDataOfNowPlayingState: $songEntity")
                     Logger.w(TAG, "getDataOfNowPlayingState: $track")
                     _nowPlayingState.update {
                         it.copy(
-                            songEntity = songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity(),
+                            songEntity = song,
                         )
                     }
-                    val song =
-                        songEntity ?: track?.toSongEntity() ?: mediaItem.toSongEntity()
                     updateDiscordRpc(song)
+                    // Launched separately: "now playing" is a network round trip, and this job
+                    // still has the rest of the track state to publish.
+                    coroutineScope.launch { lastfmScrobbler.onTrackStarted(song) }
                     nypc?.setNowPlaying(
                         song.title,
                         song.artistName?.joinToString(", ") ?: "",
@@ -825,12 +855,32 @@ class JvmMediaPlayerHandlerImpl(
 
     // Region: Override functions
     override fun startProgressUpdate() {
+        // Cancel any previous loop first: both onIsPlayingChanged(true) and PlayerEvent.PlayPause
+        // land here, and VLC re-emits isPlaying=true on rebuffer/next-track, so a leaked loop
+        // would otherwise multiply the UI updates and the periodic position writes (#2152).
+        progressJob?.cancel()
         progressJob =
             coroutineScope.launch {
+                // Persist the playback position to DataStore on this interval so a hard quit
+                // or crash while playing still restores the correct position instead of
+                // restarting the track from the beginning (#2152, parity with Android). The
+                // position is otherwise only saved on pause / track change / release, which
+                // misses uninterrupted playback.
+                val positionPersistIntervalMs = 5_000L
+                var sinceLastPositionSaveMs = 0L
                 while (true) {
                     delay(100)
                     _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
                     updateMacOSElapsedTime()
+                    sinceLastPositionSaveMs += 100
+                    if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
+                        sinceLastPositionSaveMs = 0
+                        mayBeSaveRecentPosition()
+                        // Riding the existing 5s tick instead of adding one: the scrobble point is
+                        // half the track or four minutes, so five seconds of granularity is plenty
+                        // and the 100ms loop stays as cheap as it was.
+                        lastfmScrobbler.onProgress(player.currentPosition)
+                    }
                 }
             }
     }
@@ -841,7 +891,21 @@ class JvmMediaPlayerHandlerImpl(
                 while (true) {
                     delay(500)
                     _simpleMediaState.value =
-                        SimpleMediaState.Loading(100, player.duration)
+                        SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
+                    // Tracks whose catalog metadata carries no duration would otherwise stay at
+                    // 0:00 forever on desktop; VLC only knows the real length once the media is
+                    // parsed, so backfill it here (parity with Android).
+                    val current = nowPlayingState.value.songEntity
+                    if (current?.durationSeconds == 0 && player.duration > 0L) {
+                        _nowPlayingState.update {
+                            it.copy(
+                                songEntity =
+                                    current.copy(
+                                        durationSeconds = (player.duration / 1000).toInt(),
+                                    ),
+                            )
+                        }
+                    }
                 }
             }
     }
@@ -1954,9 +2018,7 @@ class JvmMediaPlayerHandlerImpl(
         var thumbUrl =
             track.thumbnails?.lastOrNull()?.url
                 ?: "http://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg"
-        if (thumbUrl.contains("w120")) {
-            thumbUrl = Regex("([wh])120").replace(thumbUrl, "$1544")
-        }
+        thumbUrl = Regex("([=-][wh])\\d+").replace(thumbUrl, "$1544")
         val artistName: String = track.artists.toListName().connectArtists()
         val isSong =
             (
@@ -2051,14 +2113,18 @@ class JvmMediaPlayerHandlerImpl(
                 "updateCatalog: ${track.title}, ${catalogMetadata.size}",
             )
             Logger.d("MusicSource", "updateCatalog: ${track.title}")
-            _queueData.update {
-                it
-                    .copy(
-                        queueState = QueueData.StateSource.STATE_INITIALIZED,
-                    ).addTrackList(catalogMetadata)
-            }
-            reorderShuffledQueue(player.getCurrentMediaTimeLine())
         }
+        _queueData.update {
+            it
+                .copy(
+                    data =
+                        it.data.copy(
+                            listTracks = catalogMetadata,
+                        ),
+                    queueState = QueueData.StateSource.STATE_INITIALIZED,
+                )
+        }
+        reorderShuffledQueue(player.getCurrentMediaTimeLine())
     }
 
     override suspend fun <T> loadMediaItem(
@@ -2103,29 +2169,51 @@ class JvmMediaPlayerHandlerImpl(
         val unit =
             suspend {
                 if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
-                    dataStoreManager.saveRecentSong(
-                        nowPlayingState.value.songEntity?.videoId ?: "",
-                        player.contentPosition,
-                    )
-                    dataStoreManager.setPlaylistFromSaved(queueData.value.data.playlistName ?: "")
-                    Logger.d(
-                        "Check saved",
-                        player.currentMediaItem
-                            ?.metadata
-                            ?.title
-                            .toString(),
-                    )
-                    val temp: ArrayList<Track> = ArrayList()
-                    temp.clear()
-                    temp.addAll(_queueData.value.data.listTracks)
-                    Logger.w("Check recover queue", temp.toString())
-                    songRepository.recoverQueue(temp)
+                    // Skip while the playing song is unknown or the queue is mid-rebuild:
+                    // updateCatalog clears listTracks and re-inserts the current track only at
+                    // the end, so saving in that window persists a queue missing the current
+                    // track (plus a blank media id), which desyncs the next restore.
+                    val videoId = nowPlayingState.value.songEntity?.videoId
+                    if (videoId != null && queueData.value.queueState == QueueData.StateSource.STATE_INITIALIZED) {
+                        dataStoreManager.saveRecentSong(
+                            videoId,
+                            player.contentPosition,
+                        )
+                        dataStoreManager.setPlaylistFromSaved(queueData.value.data.playlistName ?: "")
+                        Logger.d(
+                            "Check saved",
+                            player.currentMediaItem
+                                ?.metadata
+                                ?.title
+                                .toString(),
+                        )
+                        val temp: ArrayList<Track> = ArrayList()
+                        temp.clear()
+                        temp.addAll(_queueData.value.data.listTracks)
+                        Logger.w("Check recover queue", temp.toString())
+                        songRepository.recoverQueue(temp)
+                    }
                 }
             }
         if (runBlocking) {
             runBlocking { unit() }
         } else {
             coroutineScope.launch { unit() }
+        }
+    }
+
+    /**
+     * Lightweight periodic persistence of just the playback position (#2152).
+     * Unlike [mayBeSaveRecentSong] this does NOT rewrite the whole saved queue, so it is
+     * cheap enough to call every few seconds while a track plays uninterrupted. The saved
+     * media id + position are what [mayBeRestoreQueue] reads to resume on next launch.
+     */
+    private fun mayBeSaveRecentPosition() {
+        coroutineScope.launch {
+            if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
+                val videoId = nowPlayingState.value.songEntity?.videoId ?: return@launch
+                dataStoreManager.saveRecentSong(videoId, player.contentPosition)
+            }
         }
     }
 
@@ -2219,10 +2307,33 @@ class JvmMediaPlayerHandlerImpl(
             if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
                 val currentPlayingTrack = songRepository.getSongById(dataStoreManager.recentMediaId.first()).lastOrNull()?.toTrack()
                 if (currentPlayingTrack != null) {
-                    val queue = songRepository.getSavedQueue().firstOrNull()
+                    // Snapshot the position before touching the player: loading the queue fires
+                    // onMediaItemTransition -> mayBeSaveRecentSong, which rewrites the stored
+                    // position before the seek below would otherwise read it.
+                    val savedPosition = dataStoreManager.recentPosition.first().toLongOrNull() ?: 0L
+                    val savedTracks =
+                        songRepository
+                            .getSavedQueue()
+                            .singleOrNull()
+                            ?.firstOrNull()
+                            ?.listTrack
+                            .orEmpty()
+                    // The saved queue may not contain the saved track (e.g. persisted while the
+                    // queue was being rebuilt). Put the track at the front then: updateCatalog
+                    // skips listTracks[index] as "already in the player", so index must point at
+                    // the playing track or the UI queue and the player playlist end up shifted
+                    // against each other.
+                    var index = savedTracks.indexOfFirst { it.videoId == currentPlayingTrack.videoId }
+                    val listTracks =
+                        if (index == -1) {
+                            index = 0
+                            (listOf(currentPlayingTrack) + savedTracks).toCollection(arrayListOf())
+                        } else {
+                            savedTracks.toCollection(arrayListOf())
+                        }
                     setQueueData(
                         QueueData.Data(
-                            listTracks = queue?.firstOrNull()?.listTrack?.toCollection(arrayListOf()) ?: arrayListOf(currentPlayingTrack),
+                            listTracks = listTracks,
                             firstPlayedTrack = currentPlayingTrack,
                             playlistId = LOCAL_PLAYLIST_ID_SAVED_QUEUE,
                             playlistName = dataStoreManager.playlistFromSaved.first(),
@@ -2230,15 +2341,9 @@ class JvmMediaPlayerHandlerImpl(
                             continuation = null,
                         ),
                     )
-                    var index =
-                        queue?.firstOrNull()?.listTrack?.map { it.videoId }?.indexOf(
-                            currentPlayingTrack.videoId,
-                        )
-                    if (index == null || index == -1) index = 0
                     addMediaItem(currentPlayingTrack.toGenericMediaItem(), playWhenReady = false)
                     loadPlaylistOrAlbum(index = index)
                     loadJob?.join()
-                    val savedPosition = dataStoreManager.recentPosition.first().toLong()
                     resetCrossfade()
                     player.seekTo(index, savedPosition)
                 }

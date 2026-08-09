@@ -14,7 +14,11 @@ fun parseSyncedLyrics(data: String): Lyrics {
             val seconds = matchResult.groupValues[2].toLong()
             val milliseconds = matchResult.groupValues[3].toLong()
             val timeInMillis = minutes * 60_000L + seconds * 1000L + milliseconds
-            val content = (if (matchResult.groupValues[4] == " ") " ♫" else matchResult.groupValues[4]).removeRange(0, 1)
+            // Trim, don't drop a fixed first character. Most providers leave a space after
+            // "]", but LRCLIB packs the text right against it — "[00:27.12]boy, you got me"
+            // — so removeRange(0, 1) ate the first letter of every single line.
+            val rawContent = matchResult.groupValues[4]
+            val content = if (rawContent.isBlank()) "♫" else rawContent.trimStart()
             linesLyrics.add(
                 Lyrics.LyricsX.Line(
                     endTimeMs = "0",

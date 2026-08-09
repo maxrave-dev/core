@@ -24,6 +24,7 @@ import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
+import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
@@ -109,6 +110,12 @@ internal class CrossfadeExoPlayerAdapter(
             dataStoreManager.crossfadeDjMode.collect { enabled ->
                 djCrossfadeEnabled = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "DJ crossfade mode: $djCrossfadeEnabled")
+            }
+        }
+        coroutineScope.launch {
+            dataStoreManager.watchVideoInsteadOfPlayingAudio.collect { enabled ->
+                watchVideoEnabled = (enabled == DataStoreManager.TRUE)
+                Logger.d(TAG, "Watch video enabled: $watchVideoEnabled")
             }
         }
     }
@@ -274,6 +281,11 @@ internal class CrossfadeExoPlayerAdapter(
 
     @Volatile
     private var djCrossfadeEnabled = true
+
+    // Whether video content plays as video (watch-video setting) — the same condition
+    // MergingMediaSourceFactory uses to build a merged audio+video source.
+    @Volatile
+    private var watchVideoEnabled = false
 
     @Volatile
     private var secondaryPlayer: ExoPlayer? = null
@@ -1511,11 +1523,27 @@ internal class CrossfadeExoPlayerAdapter(
                     // ERROR_CODE_PARSING_CONTAINER_MALFORMED (3001) = server returned non-media response (e.g. HTML error page)
                     // ERROR_CODE_IO_BAD_HTTP_STATUS (2004) = HTTP 403/410 from expired URL
                     // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED (2001) = connection refused
+                    // ERROR_CODE_IO_FILE_NOT_FOUND (2005) = the resolver served a cache hit as a bare
+                    //   media id and the cached spans were evicted (or cleared) mid-read, so
+                    //   DefaultDataSource fell through to FileDataSource on a scheme-less URI. Media3
+                    //   lists FileNotFoundException as non-retriable, so this layer is the only chance
+                    //   to recover; reloading re-runs the resolver, which now sees an incomplete cache
+                    //   and resolves a real URL.
                     val isRetryableSourceError =
                         error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
-                            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+                            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                            error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
 
                     val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
+                    if (error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND) {
+                        // Without this the crash report is a bare FileDataSourceException with
+                        // nothing tying it back to a cache decision made three layers up.
+                        Logger.w(
+                            TAG,
+                            "Cache disappeared mid-read for $currentVideoId — the resolver had served it " +
+                                "as a fully cached bare media id. Retrying to resolve a real URL.",
+                        )
+                    }
                     if (isRetryableSourceError && currentVideoId != null) {
                         // Reset retry count if this is a different track
                         if (retryVideoId != currentVideoId) {
@@ -1698,6 +1726,19 @@ internal class CrossfadeExoPlayerAdapter(
     // ========== Internal: Track End ==========
 
     /**
+     * Crossfade is skipped when the NEXT track will play as a video (video content with
+     * the watch-video setting on — the same condition MergingMediaSourceFactory uses to
+     * build a merged audio+video source). The merged source resolves two stream URLs and
+     * is error-prone to prepare mid-fade, and a video should start from its first frame
+     * instead of fading in under the outgoing song — so the transition takes the normal
+     * (non-crossfade) path.
+     */
+    private fun isNextTrackVideo(): Boolean = watchVideoEnabled && playlist.getOrNull(getNextMediaItemIndex())?.isVideo() == true
+
+    /** Same skip rule for the CURRENT track: a video should play out to its last frame instead of fading out under the incoming song. */
+    private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
+
+    /**
      * Handle track end - mirrors GstreamerPlayerAdapter.handleTrackEndInternal()
      */
     private fun handleTrackEndInternal() {
@@ -1707,7 +1748,9 @@ internal class CrossfadeExoPlayerAdapter(
         val shouldCrossfade =
             crossfadeEnabled &&
                 hasNextMediaItem() &&
-                !isCrossfading
+                !isCrossfading &&
+                !isCurrentTrackVideo() &&
+                !isNextTrackVideo()
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -2205,8 +2248,10 @@ internal class CrossfadeExoPlayerAdapter(
         val currentKey = currentMeta?.key ?: return UNKNOWN_GAP_DEFAULT_FACTOR
         val nextKey = nextMeta?.key ?: return UNKNOWN_GAP_DEFAULT_FACTOR
 
-        val currentCamelot = keyToCamelot(currentKey, currentMeta.keyScale) ?: return 1.0
-        val nextCamelot = keyToCamelot(nextKey, nextMeta.keyScale) ?: return 1.0
+        // An unparseable key tells us nothing about compatibility — treat it like a missing
+        // key instead of like a perfect match, otherwise it silently shortens the blend.
+        val currentCamelot = keyToCamelot(currentKey, currentMeta.keyScale) ?: return UNKNOWN_GAP_DEFAULT_FACTOR
+        val nextCamelot = keyToCamelot(nextKey, nextMeta.keyScale) ?: return UNKNOWN_GAP_DEFAULT_FACTOR
 
         val dist = camelotDistance(currentCamelot, nextCamelot)
         return when {
@@ -2410,9 +2455,18 @@ internal class CrossfadeExoPlayerAdapter(
     /**
      * Map a musical key name to its chromatic semitone number (0-11).
      * C=0, C#/Db=1, D=2, ..., B=11. Returns -1 for unknown keys.
+     *
+     * Tidal spells accidentals out ("FSharp", "CSharp") instead of using symbols,
+     * so the name is normalised before matching.
      */
-    private fun keyToSemitone(key: String): Int =
-        when (key.trim()) {
+    private fun keyToSemitone(key: String): Int {
+        val normalized =
+            key
+                .trim()
+                .replace("Sharp", "#", ignoreCase = true)
+                .replace("Flat", "b", ignoreCase = true)
+                .replaceFirstChar { it.uppercaseChar() }
+        return when (normalized) {
             "C" -> 0
             "C#", "Db" -> 1
             "D" -> 2
@@ -2427,6 +2481,7 @@ internal class CrossfadeExoPlayerAdapter(
             "B" -> 11
             else -> -1
         }
+    }
 
     companion object {
         // DJ crossfade sigmoid steepness (higher = sharper S-curve transition)
@@ -2561,7 +2616,9 @@ internal class CrossfadeExoPlayerAdapter(
                                     !isCrossfading &&
                                     player.isPlaying &&
                                     dur > 0 &&
-                                    pos > 0
+                                    pos > 0 &&
+                                    !isCurrentTrackVideo() &&
+                                    !isNextTrackVideo()
                                 ) {
                                     // Account for playback speed: at higher speed, media time
                                     // is consumed faster, so wall-clock remaining is shorter
