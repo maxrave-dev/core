@@ -82,6 +82,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.single
@@ -542,7 +543,7 @@ class JvmMediaPlayerHandlerImpl(
         getDataOfNowPlayingTrackStateJob =
             coroutineScope.launch {
                 Logger.w(TAG, "getDataOfNowPlayingState: $videoId")
-                songRepository.getSongById(videoId).cancellable().singleOrNull().let { songEntity ->
+                songRepository.getSongById(videoId).cancellable().firstOrNull().let { songEntity ->
                     if (songEntity != null) {
                         _controlState.update { it.copy(isLiked = songEntity.liked) }
                         var thumbUrl =
@@ -553,11 +554,11 @@ class JvmMediaPlayerHandlerImpl(
                             thumbUrl = Regex("([wh])120").replace(thumbUrl, "$1544")
                         }
                         if (songEntity.thumbnails != thumbUrl) {
-                            songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
+                            songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).firstOrNull()?.let {
                                 Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
                             }
                         }
-                        songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
+                        songRepository.updateSongInLibrary(now(), songEntity.videoId).firstOrNull().let {
                             Logger.w(TAG, "getDataOfNowPlayingState: $it")
                         }
                         songRepository.updateListenCount(songEntity.videoId)
@@ -566,7 +567,7 @@ class JvmMediaPlayerHandlerImpl(
                         songRepository
                             .insertSong(
                                 track?.toSongEntity() ?: mediaItem.toSongEntity(),
-                            ).singleOrNull()
+                            ).firstOrNull()
                             ?.let {
                                 Logger.w(TAG, "getDataOfNowPlayingState: $it")
                             }
@@ -807,7 +808,7 @@ class JvmMediaPlayerHandlerImpl(
                 val liked =
                     songRepository
                         .getSongById(id)
-                        .singleOrNull()
+                        .firstOrNull()
                         ?.liked ?: false
                 Logger.w("Check liked", liked.toString())
                 _controlState.value = _controlState.value.copy(isLiked = liked)
@@ -1108,6 +1109,12 @@ class JvmMediaPlayerHandlerImpl(
         player.setMediaItem(mediaItem)
         player.prepare()
         player.playWhenReady = playWhenReady
+        _nowPlayingState.value = NowPlayingTrackState(
+            mediaItem = mediaItem,
+            track = null,
+            songEntity = null,
+        )
+        getDataOfNowPlayingState(mediaItem)
     }
 
     override fun clearMediaItems() {
@@ -1237,7 +1244,7 @@ class JvmMediaPlayerHandlerImpl(
                             .getPlaylistPairSongByListPosition(
                                 longId,
                                 listPosition.subList(50 * offset, if (theLastLoad) listPosition.size else 50 * (offset + 1)),
-                            ).singleOrNull()
+                            ).firstOrNull()
                             ?.let { pair ->
                                 Logger.w("Check loadMore response", pair.size.toString())
                                 songRepository.getSongsByListVideoId(pair.map { it.songId }).lastOrNull()?.let { songs ->
@@ -2069,7 +2076,7 @@ class JvmMediaPlayerHandlerImpl(
             showToast(ToastType.ExplicitContent)
             return
         }
-        songRepository.insertSong(track.toSongEntity()).singleOrNull()?.let {
+        songRepository.insertSong(track.toSongEntity()).firstOrNull()?.let {
             Logger.d(TAG, "Inserted song: ${track.title}")
         }
         clearMediaItems()
@@ -2212,7 +2219,7 @@ class JvmMediaPlayerHandlerImpl(
             if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
                 val currentPlayingTrack = songRepository.getSongById(dataStoreManager.recentMediaId.first()).lastOrNull()?.toTrack()
                 if (currentPlayingTrack != null) {
-                    val queue = songRepository.getSavedQueue().singleOrNull()
+                    val queue = songRepository.getSavedQueue().firstOrNull()
                     setQueueData(
                         QueueData.Data(
                             listTracks = queue?.firstOrNull()?.listTrack?.toCollection(arrayListOf()) ?: arrayListOf(currentPlayingTrack),

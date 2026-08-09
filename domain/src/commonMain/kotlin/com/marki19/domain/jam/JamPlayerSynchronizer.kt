@@ -5,9 +5,12 @@ import com.maxrave.domain.mediaservice.handler.PlayerEvent
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.domain.utils.toSongEntity
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
@@ -16,6 +19,7 @@ import kotlinx.coroutines.sync.withLock
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
+import com.maxrave.domain.extension.toGenericMediaItem
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
@@ -26,6 +30,13 @@ import kotlin.time.ExperimentalTime
  * - Host: forwards local player events to [JamRepository.syncState]
  * - Guest: applies incoming [JamPlaybackState] changes to the local player
  * - All: dispatches incoming [JamCommand]s to the player (on the host side)
+ *
+ * KEY DESIGN PRINCIPLES:
+ * 1. The Host NEVER consumes incoming commands from the server (those are for Guests and echoes).
+ * 2. The Host's local echo is needed for instant UI response, but the synchronizer must ignore
+ *    server-echoed state updates to prevent feedback loops.
+ * 3. Guests sync their player to the server's authoritative playback state.
+ * 4. The syncMutex prevents concurrent mutations to the player state.
  */
 @OptIn(ExperimentalTime::class)
 class JamPlayerSynchronizer(
@@ -33,13 +44,24 @@ class JamPlayerSynchronizer(
     private val mediaPlayerHandler: MediaPlayerHandler,
     private val songRepository: SongRepository,
 ) {
-    private val scope = CoroutineScope(Dispatchers.Main + Job())
-    /** Mutex to prevent state-sync feedback loops across concurrent flows. */
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        println("JamPlayerSynchronizer Unhandled coroutine exception: ${throwable.message}")
+        throwable.printStackTrace()
+    }
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob() + exceptionHandler)
+    
+    /** Mutex to prevent concurrent player mutations. */
     private val syncMutex = Mutex()
+    
     private val DRIFT_THRESHOLD_MS = 3_000L
-    /** Tracks the last song ID successfully synced/loaded to prevent double-loads. */
+    
+    /** Tracks the last song ID the synchronizer loaded to prevent double-loads on state updates. */
     private var lastSyncedSongId: String? = null
 
+    /**
+     * Gets an existing track from player queue or DB, or builds one from metadata.
+     * Inserts to DB in background to avoid blocking the caller.
+     */
     private suspend fun getOrCreateTrack(
         videoId: String,
         title: String,
@@ -47,12 +69,16 @@ class JamPlayerSynchronizer(
         thumbnailUrl: String?,
         durationMs: Long
     ): Track {
-        val existing = mediaPlayerHandler.queueData.value?.data?.listTracks?.find { it.videoId.cleanId() == videoId.cleanId() }
+        // 1. Check local player queue first (fastest path)
+        val existing = mediaPlayerHandler.queueData.value?.data?.listTracks
+            ?.find { it.videoId.cleanId() == videoId.cleanId() }
         if (existing != null) return existing
 
+        // 2. Check local database
         val entity = songRepository.getSongById(videoId).firstOrNull()
         if (entity != null) return entity.toTrack()
 
+        // 3. Build a minimal track from the Jam metadata
         val track = Track(
             album = null,
             artists = if (artist.isNotBlank()) listOf(Artist(name = artist, id = null)) else emptyList(),
@@ -69,8 +95,7 @@ class JamPlayerSynchronizer(
             feedbackTokens = null,
             resultType = null
         )
-        // FIX: Fire and forget the database insertion in the background. 
-        // This guarantees the syncMutex is never blocked if Room hangs.
+        // Fire-and-forget DB insert — never block the sync path on I/O
         scope.launch {
             try {
                 songRepository.insertSong(track.toSongEntity()).firstOrNull()
@@ -78,91 +103,92 @@ class JamPlayerSynchronizer(
                 e.printStackTrace()
             }
         }
-        
         return track
     }
 
     init {
-        // ── 1. Guest & Host: apply incoming playback state / Clear queue on join ──
+        // ── SECTION 1: React to session lifecycle changes and sync Guest player state ──
         scope.launch {
             var wasInSession = false
-            var preJamQueueData: com.maxrave.domain.mediaservice.handler.QueueData.Data? = null
-            jamRepository.sessionState.collectLatest { session ->
+            // MUST use collect (not collectLatest) here.
+            // collectLatest would cancel the block mid-execution whenever sessionState emits a new value
+            // (which happens constantly via STATE_SYNC). This cancels track loads and play commands
+            // mid-flight, leaving ExoPlayer in a broken half-initialized state.
+            jamRepository.sessionState.collect { session ->
+
+                // ─── Session Started ───
                 if (session != null && !wasInSession) {
-                    // Save pre-jam queue data
-                    preJamQueueData = mediaPlayerHandler.queueData.value?.data
                     lastSyncedSongId = null
-                    // Pause audio and wipe local queue for Guest to isolate Jam room cleanly.
-                    // Host keeps their queue temporarily until JamViewModel sends PlayNow.
+                    // Guests pause & clear their local player to start fresh with the room's state
                     if (!session.isHost) {
                         if (mediaPlayerHandler.controlState.value.isPlaying) {
                             mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause)
                         }
                         mediaPlayerHandler.clearMediaItems()
                     }
-                } else if (session == null && wasInSession) {
-                    // Jam session ended (manual end, timeout, server room closure, or disconnect):
-                    mediaPlayerHandler.hardReset()
-                    preJamQueueData = null
+                }
+
+                // ─── Session Ended ───
+                if (session == null && wasInSession) {
+                    // Do NOT call hardReset() here. leaveSession() is async and includes a 150ms
+                    // network-flush delay, so by the time sessionState emits null the user may
+                    // have already navigated away and started playing a new song. hardReset() would
+                    // wipe that new track's nowPlayingState, making the MiniPlayer invisible.
+                    // Simply reset the sync cursor — the player keeps whatever it was doing.
                     lastSyncedSongId = null
                 }
+
                 wasInSession = session != null
+                if (session == null) return@collect
 
-                if (session == null) return@collectLatest
-                val pb = session.playbackState
+                // ─── Guest-only: Sync player to authoritative server state ───
+                // The Host manages its own player directly; it must NOT apply server state to itself
+                // or it creates an infinite feedback loop.
                 if (!session.isHost) {
-                    val currentSongId = pb.currentSongId
-                    val playerTracks = mediaPlayerHandler.queueData.value?.data?.listTracks
-
-                    if (!currentSongId.isNullOrBlank() && (lastSyncedSongId != currentSongId || playerTracks.isNullOrEmpty())) {
-                        if (syncMutex.tryLock()) {
-                            try {
-                                lastSyncedSongId = currentSongId
-                                val queueTrack = pb.queue.find { it.videoId.cleanId() == currentSongId.cleanId() }
-                                val track = getOrCreateTrack(
-                                    videoId = currentSongId,
-                                    title = queueTrack?.title ?: "",
-                                    artist = queueTrack?.artist ?: "",
-                                    thumbnailUrl = queueTrack?.thumbnailUrl,
-                                    durationMs = queueTrack?.durationMs ?: 0L
-                                )
-                                mediaPlayerHandler.loadMoreCatalog(arrayListOf(track), isAddToQueue = false)
-                                mediaPlayerHandler.playMediaItemInMediaSource(0)
-                            } finally {
-                                syncMutex.unlock()
-                            }
+                    val pb = session.playbackState
+                    syncMutex.withLock {
+                        // Load the current song if it has changed
+                        val currentSongId = pb.currentSongId
+                        if (!currentSongId.isNullOrBlank() &&
+                            (lastSyncedSongId?.cleanId() != currentSongId.cleanId() ||
+                             mediaPlayerHandler.queueData.value?.data?.listTracks.isNullOrEmpty())
+                        ) {
+                            lastSyncedSongId = currentSongId
+                            val queueTrack = pb.queue.find { it.videoId.cleanId() == currentSongId.cleanId() }
+                            val track = getOrCreateTrack(
+                                videoId = currentSongId,
+                                title = queueTrack?.title ?: "",
+                                artist = queueTrack?.artist ?: "",
+                                thumbnailUrl = queueTrack?.thumbnailUrl,
+                                durationMs = queueTrack?.durationMs ?: 0L
+                            )
+                            mediaPlayerHandler.addMediaItem(track.toGenericMediaItem(), playWhenReady = pb.isPlaying)
                         }
-                    }
 
-                    if (syncMutex.tryLock()) {
-                        try {
-                            val isLocalPlaying = mediaPlayerHandler.controlState.value.isPlaying
-                            if (pb.isPlaying && !isLocalPlaying) {
-                                mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause)
-                            } else if (!pb.isPlaying && isLocalPlaying) {
-                                mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause)
-                            }
+                        // Sync play/pause state.
+                        // IMPORTANT: Use (isPlaying || playWhenReady) to avoid pausing while ExoPlayer is buffering.
+                        val isLocalPlaying = mediaPlayerHandler.controlState.value.isPlaying || mediaPlayerHandler.player.playWhenReady
+                        if (pb.isPlaying && !isLocalPlaying) {
+                            mediaPlayerHandler.onPlayerEvent(PlayerEvent.Play)
+                        } else if (!pb.isPlaying && isLocalPlaying) {
+                            mediaPlayerHandler.onPlayerEvent(PlayerEvent.Pause)
+                        }
 
-                            // Drift correction (position)
-                            val currentPos = mediaPlayerHandler.getProgress()
-                            val lagMs = if (pb.serverTimestampMs > 0)
-                                (Clock.System.now().toEpochMilliseconds() - pb.serverTimestampMs).coerceAtLeast(0L)
-                            else 0L
-                            val expectedPos = if (pb.isPlaying) pb.playbackPositionMs + lagMs else pb.playbackPositionMs
-                            if (kotlin.math.abs(currentPos - expectedPos) > DRIFT_THRESHOLD_MS) {
-                                mediaPlayerHandler.onPlayerEvent(
-                                    PlayerEvent.UpdateProgress(expectedPos.toFloat() / 1000f)
-                                )
-                            }
-                        } finally {
-                            syncMutex.unlock()
+                        // Drift correction
+                        val lagMs = if (pb.serverTimestampMs > 0)
+                            (Clock.System.now().toEpochMilliseconds() - pb.serverTimestampMs).coerceAtLeast(0L)
+                        else 0L
+                        val expectedPos = if (pb.isPlaying) pb.playbackPositionMs + lagMs else pb.playbackPositionMs
+                        val currentPos = mediaPlayerHandler.getProgress()
+                        if (kotlin.math.abs(currentPos - expectedPos) > DRIFT_THRESHOLD_MS) {
+                            mediaPlayerHandler.player.seekTo(expectedPos)
                         }
                     }
                 }
             }
         }
 
-        // ── 2. Host: broadcast state on every player/track state change ─────────
+        // ── SECTION 2: Host broadcasts its player state to the server ────────────
         scope.launch {
             kotlinx.coroutines.flow.combine(
                 mediaPlayerHandler.controlState,
@@ -171,16 +197,20 @@ class JamPlayerSynchronizer(
                 controlState to nowPlayingState
             }.collectLatest { (controlState, nowPlayingState) ->
                 val session = jamRepository.sessionState.value
+                // Only the Host broadcasts; also skip while a sync lock is held
                 if (session == null || !session.isHost) return@collectLatest
-                // Non-suspending check — if a local sync is in progress, skip this broadcast
                 if (syncMutex.isLocked) return@collectLatest
 
-                val rawNowPlayingId = nowPlayingState.track?.videoId ?: mediaPlayerHandler.nowPlaying.value?.mediaId
+                val rawNowPlayingId = nowPlayingState.track?.videoId
+                    ?: mediaPlayerHandler.nowPlaying.value?.mediaId
                 val nowPlayingId = rawNowPlayingId?.cleanId()
+
+                // Consider player intended state (playWhenReady) so buffering isn't reported as paused
+                val isHostPlaying = controlState.isPlaying || mediaPlayerHandler.player.playWhenReady
 
                 val playbackState = JamPlaybackState(
                     currentSongId = nowPlayingId,
-                    isPlaying = controlState.isPlaying,
+                    isPlaying = isHostPlaying,
                     playbackPositionMs = mediaPlayerHandler.getProgress(),
                     queue = session.playbackState.queue,
                     shuffle = controlState.isShuffle,
@@ -191,16 +221,20 @@ class JamPlayerSynchronizer(
                     },
                     serverTimestampMs = Clock.System.now().toEpochMilliseconds(),
                 )
-
                 jamRepository.syncState(playbackState)
             }
         }
 
-        // ── 3. Host: execute incoming commands from guests ────────────────────
+        // ── SECTION 3: Host executes commands from Guests ─────────────────────────
+        // This flow ONLY processes commands when we ARE the Host.
+        // The local echo from sendCommand() also routes here, which is correct:
+        // the Host needs to act on its own PlayNow/Play/Pause commands immediately.
         scope.launch {
-            jamRepository.incomingCommands.collectLatest { command ->
+            jamRepository.incomingCommands.collect { command ->
                 val session = jamRepository.sessionState.value
-                if (session == null || !session.isHost) return@collectLatest
+                // CRITICAL: Only the Host should execute commands.
+                // Guests should NOT execute commands — their state comes from Section 1 (server state).
+                if (session == null || !session.isHost) return@collect
                 handleCommand(command)
             }
         }
@@ -209,14 +243,44 @@ class JamPlayerSynchronizer(
     private suspend fun handleCommand(command: JamCommand) {
         when (command) {
             is JamCommand.Play ->
-                mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause)
+                mediaPlayerHandler.onPlayerEvent(PlayerEvent.Play)
             is JamCommand.Pause ->
-                mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause)
+                mediaPlayerHandler.onPlayerEvent(PlayerEvent.Pause)
             is JamCommand.Seek ->
-                mediaPlayerHandler.onPlayerEvent(PlayerEvent.UpdateProgress(command.positionMs.toFloat() / 1000f))
+                mediaPlayerHandler.player.seekTo(command.positionMs)
             is JamCommand.Skip -> {
-                if (command.direction > 0) mediaPlayerHandler.onPlayerEvent(PlayerEvent.Next)
-                else mediaPlayerHandler.onPlayerEvent(PlayerEvent.Previous)
+                val session = jamRepository.sessionState.value
+                val queue = session?.playbackState?.queue ?: emptyList()
+                val currentSongId = session?.playbackState?.currentSongId?.cleanId()
+
+                if (command.direction > 0) {
+                    val upcomingQueue = queue.filter { it.videoId.cleanId() != currentSongId }
+                    val nextItem = upcomingQueue.firstOrNull { !it.isRecommendation } ?: upcomingQueue.firstOrNull()
+                    if (nextItem != null) {
+                        handleCommand(
+                            JamCommand.PlayNow(
+                                videoId = nextItem.videoId,
+                                title = nextItem.title,
+                                artist = nextItem.artist,
+                                thumbnailUrl = nextItem.thumbnailUrl,
+                                durationMs = nextItem.durationMs
+                            )
+                        )
+                        jamRepository.sendCommand(JamCommand.RemoveQueueItem(nextItem.queueId, nextItem.videoId))
+                    }
+                    // Do nothing if there's no next queued song
+                } else {
+                    val currentPos = mediaPlayerHandler.getProgress()
+                    if (currentPos > 5_000L) {
+                        mediaPlayerHandler.player.seekTo(0L)
+                    } else {
+                        if (mediaPlayerHandler.player.hasPreviousMediaItem()) {
+                            mediaPlayerHandler.onPlayerEvent(PlayerEvent.SkipToPrevious)
+                        } else {
+                            mediaPlayerHandler.player.seekTo(0L)
+                        }
+                    }
+                }
             }
             is JamCommand.SkipTo ->
                 mediaPlayerHandler.playMediaItemInMediaSource(command.index)
@@ -239,7 +303,6 @@ class JamPlayerSynchronizer(
                 }
             }
             is JamCommand.MoveQueueItem -> {
-                // Reorder the player queue using swap() steps
                 val tracks = mediaPlayerHandler.queueData.value?.data?.listTracks ?: return
                 val fromIndex = tracks.indexOfFirst { it.videoId == command.queueId }
                 if (fromIndex >= 0) {
@@ -254,59 +317,108 @@ class JamPlayerSynchronizer(
                     thumbnailUrl = command.thumbnailUrl,
                     durationMs = command.durationMs
                 )
-                mediaPlayerHandler.loadMoreCatalog(arrayListOf(track), isAddToQueue = true)
+                val currentMediaId = mediaPlayerHandler.nowPlayingState.value.track?.videoId?.cleanId()
+                    ?: mediaPlayerHandler.nowPlayingState.value.mediaItem.mediaId.cleanId()
+                    ?: mediaPlayerHandler.nowPlaying.value?.mediaId?.cleanId()
+                val isPlayerEmpty = currentMediaId.isNullOrBlank() || mediaPlayerHandler.player.mediaItemCount == 0
+
+                if (isPlayerEmpty) {
+                    mediaPlayerHandler.addMediaItem(track.toGenericMediaItem(), playWhenReady = true)
+                    lastSyncedSongId = command.videoId.cleanId()
+                    val controlState = mediaPlayerHandler.controlState.value
+                    jamRepository.syncState(
+                        JamPlaybackState(
+                            currentSongId = command.videoId.cleanId(),
+                            isPlaying = true,
+                            playbackPositionMs = 0L,
+                            queue = jamRepository.sessionState.value?.playbackState?.queue ?: emptyList(),
+                            shuffle = controlState.isShuffle,
+                            repeatMode = when (controlState.repeatState) {
+                                is com.maxrave.domain.mediaservice.handler.RepeatState.One -> JamRepeatMode.ONE
+                                is com.maxrave.domain.mediaservice.handler.RepeatState.All -> JamRepeatMode.QUEUE
+                                else -> JamRepeatMode.OFF
+                            },
+                            serverTimestampMs = Clock.System.now().toEpochMilliseconds(),
+                        )
+                    )
+                } else {
+                    mediaPlayerHandler.loadMoreCatalog(arrayListOf(track), isAddToQueue = true)
+                }
             }
             is JamCommand.PlayNow -> {
-                if (syncMutex.tryLock()) {
-                    try {
-                        val currentPlayingId = mediaPlayerHandler.nowPlayingState.value.track?.videoId?.cleanId()
-                            ?: mediaPlayerHandler.nowPlaying.value?.mediaId?.cleanId()
-                        val isPlaying = mediaPlayerHandler.controlState.value.isPlaying
+                syncMutex.withLock {
+                    val currentPlayingId = mediaPlayerHandler.nowPlayingState.value.track?.videoId?.cleanId()
+                        ?: mediaPlayerHandler.nowPlaying.value?.mediaId?.cleanId()
 
-                        if (currentPlayingId == command.videoId.cleanId() && isPlaying) {
-                            // Already playing this song locally.
-                            lastSyncedSongId = command.videoId.cleanId()
-                            
-                            // FIX: We must manually broadcast this state to the server!
-                            // Since ExoPlayer didn't restart, the state observers in Section 2 won't fire.
-                            // If we don't sync here, the server room stays empty for all guests.
-                            val controlState = mediaPlayerHandler.controlState.value
-                            jamRepository.syncState(
-                                JamPlaybackState(
-                                    currentSongId = currentPlayingId,
-                                    isPlaying = true,
-                                    playbackPositionMs = mediaPlayerHandler.getProgress(),
-                                    queue = jamRepository.sessionState.value?.playbackState?.queue ?: emptyList(),
-                                    shuffle = controlState.isShuffle,
-                                    repeatMode = when (controlState.repeatState) {
-                                        is com.maxrave.domain.mediaservice.handler.RepeatState.One -> JamRepeatMode.ONE
-                                        is com.maxrave.domain.mediaservice.handler.RepeatState.All -> JamRepeatMode.QUEUE
-                                        else -> JamRepeatMode.OFF
-                                    },
-                                    serverTimestampMs = Clock.System.now().toEpochMilliseconds(),
-                                )
-                            )
-                        } else {
-                            val track = getOrCreateTrack(
-                                videoId = command.videoId,
-                                title = command.title,
-                                artist = command.artist,
-                                thumbnailUrl = command.thumbnailUrl,
-                                durationMs = command.durationMs
-                            )
-                            // Clear old player items so previous track does not linger in local queue
-                            mediaPlayerHandler.clearMediaItems()
-                            mediaPlayerHandler.loadMoreCatalog(arrayListOf(track), isAddToQueue = false)
-                            mediaPlayerHandler.playMediaItemInMediaSource(0)
-                            // Mark this videoId as synced so the sessionState observer doesn't double-load
-                            lastSyncedSongId = command.videoId.cleanId()
+                    if (currentPlayingId == command.videoId.cleanId()) {
+                        // The track is already playing! Purge the rest of the queue safely without stopping playback.
+                        while (mediaPlayerHandler.player.mediaItemCount > 1) {
+                            val currentIdx = mediaPlayerHandler.player.currentMediaItemIndex
+                            if (currentIdx > 0) {
+                                mediaPlayerHandler.removeMediaItem(0)
+                            } else {
+                                mediaPlayerHandler.removeMediaItem(mediaPlayerHandler.player.mediaItemCount - 1)
+                            }
                         }
-                    } finally {
-                        syncMutex.unlock()
+
+                        if (!mediaPlayerHandler.controlState.value.isPlaying) {
+                            mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause)
+                        } else {
+                            mediaPlayerHandler.onPlayerEvent(PlayerEvent.Play)
+                        }
+                        lastSyncedSongId = command.videoId.cleanId()
+                        val controlState = mediaPlayerHandler.controlState.value
+                        jamRepository.syncState(
+                            JamPlaybackState(
+                                currentSongId = currentPlayingId,
+                                isPlaying = true,
+                                playbackPositionMs = mediaPlayerHandler.getProgress(),
+                                queue = jamRepository.sessionState.value?.playbackState?.queue ?: emptyList(),
+                                shuffle = controlState.isShuffle,
+                                repeatMode = when (controlState.repeatState) {
+                                    is com.maxrave.domain.mediaservice.handler.RepeatState.One -> JamRepeatMode.ONE
+                                    is com.maxrave.domain.mediaservice.handler.RepeatState.All -> JamRepeatMode.QUEUE
+                                    else -> JamRepeatMode.OFF
+                                },
+                                serverTimestampMs = Clock.System.now().toEpochMilliseconds(),
+                            )
+                        )
+                    } else {
+                        // Load and play the new track, purging any pre-existing local queue items
+                        val track = getOrCreateTrack(
+                            videoId = command.videoId,
+                            title = command.title,
+                            artist = command.artist,
+                            thumbnailUrl = command.thumbnailUrl,
+                            durationMs = command.durationMs
+                        )
+                        mediaPlayerHandler.addMediaItem(track.toGenericMediaItem(), playWhenReady = true)
+                        if (!mediaPlayerHandler.controlState.value.isPlaying) {
+                            mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause)
+                        } else {
+                            mediaPlayerHandler.onPlayerEvent(PlayerEvent.Play)
+                        }
+                        lastSyncedSongId = command.videoId.cleanId()
+
+                        val controlState = mediaPlayerHandler.controlState.value
+                        jamRepository.syncState(
+                            JamPlaybackState(
+                                currentSongId = command.videoId.cleanId(),
+                                isPlaying = true,
+                                playbackPositionMs = 0L,
+                                queue = jamRepository.sessionState.value?.playbackState?.queue ?: emptyList(),
+                                shuffle = controlState.isShuffle,
+                                repeatMode = when (controlState.repeatState) {
+                                    is com.maxrave.domain.mediaservice.handler.RepeatState.One -> JamRepeatMode.ONE
+                                    is com.maxrave.domain.mediaservice.handler.RepeatState.All -> JamRepeatMode.QUEUE
+                                    else -> JamRepeatMode.OFF
+                                },
+                                serverTimestampMs = Clock.System.now().toEpochMilliseconds(),
+                            )
+                        )
                     }
                 }
             }
-            // Shuffle and Repeat are toggles — only fire if current state differs
             is JamCommand.SetShuffle -> {
                 val current = mediaPlayerHandler.controlState.value.isShuffle
                 if (current != command.enabled) {
@@ -314,7 +426,6 @@ class JamPlayerSynchronizer(
                 }
             }
             is JamCommand.SetRepeat -> {
-                // Cycle Repeat until it matches — PlayerEvent.Repeat is a toggle
                 val currentRepeat = mediaPlayerHandler.controlState.value.repeatState
                 val alreadyMatches = when (command.mode) {
                     JamRepeatMode.OFF -> currentRepeat is com.maxrave.domain.mediaservice.handler.RepeatState.None

@@ -171,6 +171,12 @@ sealed class RepeatState {
 sealed class PlayerEvent {
     data object PlayPause : PlayerEvent()
 
+    /** Unconditionally starts playback (safe to call while buffering — sets playWhenReady). */
+    data object Play : PlayerEvent()
+
+    /** Unconditionally pauses playback. */
+    data object Pause : PlayerEvent()
+
     data object Backward : PlayerEvent()
 
     data object Forward : PlayerEvent()

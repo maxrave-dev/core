@@ -12,9 +12,11 @@ import com.marki19.domain.jam.JamSessionState
 import com.marki19.jamsync.JamMessage
 import com.marki19.jamsync.JamSyncClient
 import kotlin.time.ExperimentalTime
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -41,7 +43,11 @@ class JamRepositoryImpl(
     private val jamClient: JamSyncClient
 ) : JamRepository {
 
-    private val scope = CoroutineScope(Dispatchers.Main + Job())
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        println("JamRepositoryImpl Unhandled coroutine exception: ${throwable.message}")
+        throwable.printStackTrace()
+    }
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob() + exceptionHandler)
 
     private val _sessionState = MutableStateFlow<JamSessionState?>(null)
     override val sessionState: StateFlow<JamSessionState?> = _sessionState.asStateFlow()
@@ -308,27 +314,32 @@ class JamRepositoryImpl(
 
             "COMMAND" -> {
                 val currentState = _sessionState.value ?: return
+                // CRITICAL: The server echoes commands back to ALL clients, including the sender.
+                // The Host already acted on these commands via the local echo in sendCommand().
+                // Re-processing them here would create a toggle loop (Play→server→Play→toggles to Pause).
+                // Therefore, player-control commands are only dispatched to the local player for Guests.
+                val amHost = currentState.isHost
                 when (message.command) {
                     "PLAY" -> {
-                        _incomingCommands.tryEmit(JamCommand.Play)
                         updateState { it.copy(playbackState = it.playbackState.copy(isPlaying = true)) }
+                        if (!amHost) _incomingCommands.tryEmit(JamCommand.Play)
                     }
                     "PAUSE" -> {
-                        _incomingCommands.tryEmit(JamCommand.Pause)
                         updateState { it.copy(playbackState = it.playbackState.copy(isPlaying = false)) }
+                        if (!amHost) _incomingCommands.tryEmit(JamCommand.Pause)
                     }
                     "SEEK" -> {
                         val ms = message.payload?.long("positionMs") ?: 0L
-                        _incomingCommands.tryEmit(JamCommand.Seek(ms))
                         updateState { it.copy(playbackState = it.playbackState.copy(playbackPositionMs = ms)) }
+                        if (!amHost) _incomingCommands.tryEmit(JamCommand.Seek(ms))
                     }
                     "SKIP" -> {
                         val dir = message.payload?.int("direction") ?: 1
-                        _incomingCommands.tryEmit(JamCommand.Skip(dir))
+                        if (!amHost) _incomingCommands.tryEmit(JamCommand.Skip(dir))
                     }
                     "SKIP_TO" -> {
                         val index = message.payload?.int("index") ?: return
-                        _incomingCommands.tryEmit(JamCommand.SkipTo(index))
+                        if (!amHost) _incomingCommands.tryEmit(JamCommand.SkipTo(index))
                     }
                     "PLAY_NOW" -> {
                         val videoId = message.payload?.string("videoId") ?: return
@@ -338,20 +349,24 @@ class JamRepositoryImpl(
                         val durationMs = message.payload?.long("durationMs") ?: 0L
 
                         updateState { it.copy(playbackState = it.playbackState.copy(currentSongId = videoId, isPlaying = true)) }
-                        _incomingCommands.tryEmit(
-                            JamCommand.PlayNow(videoId, title, artist, thumbnailUrl, durationMs)
-                        )
+                        // Only emit to incomingCommands if we are NOT the host.
+                        // The host triggers its own PlayNow directly via sendCommand's local echo path.
+                        if (!amHost) {
+                            _incomingCommands.tryEmit(
+                                JamCommand.PlayNow(videoId, title, artist, thumbnailUrl, durationMs)
+                            )
+                        }
                     }
                     "SET_SHUFFLE" -> {
                         val enabled = message.payload?.bool("enabled") ?: false
-                        _incomingCommands.tryEmit(JamCommand.SetShuffle(enabled))
                         updateState { it.copy(playbackState = it.playbackState.copy(shuffle = enabled)) }
+                        if (!amHost) _incomingCommands.tryEmit(JamCommand.SetShuffle(enabled))
                     }
                     "SET_REPEAT" -> {
                         val modeRaw = message.payload?.string("mode") ?: "OFF"
                         val mode = try { JamRepeatMode.valueOf(modeRaw) } catch (_: Exception) { JamRepeatMode.OFF }
-                        _incomingCommands.tryEmit(JamCommand.SetRepeat(mode))
                         updateState { it.copy(playbackState = it.playbackState.copy(repeatMode = mode)) }
+                        if (!amHost) _incomingCommands.tryEmit(JamCommand.SetRepeat(mode))
                     }
                     "SHARE_TASTE" -> {
                         val senderId = message.userId ?: return
@@ -391,6 +406,7 @@ class JamRepositoryImpl(
     override suspend fun createSession(userId: String, name: String, imageUrl: String): Result<String> {
         localUserId = userId
         connectionJob?.cancel()
+        _sessionState.value = null // Ensure we send CREATE_SESSION, not a stale JOIN_SESSION
         // The server returns the roomId later via SESSION_CREATED, so we return empty/success here
         connectionJob = scope.launch {
             jamClient.connect(
@@ -418,6 +434,16 @@ class JamRepositoryImpl(
 }
 
     override suspend fun leaveSession() {
+        // Tell the server to tear down the room before we close the socket.
+        // Without this the server keeps the zombie room alive and any new createSession
+        // call ends up re-connecting to the stale room.
+        val isHost = _sessionState.value?.isHost == true
+        if (isHost) {
+            // Host ending the room: instruct the server to destroy it for all participants
+            jamClient.sendRaw(JamMessage(type = "END_SESSION"))
+        }
+        // Small delay to let the frame flush before closing the socket
+        kotlinx.coroutines.delay(150)
         connectionJob?.cancel()
         jamClient.disconnect()
         _sessionState.value = null
@@ -460,16 +486,19 @@ class JamRepositoryImpl(
         val type = commandType(command)
         val payload = commandPayload(command)
 
-        // Local echo for commands that affect local playback so the host reacts instantly, 
-        // in case the server does not broadcast to the sender, or to eliminate network latency.
-        if (command is JamCommand.PlayNow || command is JamCommand.Play || command is JamCommand.Pause || 
-            command is JamCommand.Skip || command is JamCommand.SkipTo || command is JamCommand.Seek || 
+        // Local echo for instant playback response.
+        // PlayNow is only echoed if WE are the host — the host's player must start immediately
+        // without waiting for the server round-trip. Guests get their PlayNow from the server
+        // PLAY_NOW broadcast (handled in handleServerMessage), NOT from here.
+        if (command is JamCommand.PlayNow && _sessionState.value?.isHost == true) {
+            _incomingCommands.tryEmit(command)
+        }
+        if (command is JamCommand.Play || command is JamCommand.Pause ||
+            command is JamCommand.Skip || command is JamCommand.SkipTo || command is JamCommand.Seek ||
             command is JamCommand.SetShuffle || command is JamCommand.SetRepeat) {
             _incomingCommands.tryEmit(command)
         }
 
-        // Rely on the server broadcast for ChatMessage so it doesn't duplicate
-        // (No local echo)
         jamClient.sendCommand(type, payload)
     }
 

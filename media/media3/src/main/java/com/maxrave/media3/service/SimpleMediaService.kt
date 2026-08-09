@@ -179,6 +179,9 @@ internal class SimpleMediaService :
         Logger.w("Service", "Simple Media Service Destroyed")
         if (simpleMediaServiceHandler.shouldReleaseOnTaskRemoved()) {
             release()
+        } else {
+            mediaSession?.release()
+            mediaSession = null
         }
     }
 
@@ -209,7 +212,7 @@ internal class SimpleMediaService :
                 service,
                 player,
                 callback,
-            ).setId(this.javaClass.name)
+            ).setId("${this.javaClass.name}-${java.util.UUID.randomUUID()}")
             .setBitmapLoader(coilBitmapLoader)
             .build()
 

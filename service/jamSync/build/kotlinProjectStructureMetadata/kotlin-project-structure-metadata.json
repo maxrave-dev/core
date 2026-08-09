@@ -53,7 +53,9 @@
           "nativeMain"
         ],
         "moduleDependency": [
+          "SimpMusic:ktorExt",
           "io.ktor:ktor-client-core",
+          "io.ktor:ktor-client-cio",
           "io.ktor:ktor-client-websockets",
           "org.jetbrains.kotlinx:kotlinx-serialization-json",
           "co.touchlab:kermit",
@@ -68,7 +70,9 @@
         "dependsOn": [],
         "moduleDependency": [
           "org.jetbrains.kotlin:kotlin-stdlib",
+          "SimpMusic:ktorExt",
           "io.ktor:ktor-client-core",
+          "io.ktor:ktor-client-cio",
           "io.ktor:ktor-client-websockets",
           "org.jetbrains.kotlinx:kotlinx-serialization-json",
           "co.touchlab:kermit",
@@ -82,7 +86,9 @@
           "appleMain"
         ],
         "moduleDependency": [
+          "SimpMusic:ktorExt",
           "io.ktor:ktor-client-core",
+          "io.ktor:ktor-client-cio",
           "io.ktor:ktor-client-websockets",
           "org.jetbrains.kotlinx:kotlinx-serialization-json",
           "co.touchlab:kermit",
@@ -98,7 +104,9 @@
           "commonMain"
         ],
         "moduleDependency": [
+          "SimpMusic:ktorExt",
           "io.ktor:ktor-client-core",
+          "io.ktor:ktor-client-cio",
           "io.ktor:ktor-client-websockets",
           "org.jetbrains.kotlinx:kotlinx-serialization-json",
           "co.touchlab:kermit",

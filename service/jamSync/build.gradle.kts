@@ -22,7 +22,9 @@ kotlin {
     sourceSets {
         commonMain {
             dependencies {
+                implementation(project(":ktorExt"))
                 implementation(libs.ktor.client.core)
+                implementation(libs.ktor.client.cio)
                 implementation(libs.ktor.client.websockets)
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.kermit.logging)
@@ -32,6 +34,7 @@ kotlin {
         androidMain {
             dependencies {
                 implementation(libs.coroutines.android)
+                implementation(libs.ktor.client.okhttp)
             }
         }
     }
