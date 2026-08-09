@@ -369,7 +369,7 @@ private fun provideResolvingDataSourceFactory(
         }
         
         if (!resolved) {
-            if (playerCached || downloadCache.isCached(mediaId, dataSpec.position, length)) {
+            if (playerCache.isFullyCached(mediaId, dataSpec.position) || downloadCache.isFullyCached(mediaId, dataSpec.position)) {
                 Logger.w("Stream", "Failed to resolve stream URL for $mediaId, but it is cached. Proceeding with local cache.")
                 return@Factory dataSpec
             }
