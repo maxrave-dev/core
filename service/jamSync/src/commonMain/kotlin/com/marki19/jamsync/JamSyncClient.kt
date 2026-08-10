@@ -22,7 +22,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import co.touchlab.kermit.Logger
 
-import io.ktor.client.request.get
 import com.maxrave.ktorext.getEngine
 
 @Serializable
@@ -51,8 +50,6 @@ class JamSyncClient(private val serverUrl: String) {
         }
     }
 
-    private val httpPingClient = HttpClient(getEngine())
-
     private val _messages = MutableSharedFlow<JamMessage>(extraBufferCapacity = 32)
     val messages = _messages.asSharedFlow()
 
@@ -64,28 +61,14 @@ class JamSyncClient(private val serverUrl: String) {
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun connect(getRoomId: () -> String?, userId: String, name: String, imageUrl: String) {
-        val httpHealthUrl = serverUrl
-            .replace("wss://", "https://")
-            .replace("ws://", "http://")
-            .trimEnd('/') + "/health"
-        
-        // Quick best-effort health check (max 3s). Never block the WebSocket connection indefinitely.
-        try {
-            Logger.d(tag = "JamSyncClient") { "Quick health ping to Render container at: $httpHealthUrl" }
-            kotlinx.coroutines.withTimeout(3_000L) {
-                val resp = httpPingClient.get(httpHealthUrl)
-                Logger.d(tag = "JamSyncClient") { "Health ping status: ${resp.status.value}" }
-            }
-        } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
-            Logger.w(tag = "JamSyncClient") { "Health ping skipped or timed out (${e.message}), proceeding to WebSocket directly." }
-        }
+        // Guarantee any previous session socket, coroutine, and outbound queue are 100% terminated
+        disconnect()
 
         var backoffMs = 500L
         while (kotlinx.coroutines.currentCoroutineContext().isActive) {
             try {
                 Logger.d(tag = "JamSyncClient") { "Connecting to WebSocket $serverUrl …" }
-                val activeSession = kotlinx.coroutines.withTimeout(15_000L) {
+                val activeSession = kotlinx.coroutines.withTimeout(5_000L) {
                     wsClient.webSocketSession(serverUrl)
                 }
                 

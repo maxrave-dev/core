@@ -434,20 +434,19 @@ class JamRepositoryImpl(
 }
 
     override suspend fun leaveSession() {
-        // Tell the server to tear down the room before we close the socket.
-        // Without this the server keeps the zombie room alive and any new createSession
-        // call ends up re-connecting to the stale room.
-        val isHost = _sessionState.value?.isHost == true
+        val currentSession = _sessionState.value ?: return
+        val isHost = currentSession.isHost
         if (isHost) {
-            // Host ending the room: instruct the server to destroy it for all participants
             jamClient.sendRaw(JamMessage(type = "END_SESSION"))
+        } else {
+            jamClient.sendRaw(JamMessage(type = "LEAVE_SESSION"))
         }
-        // Small delay to let the frame flush before closing the socket
-        kotlinx.coroutines.delay(150)
-        connectionJob?.cancel()
-        jamClient.disconnect()
+        kotlinx.coroutines.delay(100)
         _sessionState.value = null
         _chatMessages.value = emptyList()
+        connectionJob?.cancel()
+        connectionJob = null
+        jamClient.disconnect()
     }
 
     override suspend fun syncState(state: JamPlaybackState) {

@@ -149,10 +149,11 @@ class JamPlayerSynchronizer(
                     syncMutex.withLock {
                         // Load the current song if it has changed
                         val currentSongId = pb.currentSongId
-                        if (!currentSongId.isNullOrBlank() &&
+                        val isNewTrack = !currentSongId.isNullOrBlank() &&
                             (lastSyncedSongId?.cleanId() != currentSongId.cleanId() ||
                              mediaPlayerHandler.queueData.value?.data?.listTracks.isNullOrEmpty())
-                        ) {
+
+                        if (isNewTrack && !currentSongId.isNullOrBlank()) {
                             lastSyncedSongId = currentSongId
                             val queueTrack = pb.queue.find { it.videoId.cleanId() == currentSongId.cleanId() }
                             val track = getOrCreateTrack(
@@ -163,6 +164,15 @@ class JamPlayerSynchronizer(
                                 durationMs = queueTrack?.durationMs ?: 0L
                             )
                             mediaPlayerHandler.addMediaItem(track.toGenericMediaItem(), playWhenReady = pb.isPlaying)
+
+                            // For slow connections: calculate expected position considering network transit lag
+                            val lagMs = if (pb.serverTimestampMs > 0)
+                                (Clock.System.now().toEpochMilliseconds() - pb.serverTimestampMs).coerceAtLeast(0L)
+                            else 0L
+                            val initialTargetPos = if (pb.isPlaying) pb.playbackPositionMs + lagMs else pb.playbackPositionMs
+                            if (initialTargetPos > 1000L) {
+                                mediaPlayerHandler.player.seekTo(initialTargetPos)
+                            }
                         }
 
                         // Sync play/pause state.
@@ -174,14 +184,16 @@ class JamPlayerSynchronizer(
                             mediaPlayerHandler.onPlayerEvent(PlayerEvent.Pause)
                         }
 
-                        // Drift correction
-                        val lagMs = if (pb.serverTimestampMs > 0)
-                            (Clock.System.now().toEpochMilliseconds() - pb.serverTimestampMs).coerceAtLeast(0L)
-                        else 0L
-                        val expectedPos = if (pb.isPlaying) pb.playbackPositionMs + lagMs else pb.playbackPositionMs
-                        val currentPos = mediaPlayerHandler.getProgress()
-                        if (kotlin.math.abs(currentPos - expectedPos) > DRIFT_THRESHOLD_MS) {
-                            mediaPlayerHandler.player.seekTo(expectedPos)
+                        // Drift correction for ongoing playback
+                        if (!isNewTrack) {
+                            val lagMs = if (pb.serverTimestampMs > 0)
+                                (Clock.System.now().toEpochMilliseconds() - pb.serverTimestampMs).coerceAtLeast(0L)
+                            else 0L
+                            val expectedPos = if (pb.isPlaying) pb.playbackPositionMs + lagMs else pb.playbackPositionMs
+                            val currentPos = mediaPlayerHandler.getProgress()
+                            if (kotlin.math.abs(currentPos - expectedPos) > DRIFT_THRESHOLD_MS) {
+                                mediaPlayerHandler.player.seekTo(expectedPos)
+                            }
                         }
                     }
                 }
