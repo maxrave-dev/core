@@ -2348,6 +2348,7 @@ class MpvPlayerAdapter(
                                 if (player == null) {
                                     Logger.w(TAG, "Precaching skipped for $idx: could not create mpv player")
                                 } else {
+                                    player.setMasterVolume((internalVolume * 100).toInt())
                                     player.loadFile(buildPlaybackUrl(source), startPaused = true)
                                     precachedPlayers[mediaItem.mediaId] =
                                         PrecachedPlayer(player, mediaItem, source)
