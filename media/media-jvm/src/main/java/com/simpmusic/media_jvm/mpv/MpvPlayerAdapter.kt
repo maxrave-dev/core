@@ -847,7 +847,14 @@ class MpvPlayerAdapter(
             Logger.w(TAG, "Setting volume to $value")
             internalVolume = value.coerceIn(0f, 1f)
             // mpv volume: 0-100 (100 = unattenuated). Map our 0.0-1.0 to 0-100.
-            currentPlayer?.setMasterVolume((internalVolume * 100).toInt())
+            val percent = (internalVolume * 100).toInt()
+            currentPlayer?.setMasterVolume(percent)
+            // Precached handles are paused and inaudible, but `ao-volume` is not per-handle
+            // everywhere: on Windows every handle lands in the process' default WASAPI session
+            // (mpv passes a NULL AudioSessionGuid), so one ISimpleAudioVolume covers them all.
+            // A sleeping handle still holding an older master would therefore overwrite this
+            // level as soon as its own AUDIO_RECONFIG fires and re-asserts `ao-volume`.
+            precachedPlayers.values.forEach { it.player.setMasterVolume(percent) }
             notifyListeners { onVolumeChanged(internalVolume) }
         }
 
@@ -2348,6 +2355,7 @@ class MpvPlayerAdapter(
                                 if (player == null) {
                                     Logger.w(TAG, "Precaching skipped for $idx: could not create mpv player")
                                 } else {
+                                    player.setMasterVolume((internalVolume * 100).toInt())
                                     player.loadFile(buildPlaybackUrl(source), startPaused = true)
                                     precachedPlayers[mediaItem.mediaId] =
                                         PrecachedPlayer(player, mediaItem, source)
