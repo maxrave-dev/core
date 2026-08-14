@@ -19,6 +19,8 @@ kotlin {
         implementation(libs.koin.jvm)
         implementation(libs.kotlinx.serialization.json)
         implementation(libs.kotlinx.coroutinesSwing)
+        // Native desktop notifications: Windows Toast, macOS UserNotifications, Linux D-Bus.
+        implementation(libs.nucleus.notification)
 
         // mpv — libmpv is bound through JNA (see MpvLibrary).
         implementation(libs.jna)
