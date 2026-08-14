@@ -30,6 +30,15 @@ interface SongRepository {
 
     fun getLikedSongs(): Flow<List<SongEntity>>
 
+    /**
+     * Queue every liked song that is not already offline, and return how many were queued.
+     *
+     * Used when the user switches auto-download on: liking a song from then on downloads it, and
+     * this catches up on everything they liked before. Songs already downloaded are skipped, so
+     * turning the setting off and on again costs nothing.
+     */
+    suspend fun downloadAllLikedSongs(): Int
+
     fun getCanvasSong(max: Int): Flow<List<SongEntity>>
 
     fun getSongById(id: String): Flow<SongEntity?>

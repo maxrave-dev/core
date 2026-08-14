@@ -318,6 +318,17 @@ interface DataStoreManager {
 
     suspend fun setCrossfadeSkipAlbum(enabled: Boolean)
 
+    /**
+     * When on, liking a song also queues it for offline download, at the existing download quality.
+     *
+     * Off by default — it spends storage and data without the user asking each time. Only applies
+     * from the moment it is switched on: songs liked earlier are left alone, and unliking never
+     * removes a download that already exists.
+     */
+    val autoDownloadLikedSongs: Flow<String>
+
+    suspend fun setAutoDownloadLikedSongs(enabled: Boolean)
+
     val youtubeSubtitleLanguage: Flow<String>
 
     suspend fun setYoutubeSubtitleLanguage(language: String)

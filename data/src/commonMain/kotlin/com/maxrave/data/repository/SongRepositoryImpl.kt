@@ -7,6 +7,7 @@ import com.maxrave.data.mapping.toListTrack
 import com.maxrave.data.mapping.toSongItemForDownload
 import com.maxrave.data.mapping.toWatchEndpoint
 import com.maxrave.domain.data.entities.QueueEntity
+import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.model.browse.album.Track
@@ -14,6 +15,7 @@ import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
+import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
@@ -34,6 +36,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.LocalDateTime
+import org.koin.mp.KoinPlatform.getKoin
 
 private const val TAG = "SongRepositoryImpl"
 
@@ -101,6 +104,19 @@ internal class SongRepositoryImpl(
             )
         }.flowOn(Dispatchers.IO)
 
+    override suspend fun downloadAllLikedSongs(): Int =
+        withContext(Dispatchers.IO) {
+            val pending =
+                getFullDataFromDB { limit, offset ->
+                    localDataSource.getLikedSongs(limit, offset)
+                }.filter { it.downloadState != DownloadState.STATE_DOWNLOADED }
+            Logger.d(TAG, "Auto-download: queueing ${pending.size} liked songs")
+            pending.forEach { song ->
+                downloadHandler.downloadTrack(song.videoId, song.title, song.thumbnails.orEmpty())
+            }
+            pending.size
+        }
+
     override fun getCanvasSong(max: Int): Flow<List<SongEntity>> =
         flow {
             emit(localDataSource.getCanvasSong(max))
@@ -130,11 +146,32 @@ internal class SongRepositoryImpl(
             localDataSource.resetTotalPlayTime(videoId)
         }
 
+    /**
+     * Resolved lazily rather than taken in the constructor: the download handler is implemented in
+     * the platform media modules, and pulling it in at construction time would make this repository
+     * depend on them being built first.
+     */
+    private val downloadHandler: DownloadHandler by lazy { getKoin().get() }
+
+    /**
+     * Note the side effect: liking a song can start a download, when the user has asked for that.
+     *
+     * Deliberately one-way. It fires only on the way *in* (`likeStatus == 1`) and only for songs
+     * not already offline, so re-liking something you already have does not queue it twice, and
+     * unliking never removes a file — the user downloaded it, only they should undo that.
+     */
     override suspend fun updateLikeStatus(
         videoId: String,
         likeStatus: Int,
     ) = withContext(Dispatchers.Main) {
         localDataSource.updateLiked(likeStatus, videoId)
+        if (likeStatus == 1 && dataStoreManager.autoDownloadLikedSongs.first() == TRUE) {
+            val song = localDataSource.getSong(videoId)
+            if (song != null && song.downloadState != DownloadState.STATE_DOWNLOADED) {
+                Logger.d(TAG, "Auto-downloading liked song: $videoId")
+                downloadHandler.downloadTrack(videoId, song.title, song.thumbnails.orEmpty())
+            }
+        }
 //        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
 //            if (likeStatus == 1) {
 //                addToYouTubeLiked(videoId).collect { result ->
