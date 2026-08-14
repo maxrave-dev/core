@@ -32,6 +32,7 @@ import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.audio.BiquadFilter
 import com.maxrave.media3.audio.CrossfadeFilterAudioProcessor
+import com.maxrave.media3.audio.SleepFadeAudioProcessor
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter.Companion.SPEED_PITCH_STEP
 import com.maxrave.media3.service.mediasourcefactory.MergingMediaSourceFactory
 import kotlinx.coroutines.CancellationException
@@ -118,6 +119,12 @@ internal class CrossfadeExoPlayerAdapter(
                 Logger.d(TAG, "Watch video enabled: $watchVideoEnabled")
             }
         }
+        coroutineScope.launch {
+            dataStoreManager.crossfadeSkipAlbum.collect { enabled ->
+                skipCrossfadeInAlbum = (enabled == DataStoreManager.TRUE)
+                Logger.d(TAG, "Skip crossfade inside album: $skipCrossfadeInAlbum")
+            }
+        }
     }
 
     // ========== State Management ==========
@@ -135,6 +142,14 @@ internal class CrossfadeExoPlayerAdapter(
 
     @Volatile
     private var internalVolume = 1.0f
+
+    /**
+     * Sleep-timer fade attenuation. Applied on a separate volume line — every player's
+     * [SleepFadeAudioProcessor] reads this value straight out of here, so writing it once covers
+     * both players of a crossfade and nothing on the `volume` line has to be touched.
+     */
+    @Volatile
+    private var internalSleepFadeFactor = 1.0f
 
     @Volatile
     private var internalRepeatMode = PlayerConstants.REPEAT_MODE_OFF
@@ -286,6 +301,14 @@ internal class CrossfadeExoPlayerAdapter(
     // MergingMediaSourceFactory uses to build a merged audio+video source.
     @Volatile
     private var watchVideoEnabled = false
+
+    /** User setting: leave transitions inside an album alone. */
+    @Volatile
+    private var skipCrossfadeInAlbum = false
+
+    /** Set by the handler when an album is loaded; empty for every other kind of queue. */
+    @Volatile
+    private var internalAlbumTrackIds: Set<String> = emptySet()
 
     @Volatile
     private var secondaryPlayer: ExoPlayer? = null
@@ -468,6 +491,7 @@ internal class CrossfadeExoPlayerAdapter(
      */
     private fun createExoPlayerInstance(): PlayerWithFilter {
         val crossfadeFilter = CrossfadeFilterAudioProcessor()
+        val sleepFade = SleepFadeAudioProcessor { internalSleepFadeFactor }
 
         val perPlayerRenderers =
             object : DefaultRenderersFactory(context) {
@@ -482,7 +506,7 @@ internal class CrossfadeExoPlayerAdapter(
                         .setEnableAudioOutputPlaybackParameters(enableAudioTrackPlaybackParams)
                         .setAudioProcessorChain(
                             DefaultAudioSink.DefaultAudioProcessorChain(
-                                arrayOf(crossfadeFilter),
+                                arrayOf(crossfadeFilter, sleepFade),
                                 SilenceSkippingAudioProcessor(
                                     2_000_000,
                                     (20_000 / 2_000_000).toFloat(),
@@ -561,35 +585,52 @@ internal class CrossfadeExoPlayerAdapter(
         castRemotePlayer?.let { remote ->
             internalPlayWhenReady = false
             remote.pause()
+            // The coroutine below never runs on this path, so the sleep attenuation has to be
+            // cleared here too. Left set, it would outlive the cast session: the processor stays in
+            // the local chain and would keep multiplying every sample by ~0, leaving the app silent
+            // with a full volume slider until the process restarts.
+            internalSleepFadeFactor = 1f
             return
         }
         coroutineScope.launch {
-            forwardingPlayer.suppressPlaybackEnded = false
-            // Cancel any ongoing crossfade by committing the incoming track (A+1) as current.
-            // Direction 1: pausing during a crossfade stays on A+1 (the track the UI already
-            // shows) and freezes it in place via the when(internalState) block below — it does
-            // NOT jump back to A.
-            if (isCrossfading) {
-                Logger.d(TAG, "Pause: committing incoming (A+1) and pausing in place")
-                commitIncomingAsCurrentInternal()
-            }
+            try {
+                forwardingPlayer.suppressPlaybackEnded = false
+                // Cancel any ongoing crossfade by committing the incoming track (A+1) as current.
+                // Direction 1: pausing during a crossfade stays on A+1 (the track the UI already
+                // shows) and freezes it in place via the when(internalState) block below — it does
+                // NOT jump back to A.
+                if (isCrossfading) {
+                    Logger.d(TAG, "Pause: committing incoming (A+1) and pausing in place")
+                    commitIncomingAsCurrentInternal()
+                }
 
-            when (internalState) {
-                InternalState.PLAYING, InternalState.READY -> {
-                    currentPlayer?.let { player ->
-                        player.pause()
-                        transitionToState(InternalState.PAUSED)
+                when (internalState) {
+                    InternalState.PLAYING, InternalState.READY -> {
+                        currentPlayer?.let { player ->
+                            player.pause()
+                            transitionToState(InternalState.PAUSED)
+                            internalPlayWhenReady = false
+                        }
+                    }
+
+                    InternalState.PREPARING -> {
                         internalPlayWhenReady = false
                     }
-                }
 
-                InternalState.PREPARING -> {
-                    internalPlayWhenReady = false
+                    else -> {
+                        Logger.w(TAG, "Pause: Called in invalid state: $internalState")
+                    }
                 }
-
-                else -> {
-                    Logger.w(TAG, "Pause: Called in invalid state: $internalState")
-                }
+            } finally {
+                // Playback has stopped, so a sleep-timer attenuation has served its purpose.
+                // Cleared here rather than by the caller, which cannot tell when this actually
+                // happened — pause() only queues this coroutine.
+                //
+                // In `finally` because the block above can throw or be cancelled (committing a
+                // crossfade joins a job that may be cancelled). Anything that skips this leaves the
+                // factor near zero, and since the processor multiplies every sample by it, that is
+                // permanent silence with a full volume slider — no code path recovers from it.
+                internalSleepFadeFactor = 1f
             }
         }
     }
@@ -618,12 +659,24 @@ internal class CrossfadeExoPlayerAdapter(
             cachedPosition = positionMs
             return
         }
-        currentPlayer?.let { player ->
-            try {
-                player.seekTo(positionMs)
-                cachedPosition = positionMs
-            } catch (e: Exception) {
-                Logger.e(TAG, "Seek exception: ${e.message}", e)
+        // Reflected immediately so the progress bar does not snap back while the seek is queued.
+        cachedPosition = positionMs
+        coroutineScope.launch {
+            // Seeking mid-crossfade: commit the incoming track (A+1) as current first, the same way
+            // pause() does. The progress bar the user just dragged belongs to A+1 — that is the
+            // track the UI shows and the one position updates are read from during a crossfade.
+            // Without this the seek lands on the *outgoing* track while the crossfade carries on,
+            // so the old song keeps playing underneath and the seek appears to do nothing.
+            if (isCrossfading) {
+                Logger.d(TAG, "seekTo: committing incoming (A+1) before seeking")
+                commitIncomingAsCurrentInternal()
+            }
+            currentPlayer?.let { player ->
+                try {
+                    player.seekTo(positionMs)
+                } catch (e: Exception) {
+                    Logger.e(TAG, "Seek exception: ${e.message}", e)
+                }
             }
         }
     }
@@ -1158,6 +1211,26 @@ internal class CrossfadeExoPlayerAdapter(
             castRemotePlayer?.volume = internalVolume
             currentPlayer?.volume = internalVolume
             listeners.forEach { it.onVolumeChanged(internalVolume) }
+        }
+
+    override var albumTrackIds: Set<String>
+        get() = internalAlbumTrackIds
+        set(value) {
+            internalAlbumTrackIds = value
+        }
+
+    override var sleepFadeFactor: Float
+        get() = internalSleepFadeFactor
+        set(value) {
+            // Nothing to push: each player's SleepFadeAudioProcessor samples this on every buffer.
+            // That is the whole point of keeping it off the `volume` line, which the crossfade ramp
+            // owns and rewrites fifty times per transition.
+            //
+            // Deliberately not forwarded to castRemotePlayer, unlike `volume` above. While casting
+            // the local pipeline produces no audio, so the processor never sees data and the fade
+            // would have to be rebuilt as a volume ramp on the receiver. Decided against: the sleep
+            // timer simply stops the cast device without fading.
+            internalSleepFadeFactor = value.coerceIn(0f, 1f)
         }
 
     override var skipSilenceEnabled: Boolean
@@ -1739,6 +1812,47 @@ internal class CrossfadeExoPlayerAdapter(
     private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
 
     /**
+     * Crossfade needs a track long enough that both sides of the blend are still worth hearing. At
+     * the default 5s fade a 20s track would spend half its length fading in or out, and a longer
+     * fade setting swallows it whole — so the bar scales with the fade rather than being fixed.
+     *
+     * Only the current track is measured: the next one has not been prepared yet, so its duration
+     * is unknown until it becomes current.
+     */
+    private fun isCurrentTrackTooShortForCrossfade(): Boolean {
+        val duration = currentPlayer?.duration ?: return false
+        if (duration <= 0L) return false
+        val fadeMs =
+            if (crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO) {
+                // Auto resolves to 20–45s, nowhere near the 5s default — measuring against the
+                // default would let a 30s track through and then swallow it whole.
+                resolveAutoCrossfadeDurationMs(
+                    currentMediaItem?.mediaId ?: "",
+                    playlist.getOrNull(getNextMediaItemIndex())?.mediaId ?: "",
+                )
+            } else {
+                crossfadeDurationMs
+            }
+        return duration < maxOf(MIN_CROSSFADE_TRACK_MS, fadeMs * 3L)
+    }
+
+    /**
+     * True when both this track and the next came from the album loaded in the queue, and the user
+     * asked for albums to play through uninterrupted.
+     *
+     * Requiring *both* sides is what keeps the edges intact: the last album track into the first
+     * track endless queue appended still crossfades, because that one is not in the set.
+     */
+    private fun isWithinAlbum(): Boolean {
+        if (!skipCrossfadeInAlbum) return false
+        val ids = internalAlbumTrackIds
+        if (ids.isEmpty()) return false
+        val current = currentMediaItem?.mediaId ?: return false
+        val next = playlist.getOrNull(getNextMediaItemIndex())?.mediaId ?: return false
+        return current in ids && next in ids
+    }
+
+    /**
      * Handle track end - mirrors GstreamerPlayerAdapter.handleTrackEndInternal()
      */
     private fun handleTrackEndInternal() {
@@ -1750,7 +1864,9 @@ internal class CrossfadeExoPlayerAdapter(
                 hasNextMediaItem() &&
                 !isCrossfading &&
                 !isCurrentTrackVideo() &&
-                !isNextTrackVideo()
+                !isNextTrackVideo() &&
+                !isCurrentTrackTooShortForCrossfade() &&
+                !isWithinAlbum()
 
         if (shouldCrossfade) {
             val nextIndex = getNextMediaItemIndex()
@@ -2484,6 +2600,9 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     companion object {
+        /** Floor for the shortest track worth crossfading, in ms. */
+        private const val MIN_CROSSFADE_TRACK_MS = 20_000L
+
         // DJ crossfade sigmoid steepness (higher = sharper S-curve transition)
         private const val DJ_FILTER_SIGMOID_K = 6f
 
@@ -2618,7 +2737,9 @@ internal class CrossfadeExoPlayerAdapter(
                                     dur > 0 &&
                                     pos > 0 &&
                                     !isCurrentTrackVideo() &&
-                                    !isNextTrackVideo()
+                                    !isNextTrackVideo() &&
+                                    !isCurrentTrackTooShortForCrossfade() &&
+                                    !isWithinAlbum()
                                 ) {
                                     // Account for playback speed: at higher speed, media time
                                     // is consumed faster, so wall-clock remaining is shorter

@@ -96,6 +96,30 @@ interface MediaPlayerInterface {
     // Audio settings
     val audioSessionId: Int
     var volume: Float
+
+    /**
+     * Attenuation applied on top of [volume] while the sleep timer fades playback out,
+     * in `0f..1f` — `1f` meaning no attenuation.
+     *
+     * Deliberately separate from [volume]: that one is the *user's* level, and it is
+     * reported back through [MediaPlayerListener.onVolumeChanged], so ramping it would
+     * drag the volume slider down in the UI and — if the process died mid-fade — leave
+     * the user with a silent app. Same reasoning as the ducking factor applied on audio
+     * focus loss: every owner keeps its own gain, and they are only multiplied together
+     * at the point the value reaches a player.
+     */
+    var sleepFadeFactor: Float
+
+    /**
+     * `mediaId`s of the tracks that came from the album currently loaded in the queue, or empty
+     * when the queue is not an album.
+     *
+     * Playback uses it to leave the transitions *inside* an album alone while still crossfading at
+     * its edges — the last album track into the first radio track that endless queue appended, for
+     * instance. A set of ids rather than a count because shuffle reorders the queue, radio included,
+     * so position tells you nothing about which tracks belonged to the album.
+     */
+    var albumTrackIds: Set<String>
     var skipSilenceEnabled: Boolean
 
     // Listener management

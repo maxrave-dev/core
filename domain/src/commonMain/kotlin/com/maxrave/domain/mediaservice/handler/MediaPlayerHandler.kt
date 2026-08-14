@@ -337,11 +337,21 @@ data class QueueData(
 
     fun isRadio(): Boolean = this.data.playlistType == PlaylistType.RADIO
 
-    fun isPlaylist(): Boolean = this.data.playlistType == PlaylistType.PLAYLIST
+    /** True for both plain playlists and albums — an album queue is a playlist that knows its origin. */
+    fun isPlaylist(): Boolean =
+        this.data.playlistType == PlaylistType.PLAYLIST ||
+            this.data.playlistType == PlaylistType.ALBUM
 }
 
 enum class PlaylistType {
     PLAYLIST,
+
+    /**
+     * A queue loaded from an album. Behaves exactly like [PLAYLIST] everywhere else — it exists so
+     * playback can tell that the tracks were sequenced together deliberately, which is what lets
+     * crossfade step aside inside an album while still fading into whatever is queued after it.
+     */
+    ALBUM,
     LOCAL_PLAYLIST,
     RADIO,
 }

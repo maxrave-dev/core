@@ -308,6 +308,16 @@ interface DataStoreManager {
 
     suspend fun setCrossfadeDjMode(enabled: Boolean)
 
+    /**
+     * When on, transitions *between tracks of the same album* skip the crossfade, so an album that
+     * was sequenced to run continuously keeps doing so. Edges still crossfade: the last album track
+     * into whatever follows it fades normally. Off by default — it changes how crossfade behaves
+     * for anyone already using it.
+     */
+    val crossfadeSkipAlbum: Flow<String>
+
+    suspend fun setCrossfadeSkipAlbum(enabled: Boolean)
+
     val youtubeSubtitleLanguage: Flow<String>
 
     suspend fun setYoutubeSubtitleLanguage(language: String)

@@ -98,6 +98,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import org.koin.mp.KoinPlatform.getKoin
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.pow
 
 private val TAG = "Media3ServiceHandlerImpl"
@@ -208,6 +210,22 @@ internal class MediaServiceHandlerImpl(
     private var volumeNormalizationJob: Job? = null
 
     private var sleepTimerJob: Job? = null
+
+    /** How long the sleep timer spends ramping the volume down before it stops playback. */
+    private val sleepFadeDurationMs = 5_000L
+
+    /** Steps in that ramp — 50, matching the crossfade ramp, so 100ms per step at 5 seconds. */
+    private val sleepFadeSteps = 50
+
+    /**
+     * Silence held after the ramp before playback is actually stopped.
+     *
+     * The gain is applied in the audio pipeline, ahead of the sink, so it reaches the speaker one
+     * buffer late — AudioTrack alone holds 250–750 ms. Pausing the moment the ramp hits zero would
+     * therefore cut while the audible level is still around -12 dBFS, which is exactly the abrupt
+     * stop this feature exists to remove. Sized above the largest buffer media3 will allocate.
+     */
+    private val sleepFadeTailMs = 800L
 
     private var getSkipSegmentsJob: Job? = null
 
@@ -1029,41 +1047,91 @@ internal class MediaServiceHandlerImpl(
         sleepTimerJob?.cancel()
         sleepTimerJob =
             coroutineScope.launch(Dispatchers.Main) {
-                if (minutes == Int.MAX_VALUE) {
-                    // "End of current song" mode: use sentinel -1 to indicate this special state
-                    _sleepTimerState.update {
-                        it.copy(isDone = false, timeRemaining = -1)
-                    }
-                    // Poll until player duration is available (may be -1 initially)
-                    var duration = player.duration
-                    while (duration <= 0L) {
-                        delay(500)
-                        duration = player.duration
-                    }
-                    val remaining = (duration - player.currentPosition).coerceAtLeast(0L)
-                    delay(remaining)
-                    player.pause()
-                    _sleepTimerState.update {
-                        it.copy(isDone = true, timeRemaining = 0)
-                    }
-                } else {
-                    _sleepTimerState.update {
-                        it.copy(isDone = false, timeRemaining = minutes)
-                    }
-                    var count = minutes
-                    while (count > 0) {
-                        delay(60 * 1000L)
-                        count--
+                var stoppedPlayback = false
+                try {
+                    if (minutes == Int.MAX_VALUE) {
+                        // "End of current song" mode: use sentinel -1 to indicate this special state
                         _sleepTimerState.update {
-                            it.copy(isDone = false, timeRemaining = count)
+                            it.copy(isDone = false, timeRemaining = -1)
+                        }
+                        // Poll until player duration is available (may be -1 initially)
+                        var duration = player.duration
+                        while (duration <= 0L) {
+                            delay(500)
+                            duration = player.duration
+                        }
+                        val remaining = (duration - player.currentPosition).coerceAtLeast(0L)
+                        // Fade over the tail of the track rather than after it, so the song is
+                        // already silent by the time it ends. A track with less time left than the
+                        // fade gets a shorter one instead of bleeding into whatever plays next.
+                        // Fade and tail together must fit inside what is left, or the timer would
+                        // run past the end of the track and pause somewhere inside the next one.
+                        val fadeMs = sleepFadeDurationMs.coerceAtMost(remaining)
+                        val tailMs = sleepFadeTailMs.coerceAtMost(remaining - fadeMs)
+                        delay(remaining - fadeMs - tailMs)
+                        fadeOutForSleep(fadeMs)
+                        delay(tailMs)
+                        player.pause()
+                        stoppedPlayback = true
+                        _sleepTimerState.update {
+                            it.copy(isDone = true, timeRemaining = 0)
+                        }
+                    } else {
+                        _sleepTimerState.update {
+                            it.copy(isDone = false, timeRemaining = minutes)
+                        }
+                        var count = minutes
+                        while (count > 0) {
+                            // The fade belongs inside the final minute, so shorten that wait by its length.
+                            val isFinalMinute = count == 1
+                            delay(
+                                if (isFinalMinute) 60 * 1000L - sleepFadeDurationMs - sleepFadeTailMs else 60 * 1000L,
+                            )
+                            if (isFinalMinute) {
+                                fadeOutForSleep(sleepFadeDurationMs)
+                                delay(sleepFadeTailMs)
+                            }
+                            count--
+                            _sleepTimerState.update {
+                                it.copy(isDone = false, timeRemaining = count)
+                            }
+                        }
+                        player.pause()
+                        stoppedPlayback = true
+                        _sleepTimerState.update {
+                            it.copy(isDone = true, timeRemaining = 0)
                         }
                     }
-                    player.pause()
-                    _sleepTimerState.update {
-                        it.copy(isDone = true, timeRemaining = 0)
-                    }
+                } finally {
+                    // Only the cancelled path clears the attenuation here — sleepStop(), or the
+                    // scope going away mid-fade. When the timer runs to completion the adapter
+                    // clears it instead, from inside the pause it queued, because pause() is
+                    // asynchronous and this coroutine cannot tell when playback actually stopped.
+                    // Restoring it from here would lift the volume back over the last of the audio.
+                    if (!stoppedPlayback) player.sleepFadeFactor = 1f
                 }
             }
+    }
+
+    /**
+     * Ramps [player]'s sleep-fade attenuation down to silence over [durationMs].
+     *
+     * Uses the same equal-power (cosine) curve as the crossfade ramp: loudness is perceived
+     * logarithmically, so a linear ramp sounds like it drops away early and then lingers near the
+     * bottom. Leaves the factor at zero: the caller holds that silence for [sleepFadeTailMs] so the
+     * attenuated audio can drain through the sink, and only restores the factor after pausing.
+     */
+    private suspend fun fadeOutForSleep(durationMs: Long) {
+        if (durationMs <= 0L) return
+        // Fewer steps than the nominal 50 for a very short fade, so the ramp cannot outlast the
+        // budget it was given: 50 steps at the 1ms floor would take 50ms regardless of duration.
+        val steps = sleepFadeSteps.toLong().coerceAtMost(durationMs).toInt()
+        val delayPerStep = (durationMs / steps).coerceAtLeast(1L)
+        for (step in 1..steps) {
+            val progress = step.toFloat() / steps
+            player.sleepFadeFactor = cos(progress * PI / 2).toFloat()
+            delay(delayPerStep)
+        }
     }
 
     override fun sleepStop() {
@@ -1484,6 +1552,15 @@ internal class MediaServiceHandlerImpl(
                 data = queueData,
             )
         }
+        // Snapshot which tracks came from the album, for the crossfade rule. Taken at load time
+        // because endless queue appends to this same queue afterwards, and those additions are not
+        // album tracks — that boundary is exactly where crossfade should resume.
+        player.albumTrackIds =
+            if (queueData.playlistType == PlaylistType.ALBUM) {
+                queueData.listTracks.map { it.videoId }.toSet()
+            } else {
+                emptySet()
+            }
         Logger.w(TAG, "setQueueData: $queueData")
     }
 

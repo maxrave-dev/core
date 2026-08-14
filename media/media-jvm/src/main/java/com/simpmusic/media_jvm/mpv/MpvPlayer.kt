@@ -550,11 +550,26 @@ class MpvPlayer private constructor(
         command("stop")
     }
 
-    // Volume is split in two so a crossfade can ramp one handle without disturbing the level the
-    // user set: `masterPercent` is the pipeline volume (the slider), `fadePercent` is this handle's
-    // own crossfade ramp. [applyVolume] decides how each reaches mpv.
+    // Volume is split in three so each owner can move its own level without disturbing the others:
+    // `masterPercent` is the pipeline volume (the slider), `fadePercent` is this handle's own
+    // crossfade ramp, and `sleepPercent` is the sleep timer's fade-out. [applyVolume] decides how
+    // each reaches mpv.
+    //
+    // Three threads write these: the crossfade ramp on the player thread, the volume slider from
+    // the UI thread, and the event pump when the audio output is reconfigured. Reading all three
+    // and issuing the resulting property writes is therefore done under [volumeLock] — volatile
+    // alone would stop torn reads but not stop two threads interleaving their pairs of mpv calls
+    // and leaving the device on a combination neither of them intended.
+    private val volumeLock = Any()
+
+    @Volatile
     private var masterPercent = 100
+
+    @Volatile
     private var fadePercent = 100
+
+    @Volatile
+    private var sleepPercent = 100
 
     /**
      * The pipeline volume — what the volume slider controls. Must NOT be touched while a crossfade
@@ -564,8 +579,10 @@ class MpvPlayer private constructor(
      */
     fun setMasterVolume(volume: Int) {
         if (isReleased) return
-        masterPercent = volume.coerceIn(0, 100)
-        applyVolume()
+        synchronized(volumeLock) {
+            masterPercent = volume.coerceIn(0, 100)
+            applyVolume()
+        }
     }
 
     /**
@@ -575,26 +592,66 @@ class MpvPlayer private constructor(
      */
     fun setFadeVolume(volume: Int) {
         if (isReleased) return
-        fadePercent = volume.coerceIn(0, 100)
-        applyVolume()
+        synchronized(volumeLock) {
+            fadePercent = volume.coerceIn(0, 100)
+            applyVolume()
+        }
+    }
+
+    /**
+     * The sleep timer's fade-out, 0..100 where 100 means "no attenuation".
+     *
+     * Rides on the master rather than on [setFadeVolume] for two reasons: the crossfade ramp is
+     * reset to 100 every time a handle becomes current, which would wipe a fade still in progress,
+     * and the master reaches the device mixer, so it takes effect immediately instead of trailing
+     * the audio-output buffer by a second or two — a ramp measured in seconds cannot afford that lag.
+     */
+    fun setSleepFadeVolume(volume: Int) {
+        if (isReleased) return
+        synchronized(volumeLock) {
+            sleepPercent = volume.coerceIn(0, 100)
+            applyVolume()
+        }
+    }
+
+    /**
+     * Set the master and the sleep fade together, for a handle that is being brought up to the
+     * levels already in force elsewhere.
+     *
+     * Doing it in two calls would publish the new master against the *old* sleep fade first, and
+     * since `ao-volume` is shared across handles that intermediate value is audible on whatever is
+     * playing — a full-volume blip in the middle of a fade.
+     */
+    fun setVolumeLevels(
+        master: Int,
+        sleep: Int,
+    ) {
+        if (isReleased) return
+        synchronized(volumeLock) {
+            masterPercent = master.coerceIn(0, 100)
+            sleepPercent = sleep.coerceIn(0, 100)
+            applyVolume()
+        }
     }
 
     /**
      * `volume` is mpv's *software* volume: applied inside the filter chain, so audio already queued
      * in the audio-output buffer keeps playing at the previous level — audible as a couple of
      * seconds of lag after the slider is released. `ao-volume` drives the audio device's own mixer
-     * and takes effect immediately, so the master rides on that and the software volume is left to
-     * carry the fade alone (mpv applies the two independently — they multiply). When the audio
-     * output exposes no mixer control, both collapse into the software volume so the user's level is
-     * still honoured.
+     * and takes effect immediately, so the master and the sleep fade ride on that and the software
+     * volume is left to carry the crossfade ramp alone (mpv applies the two independently — they
+     * multiply). When the audio output exposes no mixer control, all three collapse into the
+     * software volume so the user's level is still honoured.
      */
-    private fun applyVolume() {
-        if (setPropertyDouble("ao-volume", masterPercent.toDouble(), logFailure = false) >= 0) {
-            setPropertyDouble("volume", fadePercent.toDouble())
-        } else {
-            setPropertyDouble("volume", masterPercent * fadePercent / 100.0)
+    private fun applyVolume() =
+        synchronized(volumeLock) {
+            val master = masterPercent * sleepPercent / 100.0
+            if (setPropertyDouble("ao-volume", master, logFailure = false) >= 0) {
+                setPropertyDouble("volume", fadePercent.toDouble())
+            } else {
+                setPropertyDouble("volume", master * fadePercent / 100.0)
+            }
         }
-    }
 
     fun setMute(mute: Boolean) {
         if (isReleased) return
