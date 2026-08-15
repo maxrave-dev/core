@@ -42,7 +42,7 @@ val databaseModule =
         }
         // LocalDataSource
         single(createdAtStart = true) {
-            LocalDataSource(get<DatabaseDao>())
+            LocalDataSource(get<DatabaseDao>(), get<MusicDatabase>())
         }
         // AnalyticsDatasource
         single(createdAtStart = true) {

@@ -39,6 +39,18 @@ interface SongRepository {
      */
     suspend fun downloadAllLikedSongs(): Int
 
+    /**
+     * Erase the local listening history and drop every song row nothing refers to any more.
+     *
+     * A song is kept when its id appears anywhere else at all: in an album, a YouTube playlist, a
+     * local playlist, the saved queue, a podcast, or `set_video_id`. Everything left is a row the
+     * app accumulated just by seeing the track once, and it takes its lyrics, translations, cached
+     * format and extra info with it.
+     *
+     * @return how many songs were removed.
+     */
+    suspend fun clearHistoryAndOrphanedSongs(): Int
+
     fun getCanvasSong(max: Int): Flow<List<SongEntity>>
 
     fun getSongById(id: String): Flow<SongEntity?>

@@ -16,6 +16,7 @@ import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
+import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
@@ -117,6 +118,94 @@ internal class SongRepositoryImpl(
             pending.size
         }
 
+    /**
+     * The order below is the whole feature.
+     *
+     * A song is orphaned only once nothing points at it, so every cached container has to go first —
+     * sweeping songs on their own found zero to delete, because eleven thousand of them were held
+     * alive by playlists nobody prunes. Artists lead so the two tables keyed on `channelId` can be
+     * measured against what is still followed; podcasts, albums and playlists follow; songs last,
+     * then the satellite rows that were already orphaned before any of this ran.
+     */
+    override suspend fun clearHistoryAndOrphanedSongs(): Int =
+        withContext(Dispatchers.IO) {
+            val pinnedQueue = persistLiveQueueBeforeSweep()
+            localDataSource.deleteAllPlaybackEvents()
+            val artists = localDataSource.deleteUnfollowedArtists()
+            val notifications = localDataSource.deleteNotificationsOfUnfollowedArtists()
+            val artistReleases = localDataSource.deleteFollowedArtistReleasesOfUnfollowedArtists()
+            val podcasts = localDataSource.deleteUnfavoritedPodcasts()
+            val albums = localDataSource.deleteUnreferencedAlbums()
+            val playlists = localDataSource.deleteUnreferencedPlaylists()
+            val orphans = localDataSource.getOrphanedSongIds()
+            val removed = localDataSource.deleteSongsAndRelatedData(orphans)
+            val satellites = localDataSource.deleteStaleSongSatellites()
+            Logger.d(
+                TAG,
+                "Clear history: removed $removed of ${orphans.size} candidate songs, " +
+                    "$artists artists, $notifications notifications, $artistReleases artist releases, " +
+                    "$podcasts podcasts, $albums albums, $playlists playlists, $satellites stale rows",
+            )
+            // Last, and outside every statement above: SQLite refuses VACUUM inside a transaction.
+            // Without it the file stays fragmented and less space comes back than the user expects.
+            // The checkpoint first folds the WAL — which every delete above just filled — back into
+            // the main file, so VACUUM actually has those pages to reclaim.
+            //
+            // Failure here is not failure of the operation: every delete has already committed, so
+            // letting it throw would show an error toast for work that actually succeeded. It only
+            // costs some disk space, and the next run reclaims it.
+            runCatching {
+                localDataSource.checkpoint()
+                localDataSource.vacuum()
+            }.onFailure { Logger.e(TAG, "VACUUM after clearing history failed: ${it.message}") }
+            unpinLiveQueueAfterSweep(pinnedQueue)
+            removed
+        }
+
+    /**
+     * Write whatever is playing right now into the `queue` table, so the sweep cannot delete it.
+     *
+     * The sweep spares songs found in `queue.listTrack`, but that table is only written on pause,
+     * on track change, and on exit — and only when the user has "save recent song and queue" on.
+     * Two ways that loses the current session: with the setting off the table is empty, and even
+     * with it on, the endless queue keeps appending tracks that no save has caught up with yet.
+     * Either way the song playing through the speakers looks orphaned and goes.
+     *
+     * Deliberately ignores that setting: this is not "remember my queue for next launch", it is
+     * "do not delete what is on screen". Writing nothing when the queue is empty matters too —
+     * overwriting a previously saved queue with an empty one would strip the protection instead of
+     * adding it.
+     *
+     * @return whether a row was actually written, which is what [unpinLiveQueueAfterSweep] needs in
+     * order to know the `queue` table is this function's doing and not the user's own saved queue.
+     */
+    private suspend fun persistLiveQueueBeforeSweep(): Boolean {
+        val liveQueue = mediaPlayerHandler.queueData.value?.data?.listTracks.orEmpty()
+        if (liveQueue.isEmpty()) return false
+        Logger.d(TAG, "Clear history: pinning ${liveQueue.size} queued tracks before the sweep")
+        localDataSource.recoverQueue(QueueEntity(listTrack = liveQueue))
+        return true
+    }
+
+    /**
+     * Take the pin back out once the sweep no longer needs it.
+     *
+     * [persistLiveQueueBeforeSweep] writes the queue whether or not the user asked for their queue
+     * to be saved, so leaving it there does two unwanted things: a user who deliberately turned that
+     * setting off ends up with their queue on disk anyway, and the row goes on protecting those
+     * songs from every future sweep — the next one would find them still referenced and spare them
+     * again, however long ago they stopped playing.
+     *
+     * Only when the setting is off, and only when this run is what created the row: with the setting
+     * on, the row is the user's queue being saved as normal and is none of the sweep's business.
+     */
+    private suspend fun unpinLiveQueueAfterSweep(pinned: Boolean) {
+        if (!pinned) return
+        if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) return
+        Logger.d(TAG, "Clear history: removing the pinned queue, saving the queue is turned off")
+        localDataSource.deleteQueue()
+    }
+
     override fun getCanvasSong(max: Int): Flow<List<SongEntity>> =
         flow {
             emit(localDataSource.getCanvasSong(max))
@@ -152,6 +241,12 @@ internal class SongRepositoryImpl(
      * depend on them being built first.
      */
     private val downloadHandler: DownloadHandler by lazy { getKoin().get() }
+
+    /**
+     * Lazy for the same reason as [downloadHandler], and here it also breaks a cycle: the handler
+     * already depends on this repository (it calls [recoverQueue] whenever it saves the queue).
+     */
+    private val mediaPlayerHandler: MediaPlayerHandler by lazy { getKoin().get() }
 
     /**
      * Note the side effect: liking a song can start a download, when the user has asked for that.

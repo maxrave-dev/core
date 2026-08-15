@@ -1,6 +1,7 @@
 package com.maxrave.data.db.datasource
 
 import DatabaseDao
+import com.maxrave.data.db.MusicDatabase
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
@@ -24,6 +25,9 @@ import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.FilterState
 import kotlinx.datetime.LocalDateTime
 
+/** SQLite caps bind parameters per statement; stay well under it when deleting in bulk. */
+private const val DELETE_BATCH_SIZE = 400
+
 /**
  * The album name older builds stored when they could not find a real one.
  *
@@ -36,8 +40,12 @@ private const val PLACEHOLDER_ALBUM_NAME = "Album"
 
 internal class LocalDataSource(
     private val databaseDao: DatabaseDao,
+    private val musicDatabase: MusicDatabase,
 ) {
     suspend fun checkpoint() = databaseDao.checkpoint()
+
+    /** Goes through the database rather than the DAO — see [MusicDatabase.vacuum]. */
+    suspend fun vacuum() = musicDatabase.vacuum()
 
     suspend fun getAllRecentData() = databaseDao.getAllRecentData()
 
@@ -84,6 +92,58 @@ internal class LocalDataSource(
         limit,
         offset,
     )
+
+    // ===== Clear listening history + drop orphaned songs =====
+
+    suspend fun deleteAllPlaybackEvents() = databaseDao.deleteAllPlaybackEvents()
+
+    suspend fun deleteUnfollowedArtists() = databaseDao.deleteUnfollowedArtists()
+
+    suspend fun deleteNotificationsOfUnfollowedArtists() = databaseDao.deleteNotificationsOfUnfollowedArtists()
+
+    suspend fun deleteFollowedArtistReleasesOfUnfollowedArtists() = databaseDao.deleteFollowedArtistReleasesOfUnfollowedArtists()
+
+    suspend fun deleteUnfavoritedPodcasts() = databaseDao.deleteUnfavoritedPodcasts()
+
+    suspend fun deleteUnreferencedAlbums() = databaseDao.deleteUnreferencedAlbums()
+
+    suspend fun deleteUnreferencedPlaylists() = databaseDao.deleteUnreferencedPlaylists()
+
+    suspend fun getOrphanedSongIds() = databaseDao.getOrphanedSongIds()
+
+    /**
+     * Drop the songs and everything that only existed to describe them.
+     *
+     * Batched because SQLite limits how many bind parameters a single statement may carry, and this
+     * can run over a library with thousands of stale rows.
+     *
+     * @return how many songs were actually deleted, which can be fewer than were asked for — the
+     * delete re-checks the orphan conditions, so anything the user touched in the meantime survives.
+     */
+    suspend fun deleteSongsAndRelatedData(videoIds: List<String>): Int =
+        videoIds.chunked(DELETE_BATCH_SIZE).sumOf { batch ->
+            // Songs first, so the follow-up deletes can tell which ids really went.
+            val deleted = databaseDao.deleteSongsByIds(batch)
+            databaseDao.deleteLyricsByIds(batch)
+            databaseDao.deleteTranslatedLyricsByIds(batch)
+            databaseDao.deleteNewFormatsByIds(batch)
+            databaseDao.deleteSongInfoByIds(batch)
+            deleted
+        }
+
+    /**
+     * The same four tables again, but for rows whose song is already gone.
+     *
+     * [deleteSongsAndRelatedData] can only reach the ids it was handed, so these have been piling up
+     * since long before this sweep existed. Unbatched on purpose — the statements bind nothing.
+     *
+     * @return how many rows went, across all four tables.
+     */
+    suspend fun deleteStaleSongSatellites(): Int =
+        databaseDao.deleteStaleNewFormats() +
+            databaseDao.deleteStaleLyrics() +
+            databaseDao.deleteStaleTranslatedLyrics() +
+            databaseDao.deleteStaleSongInfo()
 
     suspend fun getLikedSongs(
         limit: Int,
@@ -529,6 +589,8 @@ internal class LocalDataSource(
     suspend fun countNotificationByLink(link: String) = databaseDao.countNotificationByLink(link)
 
     suspend fun deleteNotification(id: Long) = databaseDao.deleteNotification(id)
+
+    suspend fun deleteNotificationsByChannelId(channelId: String) = databaseDao.deleteNotificationsByChannelId(channelId)
 
     suspend fun getTranslatedLyrics(
         videoId: String,
