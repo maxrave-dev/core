@@ -844,6 +844,10 @@ internal class MediaServiceHandlerImpl(
     }
 
     override fun startBufferedUpdate() {
+        // Same reason as startProgressUpdate above: this is reached once per track load and once
+        // per stall, and stopBufferedUpdate only cancels the newest job — so every earlier loop
+        // survives and keeps pushing Loading every 500 ms for the rest of the session.
+        bufferedJob?.cancel()
         bufferedJob =
             coroutineScope.launch {
                 while (true) {
@@ -872,8 +876,8 @@ internal class MediaServiceHandlerImpl(
 
     override fun stopBufferedUpdate() {
         bufferedJob?.cancel()
-        _simpleMediaState.value =
-            SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
+        // Deliberately emits nothing: this runs when buffering *ends*, so publishing Loading here
+        // said the opposite of what happened.
     }
 
     override suspend fun onPlayerEvent(playerEvent: PlayerEvent) {
@@ -2665,13 +2669,28 @@ internal class MediaServiceHandlerImpl(
         }
     }
 
+    /**
+     * Publishes exactly one state, and it matches the argument.
+     *
+     * It used to write Loading unconditionally and then call stopBufferedUpdate, which wrote
+     * Loading again. `_simpleMediaState` is a StateFlow collected from another thread, so those
+     * writes conflate and the UI settled on Loading even when buffering had just *finished* —
+     * leaving a spinner over playback that was already running.
+     */
     override fun onIsLoadingChanged(isLoading: Boolean) {
-        _simpleMediaState.value =
-            SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
         if (isLoading) {
             startBufferedUpdate()
+            // Already holding more than the playhead needs: the stall is nominal, so do not put a
+            // spinner over playback that is about to continue.
+            if (player.bufferedPosition > player.currentPosition) {
+                _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
+            } else {
+                _simpleMediaState.value =
+                    SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
+            }
         } else {
             stopBufferedUpdate()
+            _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
         }
     }
 

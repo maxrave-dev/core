@@ -903,6 +903,11 @@ class JvmMediaPlayerHandlerImpl(
     }
 
     override fun startBufferedUpdate() {
+        // Same reason as startProgressUpdate: this is reached once per track load and once per
+        // stall, and stopBufferedUpdate only ever cancels the newest job — so without this every
+        // earlier loop survives and keeps pushing Loading every 500 ms, forever. After a handful of
+        // tracks those leaked loops drown out the progress updates that clear the loading flag.
+        bufferedJob?.cancel()
         bufferedJob =
             coroutineScope.launch {
                 while (true) {
@@ -934,8 +939,9 @@ class JvmMediaPlayerHandlerImpl(
 
     override fun stopBufferedUpdate() {
         bufferedJob?.cancel()
-        _simpleMediaState.value =
-            SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
+        // Deliberately emits nothing. This runs when buffering *ends*, so publishing Loading here
+        // said the opposite of what happened — and because it is the last write of
+        // onIsLoadingChanged(false), it was the value the UI actually settled on.
     }
 
     override suspend fun onPlayerEvent(playerEvent: PlayerEvent) {
@@ -2754,18 +2760,39 @@ class JvmMediaPlayerHandlerImpl(
         }
     }
 
+    /**
+     * Publishes exactly one state, and it matches the argument.
+     *
+     * It used to write three times in a row — Loading unconditionally, then maybe Ready, then
+     * Loading again from stopBufferedUpdate. `_simpleMediaState` is a StateFlow collected from
+     * another thread, so it conflates those writes and the UI only ever saw the last one: Loading
+     * when buffering had just *finished*, Ready when it had just *started*. Both backwards. And
+     * since the adapter calls this with `false` immediately after announcing STATE_READY, every
+     * track start and every resume ended with the UI stuck showing a spinner.
+     *
+     * The old escape hatch also compared `bufferedPercentage * duration` (a 0–100 percent times
+     * milliseconds) against `currentPosition` (milliseconds) — off by about a hundredfold, so it
+     * was true almost always. Comparing the two positions directly is what it meant to say.
+     */
     override fun onIsLoadingChanged(isLoading: Boolean) {
-        Logger.d(TAG, "onIsLoadingChanged: $isLoading")
-        _simpleMediaState.value =
-            SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
-        Logger.d(TAG, "onIsLoadingChanged: bufferedPercentage: ${player.bufferedPercentage}, duration: ${player.duration}")
-        if (player.bufferedPercentage * player.duration > player.currentPosition) {
-            _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
-        }
+        Logger.d(
+            TAG,
+            "onIsLoadingChanged: $isLoading (buffered=${player.bufferedPosition}ms, " +
+                "position=${player.currentPosition}ms, duration=${player.duration}ms)",
+        )
         if (isLoading) {
             startBufferedUpdate()
+            // Already holding more than the playhead needs: the stall is nominal, so do not put a
+            // spinner over playback that is about to continue.
+            if (player.bufferedPosition > player.currentPosition) {
+                _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
+            } else {
+                _simpleMediaState.value =
+                    SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
+            }
         } else {
             stopBufferedUpdate()
+            _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
         }
     }
 

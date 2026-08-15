@@ -557,6 +557,13 @@ internal class CrossfadeExoPlayerAdapter(
                 InternalState.READY, InternalState.ENDED, InternalState.PAUSED -> {
                     currentPlayer?.let { player ->
                         requestAudioFocusInternal()
+                        // At the end of the queue `play()` only sets playWhenReady, which does
+                        // nothing while the player sits in STATE_ENDED — the press would look
+                        // ignored. Rewind first so the last track replays.
+                        if (internalState == InternalState.ENDED) {
+                            Logger.d(TAG, "Play: replaying from the start after end of queue")
+                            player.seekTo(0L)
+                        }
                         player.play()
                         transitionToState(InternalState.PLAYING)
                         internalPlayWhenReady = true

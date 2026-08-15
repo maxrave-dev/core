@@ -279,6 +279,14 @@ class MpvPlayerAdapter(
             when (internalState) {
                 InternalState.READY, InternalState.ENDED, InternalState.PAUSED -> {
                     currentPlayer?.let { player ->
+                        // At the end of the queue the handle is parked at EOF, and telling mpv to
+                        // play there does nothing — the press would look ignored. Rewind first so
+                        // the last track replays, which is what the Play button is offering.
+                        if (internalState == InternalState.ENDED) {
+                            Logger.d(TAG, "Play: replaying from the start after end of queue")
+                            player.seekTo(0L)
+                            cachedPosition = 0L
+                        }
                         Logger.d(TAG, "Play: calling mpv play")
                         player.play()
                         transitionToState(InternalState.PLAYING)
