@@ -56,12 +56,25 @@ internal class ArtistRepositoryImpl(
         localDataSource.updateArtistNameLogo(channelId, nameLogoUrl, nameLogoColor)
     }
 
+    /**
+     * Unfollowing also drops what only existed to serve the follow.
+     *
+     * Flipping the flag was all this ever did, so an artist's notifications and their new-releases
+     * tracking row survived every unfollow — and once the unfollowed `artist` row is itself swept by
+     * `SongRepository.clearHistoryAndOrphanedSongs`, they have nothing left to point back at.
+     */
     override suspend fun updateFollowedStatus(
         channelId: String,
         followedStatus: Int,
     ) = withContext(
         Dispatchers.Main,
-    ) { localDataSource.updateFollowed(followedStatus, channelId) }
+    ) {
+        localDataSource.updateFollowed(followedStatus, channelId)
+        if (followedStatus == 0) {
+            localDataSource.deleteNotificationsByChannelId(channelId)
+            localDataSource.deleteFollowedArtistSingleAndAlbum(channelId)
+        }
+    }
 
     override fun getFollowedArtists(): Flow<List<ArtistEntity>> =
         flow {
