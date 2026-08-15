@@ -1160,10 +1160,14 @@ internal class MediaServiceHandlerImpl(
         mediaItem: GenericMediaItem,
         playWhenReady: Boolean,
     ) {
+        // A MediaSession/Android Auto Play command may arrive while the saved queue is
+        // still being reconstructed. Do not overwrite that newer playback intent with
+        // the restore path's `playWhenReady = false` default.
+        val shouldPlay = playWhenReady || player.playWhenReady
         player.clearMediaItems()
         player.setMediaItem(mediaItem)
         player.prepare()
-        player.playWhenReady = playWhenReady
+        player.playWhenReady = shouldPlay
     }
 
     override fun clearMediaItems() {
