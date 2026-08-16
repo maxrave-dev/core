@@ -1571,7 +1571,7 @@ class YouTube {
                                 title = playlistPanelRenderer.title,
                                 items =
                                     playlistPanelRenderer.contents.mapNotNull {
-                                        it.playlistPanelVideoRenderer?.let { renderer ->
+                                        it.track?.let { renderer ->
                                             NextPage.fromPlaylistPanelVideoRenderer(renderer)
                                         }
                                     } + result.items,
@@ -1614,7 +1614,7 @@ class YouTube {
                     title = playlistPanelRenderer.title,
                     items =
                         playlistPanelRenderer.contents.mapNotNull {
-                            it.playlistPanelVideoRenderer?.let(NextPage::fromPlaylistPanelVideoRenderer)
+                            it.track?.let(NextPage::fromPlaylistPanelVideoRenderer)
                         },
                     currentIndex = playlistPanelRenderer.currentIndex,
                     lyricsEndpoint =
