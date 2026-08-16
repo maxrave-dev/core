@@ -663,6 +663,19 @@ class MpvPlayer private constructor(
         setPropertyDouble("speed", rate.toDouble())
     }
 
+    /**
+     * How much of the video may be cropped to fill the render target, 0.0 (letterbox, mpv's
+     * default) to 1.0 (cover it completely).
+     *
+     * This has to be mpv's job rather than the caller's: mpv scales and letterboxes each frame
+     * into the size reported through the render context, so by the time a frame reaches Compose
+     * the black bars are already part of the pixels and no `ContentScale` can remove them.
+     */
+    fun setPanscan(value: Double) {
+        if (isReleased) return
+        setPropertyDouble("panscan", value.coerceIn(0.0, 1.0))
+    }
+
     // ================= DJ crossfade audio chain =================
     //
     // Android runs the sweep through `CrossfadeFilterAudioProcessor` and the tempo/pitch match

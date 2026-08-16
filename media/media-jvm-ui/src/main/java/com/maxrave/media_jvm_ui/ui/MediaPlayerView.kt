@@ -53,6 +53,7 @@ import org.koin.compose.koinInject
 fun MediaPlayerViewWithUrl(
     url: String,
     modifier: Modifier,
+    cropToBounds: Boolean = false,
 ) {
     val scope = rememberCoroutineScope()
     var frameSource by remember { mutableStateOf<MpvVideoFrameSource?>(null) }
@@ -79,6 +80,12 @@ fun MediaPlayerViewWithUrl(
             frameSource = null
             mpvPlayer = null
         }
+    }
+
+    // Kept out of the DisposableEffect above so flipping the flag re-scales the running video
+    // instead of tearing down and re-creating the mpv handle.
+    LaunchedEffect(mpvPlayer, cropToBounds) {
+        mpvPlayer?.setPanscan(if (cropToBounds) 1.0 else 0.0)
     }
 
     Box(
@@ -110,9 +117,11 @@ fun MediaPlayerViewWithUrl(
  * participates in normal Compose rendering, and any number of screens can collect the same
  * source at once.
  *
- * The box reports its size to the source, so mpv scales and letterboxes frames to exactly this
- * box; [ContentScale.Fit] only matters in the moment after a resize while the next
- * correctly-sized frame is still being rendered.
+ * The box reports its size to the source, so mpv scales frames to exactly this box — letterboxing
+ * them by default, or cropping them to cover it when the caller asked for that (see
+ * `MpvPlayer.setPanscan`). Either way the fit is decided before Compose sees the pixels, so
+ * [ContentScale.Fit] only matters in the moment after a resize while the next correctly-sized
+ * frame is still being rendered.
  */
 @Composable
 private fun MpvVideoFrames(
