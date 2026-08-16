@@ -222,6 +222,9 @@ class MpvPlayerAdapter(
     @Volatile
     private var crossfadeFromIndex = -1
 
+    /** Last index a crossfade was refused for, so the refusal is logged once instead of per poll. */
+    private var lastBlockedCrossfadeIndex = -1
+
     /**
      * Set only while [commitIncomingAsCurrent] tears down a fade. [performCrossfade]'s
      * cancellation handler releases the incoming player by default; during a commit we are
@@ -1639,7 +1642,22 @@ class MpvPlayerAdapter(
      * Trigger crossfade to next track
      */
     private fun triggerCrossfadeTransition(nextIndex: Int) {
-        if (nextIndex !in playlist.indices || isCrossfading) return
+        if (nextIndex !in playlist.indices || isCrossfading) {
+            // Says which of the two blocked it — an index the playlist no longer holds, or a
+            // crossfading flag left set. Reported once per blocked index rather than on every poll:
+            // the position loop reaches here every 200 ms for as long as the track stays inside the
+            // trigger window, and a line repeating five times a second buries everything else.
+            if (lastBlockedCrossfadeIndex != nextIndex) {
+                lastBlockedCrossfadeIndex = nextIndex
+                Logger.w(
+                    TAG,
+                    "Crossfade not started: nextIndex=$nextIndex, playlistSize=${playlist.size}, " +
+                        "isCrossfading=$isCrossfading, currentIndex=$localCurrentMediaItemIndex",
+                )
+            }
+            return
+        }
+        lastBlockedCrossfadeIndex = -1
 
         crossfadeJob =
             coroutineScope.launch {
@@ -1648,7 +1666,7 @@ class MpvPlayerAdapter(
                     val nextMediaItem = playlist[nextIndex]
                     val nextVideoId = nextMediaItem.mediaId
 
-                    Logger.d(TAG, "Starting crossfade to track $nextIndex")
+                    Logger.d(TAG, "Starting crossfade to track $nextIndex ($nextVideoId)")
 
                     // Extract URL on IO thread (network), mpv native calls stay on service thread
                     val cachedPrecache = precachedPlayers.remove(nextVideoId)
@@ -2135,13 +2153,10 @@ class MpvPlayerAdapter(
                 ?: DEFAULT_BEAT_COUNT
         val duration = (bestBeatCount * beatMs).toInt()
 
-        Logger.d(
-            TAG,
-            "AutoMix duration: bpm=$currentBpm→$nextBpm, base=${baseTargetMs.toInt()}ms, " +
-                "bpmGap=${"%.2f".format(bpmGapFactor)}, keyGap=${"%.2f".format(keyGapFactor)}, " +
-                "adjusted=${adjustedTargetMs.toInt()}ms, beats=$bestBeatCount, final=${duration}ms",
-        )
-
+        // Deliberately silent. This is a pure calculation, and the position poll calls it twice
+        // every 200 ms — once through isCurrentTrackTooShortForCrossfade() and once to build the
+        // trigger threshold — so logging here buried every other line in the terminal at ten a
+        // second. The resolved value is logged where a crossfade actually starts instead.
         return duration.coerceIn(AUTO_MIN_DURATION_MS, AUTO_MAX_DURATION_MS)
     }
 
