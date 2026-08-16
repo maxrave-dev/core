@@ -47,7 +47,7 @@ internal fun parseAlbumData(data: AlbumPage): AlbumBrowse {
                 thumbnails = songItem.thumbnails?.thumbnails?.toListThumbnail() ?: listOf(),
                 title = songItem.title,
                 videoId = songItem.id,
-                videoType = "Video",
+                videoType = songItem.musicVideoType,
                 category = null,
                 feedbackTokens = null,
                 resultType = null,

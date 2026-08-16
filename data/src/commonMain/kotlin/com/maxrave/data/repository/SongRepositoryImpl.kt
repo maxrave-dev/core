@@ -18,7 +18,9 @@ import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.domain.repository.SongRepository
+import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.isRadioQueueId
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
@@ -225,6 +227,11 @@ internal class SongRepositoryImpl(
         videoId: String,
     ): Flow<Int> = flow { emit(localDataSource.updateThumbnailsSongEntity(thumbnail, videoId)) }.flowOn(Dispatchers.IO)
 
+    override fun updateVideoTypeSongEntity(
+        videoType: String,
+        videoId: String,
+    ): Flow<Int> = flow { emit(localDataSource.updateVideoTypeSongEntity(videoType, videoId)) }.flowOn(Dispatchers.IO)
+
     override suspend fun updateListenCount(videoId: String) =
         withContext(Dispatchers.IO) {
             localDataSource.updateListenCount(videoId)
@@ -334,6 +341,28 @@ internal class SongRepositoryImpl(
             emit(localDataSource.getQueue())
         }.flowOn(Dispatchers.IO)
 
+    /**
+     * Drops the video entries YouTube mixes into a radio queue, when the user asked radios to stay
+     * audio-only. [isRadio] gates it because the setting is deliberately radio-scoped: a playlist
+     * or album the user picked themselves must still play exactly what it contains.
+     *
+     * Only entries YouTube *named* as a video are dropped. A null `musicVideoType` means the
+     * response never said, which is not a claim of "audio" — those are kept rather than guessed at
+     * (see [MusicVideoType]).
+     *
+     * Dropping is the only option here; substituting the audio version is not available. Measured
+     * against a live logged-in radio (197 entries over four pages), every video that reached the
+     * queue was `MUSIC_VIDEO_TYPE_UGC` — a fan remix or mashup that exists only as a video and
+     * ships no `counterpart` to swap in. Official music videos never arrive as the primary
+     * rendition at all: YouTube already demotes those to the counterpart of the audio track, which
+     * is what [com.maxrave.kotlinytmusicscraper.models.PlaylistPanelRenderer.Content.track] reads.
+     */
+    private suspend fun List<SongItem>.dropVideosWhenRadioAudioOnly(isRadio: Boolean): List<SongItem> {
+        if (!isRadio) return this
+        if (dataStoreManager.radioAudioOnly.first() != TRUE) return this
+        return filterNot { MusicVideoType.isVideoSong(it.musicVideoType) }
+    }
+
     override fun getContinueTrack(
         playlistId: String,
         continuation: String,
@@ -355,7 +384,14 @@ internal class SongRepositoryImpl(
                             continuation = continuation,
                         ).onSuccess { next ->
                             val data: ArrayList<SongItem> = arrayListOf()
-                            data.addAll(next.items)
+                            // Only this branch can be a radio — the `else` below continues a real
+                            // playlist. `RRDAMVM…` counts as one too: it is YouTube's other
+                            // spelling for the radio of a single video, which `isRadioQueueId`
+                            // deliberately does not match because it never appears as a queue's
+                            // own playlistId.
+                            val isRadio =
+                                playlistId.startsWith("RRDAMVM") || playlistId.isRadioQueueId()
+                            data.addAll(next.items.dropVideosWhenRadioAudioOnly(isRadio))
                             newContinuation = next.continuation
                             emit(Pair(data.toListTrack(), newContinuation))
                         }.onFailure { exception ->
@@ -514,7 +550,18 @@ internal class SongRepositoryImpl(
                     .next(WatchEndpoint(videoId = videoId))
                     .onSuccess { next ->
                         val data: ArrayList<SongItem> = arrayListOf()
-                        data.addAll(next.items.filter { it.id != videoId }.toSet())
+                        // Always a radio, though not directly: `next(videoId)` alone answers with
+                        // just two rows — the song itself and an `automixPreviewVideoRenderer`
+                        // pointing at its `RDAMVM…` radio. `YouTube.next` follows that pointer and
+                        // splices the radio in, so everything here past the first row is radio
+                        // content, and this is what extends the queue once it runs dry.
+                        data.addAll(
+                            next.items
+                                .filter { it.id != videoId }
+                                .toSet()
+                                .toList()
+                                .dropVideosWhenRadioAudioOnly(isRadio = true),
+                        )
                         val nextContinuation = next.continuation
                         emit(Resource.Success<Pair<List<Track>, String?>>(Pair(data.toListTrack().toList(), nextContinuation)))
                     }.onFailure { exception ->
@@ -530,7 +577,11 @@ internal class SongRepositoryImpl(
                 youTube
                     .next(endpoint.toWatchEndpoint())
                     .onSuccess { next ->
-                        emit(Resource.Success(Pair(next.items.toListTrack(), next.continuation)))
+                        val items =
+                            next.items.dropVideosWhenRadioAudioOnly(
+                                isRadio = endpoint.playlistId?.isRadioQueueId() == true,
+                            )
+                        emit(Resource.Success(Pair(items.toListTrack(), next.continuation)))
                     }.onFailure {
                         it.printStackTrace()
                         emit(Resource.Error(it.message ?: "Error"))

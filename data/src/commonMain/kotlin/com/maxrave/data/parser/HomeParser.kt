@@ -220,6 +220,7 @@ internal fun parseMixedContent(
                                             views = null,
                                             durationSeconds = ytItem.duration,
                                             radio = null,
+                                            videoType = ytItem.musicVideoType,
                                         ),
                                     )
                                 }
@@ -276,6 +277,7 @@ internal fun parseMixedContent(
                                             views = ytItem.view,
                                             durationSeconds = ytItem.duration,
                                             radio = null,
+                                            videoType = ytItem.musicVideoType,
                                         ),
                                     )
                                 }

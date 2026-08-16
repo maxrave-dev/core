@@ -28,6 +28,12 @@ data class MusicResponsiveListItemRenderer(
 ) {
     val isSong: Boolean
         get() = navigationEndpoint == null || navigationEndpoint.watchEndpoint != null || navigationEndpoint.watchPlaylistEndpoint != null
+
+    /**
+     * Deliberately narrower than [musicVideoType]: this one decides which *item class* to build,
+     * so it stays bound to the navigation endpoint it has always read. Widening it to the overlay
+     * fallback below would reclassify rows that currently parse as songs.
+     */
     val isVideo: Boolean
         get() =
             navigationEndpoint
@@ -35,6 +41,50 @@ data class MusicResponsiveListItemRenderer(
                 ?.watchEndpointMusicSupportedConfigs
                 ?.watchEndpointMusicConfig
                 ?.musicVideoType != null
+
+    /**
+     * What YouTube says this row actually is — `MUSIC_VIDEO_TYPE_ATV` for the audio version,
+     * `_OMV`/`_UGC` for videos, a `PODCAST` variant for episodes.
+     *
+     * Searches the same three places [videoId] does, because the config rides on whichever
+     * watchEndpoint that row happens to carry: the 2026 web response moved it to the overlay play
+     * button on search rows and to the title column on playlist rows.
+     *
+     * Each candidate is read all the way down to the value before the next is tried. Falling
+     * through on the *endpoint* instead would stop at the first row that has a bare watchEndpoint
+     * on `navigationEndpoint` and the music config only on the overlay — which is precisely the
+     * migration described above, so it would drop the value on the rows this exists for.
+     *
+     * Null means YouTube sent no music config, which is not a claim that this is audio.
+     */
+    val musicVideoType: String?
+        get() =
+            navigationEndpoint
+                ?.watchEndpoint
+                ?.watchEndpointMusicSupportedConfigs
+                ?.watchEndpointMusicConfig
+                ?.musicVideoType
+                ?: overlay
+                    ?.musicItemThumbnailOverlayRenderer
+                    ?.content
+                    ?.musicPlayButtonRenderer
+                    ?.playNavigationEndpoint
+                    ?.watchEndpoint
+                    ?.watchEndpointMusicSupportedConfigs
+                    ?.watchEndpointMusicConfig
+                    ?.musicVideoType
+                ?: flexColumns
+                    .firstOrNull()
+                    ?.musicResponsiveListItemFlexColumnRenderer
+                    ?.text
+                    ?.runs
+                    ?.firstOrNull()
+                    ?.navigationEndpoint
+                    ?.watchEndpoint
+                    ?.watchEndpointMusicSupportedConfigs
+                    ?.watchEndpointMusicConfig
+                    ?.musicVideoType
+
     val isPlaylist: Boolean
         get() =
             navigationEndpoint

@@ -138,6 +138,16 @@ interface DataStoreManager {
 
     suspend fun setWatchVideoInsteadOfPlayingAudio(watch: Boolean)
 
+    /**
+     * Whether a radio queue should carry audio only, dropping the video entries YouTube mixes in.
+     *
+     * Scoped to radios on purpose — it is not a global "hide every video" switch, so a playlist or
+     * an album the user picked themselves still plays exactly what it contains.
+     */
+    val radioAudioOnly: Flow<String>
+
+    suspend fun setRadioAudioOnly(audioOnly: Boolean)
+
     val playerVolume: Flow<Float>
 
     suspend fun setPlayerVolume(volume: Float)

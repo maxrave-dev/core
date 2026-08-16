@@ -37,7 +37,7 @@ internal fun parseSearchSong(result: SearchResult): ArrayList<SongsResult> {
                 thumbnails = listOf(Thumbnail(544, Regex("([wh])120").replace(song.thumbnail, "$1544"), 544)),
                 title = song.title,
                 videoId = song.id,
-                videoType = "Song",
+                videoType = song.musicVideoType,
                 year = "",
             ),
         )

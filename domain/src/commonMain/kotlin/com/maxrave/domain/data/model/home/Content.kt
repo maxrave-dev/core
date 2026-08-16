@@ -18,4 +18,9 @@ data class Content(
     val views: String?,
     val durationSeconds: Int? = null,
     val radio: String? = null,
+    /**
+     * YouTube's `MUSIC_VIDEO_TYPE_*` for the track behind this card, or null when the shelf item
+     * is not a track (artist, playlist, album) or carried no music config.
+     */
+    val videoType: String? = null,
 ) : HomeContentType

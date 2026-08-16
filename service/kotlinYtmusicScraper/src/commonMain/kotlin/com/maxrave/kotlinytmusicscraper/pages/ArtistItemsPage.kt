@@ -64,6 +64,7 @@ data class ArtistItemsPage(
                         ?.musicPlayButtonRenderer
                         ?.playNavigationEndpoint
                         ?.watchEndpoint,
+                musicVideoType = renderer.musicVideoType,
             )
         }
 
@@ -110,6 +111,7 @@ data class ArtistItemsPage(
                         duration = null,
                         thumbnail = renderer.thumbnailRenderer.musicThumbnailRenderer?.getThumbnailUrl() ?: return null,
                         endpoint = renderer.navigationEndpoint.watchEndpoint,
+                        musicVideoType = renderer.musicVideoType,
                     )
                 renderer.isPlaylist ->
                     PlaylistItem(

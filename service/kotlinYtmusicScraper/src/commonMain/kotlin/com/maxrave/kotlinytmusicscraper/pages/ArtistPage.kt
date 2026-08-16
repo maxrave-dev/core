@@ -135,6 +135,7 @@ data class ArtistPage(
                         renderer.badges?.find {
                             it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
                         } != null,
+                    musicVideoType = renderer.musicVideoType,
                 )
             }
         }
@@ -168,6 +169,7 @@ data class ArtistPage(
                             renderer.subtitleBadges?.find {
                                 it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
                             } != null,
+                        musicVideoType = renderer.musicVideoType,
                     )
                 }
 
@@ -335,6 +337,7 @@ data class ArtistPage(
                                 ?.runs
                                 ?.lastOrNull()
                                 ?.text,
+                        musicVideoType = renderer.musicVideoType,
                     )
                 }
 

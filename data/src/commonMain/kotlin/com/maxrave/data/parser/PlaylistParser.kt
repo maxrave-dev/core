@@ -324,7 +324,9 @@ internal fun parsePlaylistData(
                     // The model already resolves this from playlistItemData, then the overlay play
                     // button, then the title column — YouTube does not always populate all three.
                     videoId = renderer?.videoId ?: "",
-                    videoType = "video",
+                    // Resolved from the same three endpoints as videoId above; null when this row
+                    // carried no music config at all.
+                    videoType = renderer?.musicVideoType,
                     category = null,
                     feedbackTokens = null,
                     resultType = null,

@@ -64,11 +64,15 @@ fun ResultVideo.toTrack(): Track =
         thumbnails = this.thumbnails,
         title = this.title,
         videoId = this.videoId,
-        videoType = this.views,
+        // Was `this.views`, which wrote the localized view-count subtitle ("432K views",
+        // "168 N lượt xem") into the type column and from there into song.videoType. The view
+        // count now travels in `views`, where the Videos shelf reads it.
+        videoType = this.videoType,
         category = null,
         feedbackTokens = null,
         resultType = null,
         year = "",
+        views = this.views,
     )
 
 fun SongsResult.toTrack(): Track =
@@ -212,7 +216,7 @@ fun Content.toTrack(): Track =
         thumbnails = thumbnails,
         title = title,
         videoId = videoId!!,
-        videoType = "",
+        videoType = videoType,
         category = null,
         feedbackTokens = null,
         resultType = null,
@@ -348,7 +352,9 @@ fun PodcastBrowse.EpisodeItem.toTrack(): Track =
         thumbnails = this.thumbnail,
         title = this.title,
         videoId = this.videoId,
-        videoType = "Podcast",
+        // The podcast browse response carries no music config; `category`/`resultType` below are
+        // what mark this as an episode, so there is nothing to invent here.
+        videoType = null,
         category = "Podcast",
         feedbackTokens = null,
         resultType = "Podcast",

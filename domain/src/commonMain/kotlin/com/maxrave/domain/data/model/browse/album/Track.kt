@@ -23,4 +23,10 @@ data class Track(
     val feedbackTokens: FeedbackTokens?,
     val resultType: String?,
     val year: String? = null,
+    /**
+     * Localized view-count text ("432K views"), for the artist Videos shelf. Carried here because
+     * that shelf renders [Track]s; it used to ride in [videoType], which is why that column filled
+     * up with view counts. Defaulted so existing persisted queue JSON still decodes.
+     */
+    val views: String? = null,
 )

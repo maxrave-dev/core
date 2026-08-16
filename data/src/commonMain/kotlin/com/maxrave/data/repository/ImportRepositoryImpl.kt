@@ -9,6 +9,7 @@ import com.maxrave.domain.data.model.importdata.ImportResult
 import com.maxrave.domain.data.model.importdata.ImportSong
 import com.maxrave.domain.repository.ImportProgress
 import com.maxrave.domain.repository.ImportRepository
+import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -112,6 +113,10 @@ internal class ImportRepositoryImpl(
  * [ImportSong.artistId] is kept only when it lines up one-to-one with [ImportSong.artistName].
  * `SongEntity.toTrack()` walks the name list and indexes into the id list, so a non-null id list
  * that is shorter would be read past its end.
+ *
+ * [ImportSong.videoType] arrives from a file this app did not write, so it is normalized rather
+ * than trusted: a real `MUSIC_VIDEO_TYPE_*` is kept, anything else becomes the empty "unknown"
+ * the column already uses, and the playback path fills it in from the API on first play.
  */
 private fun ImportSong.toSongEntity(): SongEntity =
     SongEntity(
@@ -127,7 +132,7 @@ private fun ImportSong.toSongEntity(): SongEntity =
         likeStatus = "",
         thumbnails = thumbnails,
         title = title,
-        videoType = videoType,
+        videoType = MusicVideoType.normalize(videoType) ?: "",
         category = null,
         resultType = null,
         liked = false,

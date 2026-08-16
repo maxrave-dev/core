@@ -48,7 +48,7 @@ internal fun SongItem.toTrack(): Track =
         thumbnails = this.thumbnails?.thumbnails?.toListThumbnail() ?: listOf(),
         title = this.title,
         videoId = this.id,
-        videoType = null,
+        videoType = this.musicVideoType,
         category = null,
         feedbackTokens = null,
         resultType = null,
@@ -67,7 +67,7 @@ internal fun VideoItem.toTrack(): Track =
         thumbnails = this.thumbnails?.thumbnails?.toListThumbnail() ?: listOf(),
         title = this.title,
         videoId = this.id,
-        videoType = null,
+        videoType = this.musicVideoType,
         category = null,
         feedbackTokens = null,
         resultType = null,
@@ -194,7 +194,8 @@ internal fun PipedResponse.toTrack(videoId: String): Track =
             ),
         title = this.title ?: " ",
         videoId = videoId,
-        videoType = "Song",
+        // Piped is not YouTube Music and never reports musicVideoType.
+        videoType = null,
         category = "",
         feedbackTokens = null,
         resultType = null,
@@ -225,7 +226,9 @@ internal fun YouTubeInitialPage.toTrack(): Track {
                 ?.toListThumbnail() ?: listOf(),
         title = initialPage.videoDetails?.title ?: "",
         videoId = initialPage.videoDetails?.videoId ?: "",
-        videoType = "",
+        // The plain-YouTube player response has no musicVideoType; only the YouTube *Music* one
+        // (PlayerResponse.VideoDetails) carries it.
+        videoType = null,
         category = "",
         feedbackTokens = null,
         resultType = "",
@@ -325,7 +328,7 @@ internal fun SearchSuggestions.toDomainSearchSuggestions(): com.maxrave.domain.d
                             thumbnails = it.thumbnails?.thumbnails?.toListThumbnail() ?: listOf(),
                             title = it.title,
                             videoId = it.id,
-                            videoType = null,
+                            videoType = it.musicVideoType,
                             year = "",
                         )
                     }
@@ -412,7 +415,7 @@ internal fun SearchSuggestions.toDomainSearchSuggestions(): com.maxrave.domain.d
                             thumbnails = it.thumbnails?.thumbnails?.toListThumbnail() ?: listOf(),
                             title = it.title,
                             videoId = it.id,
-                            videoType = null,
+                            videoType = it.musicVideoType,
                             views = it.view,
                             year = "",
                         )

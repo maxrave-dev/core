@@ -119,6 +119,7 @@ object SearchPage {
                                 it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
                             } != null,
                         thumbnails = renderer.thumbnail.musicThumbnailRenderer.thumbnail,
+                        musicVideoType = renderer.musicVideoType,
                     )
                 }
 

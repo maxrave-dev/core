@@ -70,6 +70,7 @@ data class ArtistItemsContinuationPage(
                         ?.musicPlayButtonRenderer
                         ?.playNavigationEndpoint
                         ?.watchEndpoint,
+                musicVideoType = renderer.musicVideoType,
             )
         }
     }

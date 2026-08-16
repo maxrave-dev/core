@@ -108,6 +108,28 @@ data class MusicTwoRowItemRenderer(
                     }
                 )
 
+    /**
+     * What YouTube says this card actually is. [isSong]/[isVideo] above answer a different
+     * question — they read the thumbnail aspect ratio to pick a card layout, which is why they
+     * stay as they are; this is the API's own classification of the track behind the card.
+     */
+    val musicVideoType: String?
+        get() =
+            navigationEndpoint
+                ?.watchEndpoint
+                ?.watchEndpointMusicSupportedConfigs
+                ?.watchEndpointMusicConfig
+                ?.musicVideoType
+                ?: thumbnailOverlay
+                    ?.musicItemThumbnailOverlayRenderer
+                    ?.content
+                    ?.musicPlayButtonRenderer
+                    ?.playNavigationEndpoint
+                    ?.watchEndpoint
+                    ?.watchEndpointMusicSupportedConfigs
+                    ?.watchEndpointMusicConfig
+                    ?.musicVideoType
+
     /** Album/playlist id from the card play button; play endpoint switched watchPlaylistEndpoint -> watchEndpoint (2026 web). */
     val playlistId: String?
         get() =

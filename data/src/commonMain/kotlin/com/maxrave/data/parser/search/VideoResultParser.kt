@@ -26,7 +26,7 @@ internal fun parseSearchVideo(result: SearchResult): ArrayList<VideosResult> {
                 thumbnails = listOf(Thumbnail(306, Regex("([wh])120").replace(song.thumbnail, "$1544"), 544)),
                 title = song.title,
                 videoId = song.id,
-                videoType = "Video",
+                videoType = song.musicVideoType,
                 views = null,
                 year = "",
             ),

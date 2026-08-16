@@ -61,6 +61,7 @@ import com.maxrave.domain.repository.LocalPlaylistRepository
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.FilterState
+import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.connectArtists
 import com.maxrave.domain.utils.toArrayListTrack
@@ -526,6 +527,17 @@ internal class MediaServiceHandlerImpl(
                         if (songEntity.thumbnails != thumbUrl) {
                             songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
                                 Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                            }
+                        }
+                        // Rows written before the parsers carried YouTube's real MUSIC_VIDEO_TYPE_*
+                        // hold an invented label ("Song", "video", a view count). They are corrected
+                        // here as the user plays them rather than by a migration. normalize() drops
+                        // anything that is not a real type, so an unknown never overwrites a known one.
+                        MusicVideoType.normalize(track?.videoType)?.let { freshVideoType ->
+                            if (songEntity.videoType != freshVideoType) {
+                                songRepository.updateVideoTypeSongEntity(freshVideoType, songEntity.videoId).singleOrNull()?.let {
+                                    Logger.w(TAG, "getDataOfNowPlayingState: Updated videoType $it")
+                                }
                             }
                         }
                         songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {

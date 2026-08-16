@@ -399,6 +399,7 @@ fun MusicShelfRenderer.Content.toSongItem(): SongItem? {
                 ?.toLikeStatus()
                 ?: LikeStatus.INDIFFERENT,
         badges = this.musicResponsiveListItemRenderer?.badges?.toSongBadges(),
+        musicVideoType = this.musicResponsiveListItemRenderer?.musicVideoType,
     )
 }
 

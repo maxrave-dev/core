@@ -354,6 +354,12 @@ interface DatabaseDao {
         videoId: String,
     ): Int
 
+    @Query("UPDATE song SET videoType = :videoType WHERE videoId = :videoId")
+    suspend fun updateVideoTypeSongEntity(
+        videoType: String,
+        videoId: String,
+    ): Int
+
     @Query("SELECT * FROM song WHERE totalPlayTime > 1 ORDER BY totalPlayTime DESC LIMIT 50")
     fun getMostPlayedSongs(): Flow<List<SongEntity>>
 

@@ -90,7 +90,7 @@ internal fun parseArtistData(data: ArtistPage): ArtistBrowse {
                 thumbnails = listOf(Thumbnail(544, song.thumbnail, 544)),
                 isAvailable = true,
                 isExplicit = false,
-                videoType = "Song",
+                videoType = song.musicVideoType,
                 durationSeconds = song.duration ?: 0,
             ),
         )
@@ -135,7 +135,7 @@ internal fun parseArtistData(data: ArtistPage): ArtistBrowse {
                 thumbnails = video.thumbnails?.thumbnails?.toListThumbnail(),
                 title = video.title,
                 videoId = video.id,
-                videoType = null,
+                videoType = video.musicVideoType,
                 views = video.view,
                 year = "",
             ),

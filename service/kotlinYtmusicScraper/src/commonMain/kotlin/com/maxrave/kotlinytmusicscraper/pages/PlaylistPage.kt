@@ -76,6 +76,7 @@ data class PlaylistPage(
                             ?.playNavigationEndpoint
                             ?.watchEndpoint,
                     thumbnails = renderer.thumbnail.musicThumbnailRenderer.thumbnail,
+                    musicVideoType = renderer.musicVideoType,
                 )
             }
         }

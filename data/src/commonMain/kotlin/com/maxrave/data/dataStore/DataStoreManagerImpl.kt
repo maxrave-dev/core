@@ -507,6 +507,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val radioAudioOnly =
+        settingsDataStore.data.map { preferences ->
+            preferences[RADIO_AUDIO_ONLY] ?: FALSE
+        }
+
+    override suspend fun setRadioAudioOnly(audioOnly: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[RADIO_AUDIO_ONLY] = if (audioOnly) TRUE else FALSE
+            }
+        }
+    }
+
     override val playerVolume: Flow<Float> =
         settingsDataStore.data.map { preferences ->
             preferences[PLAYER_VOLUME] ?: 1.0f
@@ -1545,6 +1558,7 @@ internal class DataStoreManagerImpl(
         val MAX_SONG_CACHE_SIZE = intPreferencesKey("maxSongCacheSize")
         val WATCH_VIDEO_INSTEAD_OF_PLAYING_AUDIO =
             stringPreferencesKey("watch_video_instead_of_playing_audio")
+        val RADIO_AUDIO_ONLY = stringPreferencesKey("radio_audio_only")
         val VIDEO_QUALITY = stringPreferencesKey("video_quality")
         val PLAYER_VOLUME = floatPreferencesKey("player_volume")
         val SPDC = stringPreferencesKey("sp_dc")

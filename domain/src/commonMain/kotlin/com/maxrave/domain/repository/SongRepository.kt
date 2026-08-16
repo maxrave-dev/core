@@ -64,6 +64,16 @@ interface SongRepository {
         videoId: String,
     ): Flow<Int>
 
+    /**
+     * Corrects `song.videoType` for a row that predates, or was written before, the parsers started
+     * carrying YouTube's real `MUSIC_VIDEO_TYPE_*`. Callers must pass a value they actually know —
+     * writing an unknown over a correct one loses information.
+     */
+    fun updateVideoTypeSongEntity(
+        videoType: String,
+        videoId: String,
+    ): Flow<Int>
+
     suspend fun updateListenCount(videoId: String)
 
     suspend fun resetTotalPlayTime(videoId: String)

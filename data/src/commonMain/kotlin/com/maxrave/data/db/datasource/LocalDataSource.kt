@@ -211,6 +211,11 @@ internal class LocalDataSource(
         videoId: String,
     ) = databaseDao.updateThumbnailsSongEntity(thumbnail, videoId)
 
+    suspend fun updateVideoTypeSongEntity(
+        videoType: String,
+        videoId: String,
+    ) = databaseDao.updateVideoTypeSongEntity(videoType, videoId)
+
     suspend fun updateListenCount(videoId: String) = databaseDao.updateTotalPlayTime(videoId)
 
     suspend fun resetTotalPlayTime(videoId: String) = databaseDao.resetTotalPlayTime(videoId)

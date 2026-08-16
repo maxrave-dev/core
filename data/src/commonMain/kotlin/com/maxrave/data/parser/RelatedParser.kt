@@ -67,6 +67,13 @@ internal fun parseRelated(data: List<PlaylistPanelRenderer.Content>?): ArrayList
                     ?.navigationEndpoint
                     ?.watchEndpoint
                     ?.videoId
+            val musicVideoType =
+                track.playlistPanelVideoRenderer
+                    ?.navigationEndpoint
+                    ?.watchEndpoint
+                    ?.watchEndpointMusicSupportedConfigs
+                    ?.watchEndpointMusicConfig
+                    ?.musicVideoType
             val thumbnail =
                 track.playlistPanelVideoRenderer
                     ?.thumbnail
@@ -84,7 +91,7 @@ internal fun parseRelated(data: List<PlaylistPanelRenderer.Content>?): ArrayList
                     thumbnails = thumbnail,
                     title = title ?: "",
                     videoId = videoId ?: "",
-                    videoType = "MUSIC_VIDEO",
+                    videoType = musicVideoType,
                     category = "MUSIC",
                     feedbackTokens = null,
                     resultType = null,
