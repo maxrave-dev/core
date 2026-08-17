@@ -49,6 +49,7 @@ class SimpMusicLyrics {
             install(HttpCache)
             install(CurlLogger) {
                 logger = { Logger.d("SimpMusicLyrics", it) }
+                redactHeaders = setOf("Authorization", "X-HMAC", "Cookie")
             }
             install(HttpSend) {
                 maxSendCount = 100

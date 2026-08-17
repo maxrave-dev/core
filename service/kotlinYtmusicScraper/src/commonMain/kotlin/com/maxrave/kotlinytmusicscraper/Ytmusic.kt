@@ -157,6 +157,7 @@ class Ytmusic {
             expectSuccess = true
             install(CurlLogger) {
                 logger = { Logger.d(TAG, it) }
+                redactHeaders = setOf("Cookie", "Authorization")
             }
             install(HttpRedirect) {
                 checkHttpMethod = false
