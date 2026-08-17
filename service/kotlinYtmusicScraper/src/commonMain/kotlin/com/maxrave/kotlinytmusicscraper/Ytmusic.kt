@@ -166,6 +166,7 @@ class Ytmusic {
             install(Logging) {
                 logger = io.ktor.client.plugins.logging.Logger.DEFAULT
                 level = LogLevel.ALL
+                sanitizeHeader { header -> header.equals("Cookie", ignoreCase = true) || header.equals("Authorization", ignoreCase = true) }
             }
             install(ContentNegotiation) {
                 protobuf()
