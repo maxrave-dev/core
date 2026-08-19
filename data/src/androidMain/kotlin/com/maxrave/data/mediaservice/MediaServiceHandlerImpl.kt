@@ -522,7 +522,7 @@ internal class MediaServiceHandlerImpl(
                                 ?: songEntity.thumbnails
                                 ?: "http://i.ytimg.com/vi/${songEntity.videoId}/maxresdefault.jpg"
                         Logger.w(TAG, "getDataOfNowPlayingState before: $thumbUrl")
-                        thumbUrl = Regex("([=-][wh])\\d+").replace(thumbUrl, "$1544")
+                        thumbUrl = Regex("=w\\d+-h\\d+").replace(thumbUrl, "=w544-h544")
                         Logger.w(TAG, "getDataOfNowPlayingState: $thumbUrl")
                         if (songEntity.thumbnails != thumbUrl) {
                             songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
@@ -564,7 +564,7 @@ internal class MediaServiceHandlerImpl(
                             track?.thumbnails?.lastOrNull()?.url
                                 ?: "http://i.ytimg.com/vi/${track?.videoId}/maxresdefault.jpg"
                         Logger.w(TAG, "getDataOfNowPlayingState before: $thumbUrl")
-                        thumbUrl = Regex("([=-][wh])\\d+").replace(thumbUrl, "$1544")
+                        thumbUrl = Regex("=w\\d+-h\\d+").replace(thumbUrl, "=w544-h544")
                         val songEntity =
                             (track?.toSongEntity() ?: mediaItem.toSongEntity()).copy(
                                 thumbnails = thumbUrl,
@@ -1660,7 +1660,7 @@ internal class MediaServiceHandlerImpl(
             var thumbUrl =
                 track.thumbnails?.lastOrNull()?.url
                     ?: "http://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg"
-            thumbUrl = Regex("([=-][wh])\\d+").replace(thumbUrl, "$1544")
+            thumbUrl = Regex("=w\\d+-h\\d+").replace(thumbUrl, "=w544-h544")
             val artistName: String = track.artists.toListName().connectArtists()
             val isSong =
                 (
@@ -1798,7 +1798,7 @@ internal class MediaServiceHandlerImpl(
                 var thumbUrl =
                     track.thumbnails?.lastOrNull()?.url
                         ?: "http://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg"
-                thumbUrl = Regex("([=-][wh])\\d+").replace(thumbUrl, "$1544")
+                thumbUrl = Regex("=w\\d+-h\\d+").replace(thumbUrl, "=w544-h544")
                 val isSong =
                     (
                         track.thumbnails?.lastOrNull()?.height != 0 &&
@@ -2022,7 +2022,7 @@ internal class MediaServiceHandlerImpl(
         var thumbUrl =
             track.thumbnails?.lastOrNull()?.url
                 ?: "http://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg"
-        thumbUrl = Regex("([=-][wh])\\d+").replace(thumbUrl, "$1544")
+        thumbUrl = Regex("=w\\d+-h\\d+").replace(thumbUrl, "=w544-h544")
         val artistName: String = track.artists.toListName().connectArtists()
         val isSong =
             (

@@ -583,11 +583,11 @@ class JvmMediaPlayerHandlerImpl(
                         if (songEntity != null) {
                             _controlState.update { it.copy(isLiked = songEntity.liked) }
                             val thumbUrl =
-                                Regex("([=-][wh])\\d+").replace(
+                                Regex("=w\\d+-h\\d+").replace(
                                     track?.thumbnails?.lastOrNull()?.url
                                         ?: songEntity.thumbnails
                                         ?: "http://i.ytimg.com/vi/${songEntity.videoId}/maxresdefault.jpg",
-                                    "$1544",
+                                    "=w544-h544",
                                 )
                             if (songEntity.thumbnails != thumbUrl) {
                                 songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
@@ -613,10 +613,10 @@ class JvmMediaPlayerHandlerImpl(
                         } else {
                             _controlState.update { it.copy(isLiked = false) }
                             val thumbUrl =
-                                Regex("([=-][wh])\\d+").replace(
+                                Regex("=w\\d+-h\\d+").replace(
                                     track?.thumbnails?.lastOrNull()?.url
                                         ?: "http://i.ytimg.com/vi/${track?.videoId}/maxresdefault.jpg",
-                                    "$1544",
+                                    "=w544-h544",
                                 )
                             val newSong =
                                 (track?.toSongEntity() ?: mediaItem.toSongEntity()).copy(
@@ -2103,7 +2103,7 @@ class JvmMediaPlayerHandlerImpl(
         var thumbUrl =
             track.thumbnails?.lastOrNull()?.url
                 ?: "http://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg"
-        thumbUrl = Regex("([=-][wh])\\d+").replace(thumbUrl, "$1544")
+        thumbUrl = Regex("=w\\d+-h\\d+").replace(thumbUrl, "=w544-h544")
         val artistName: String = track.artists.toListName().connectArtists()
         val isSong =
             (
