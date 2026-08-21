@@ -559,6 +559,48 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val equalizerEnabled: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[EQUALIZER_ENABLED] ?: FALSE
+        }
+
+    override suspend fun setEqualizerEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[EQUALIZER_ENABLED] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
+    override val equalizerBands: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[EQUALIZER_BANDS] ?: ""
+        }
+
+    override suspend fun setEqualizerBands(bandsDb: List<Float>) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                // Blank when flat, so "no equalizer" and "an equalizer set to zero" are the same
+                // stored state and neither installs a filter chain.
+                settings[EQUALIZER_BANDS] =
+                    if (bandsDb.all { it == 0f }) "" else bandsDb.joinToString(",")
+            }
+        }
+    }
+
+    override val equalizerPreamp: Flow<Float> =
+        settingsDataStore.data.map { preferences ->
+            preferences[EQUALIZER_PREAMP]?.toFloatOrNull() ?: 0f
+        }
+
+    override suspend fun setEqualizerPreamp(preampDb: Float) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[EQUALIZER_PREAMP] = preampDb.toString()
+            }
+        }
+    }
+
     override val syncFollowToYouTube: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[SYNC_FOLLOW_TO_YOUTUBE] ?: FALSE
@@ -1577,6 +1619,9 @@ internal class DataStoreManagerImpl(
         val SPDC = stringPreferencesKey("sp_dc")
         val SPOTIFY_LYRICS = stringPreferencesKey("spotify_lyrics")
         val SYNC_FOLLOW_TO_YOUTUBE = stringPreferencesKey("sync_follow_to_youtube")
+        val EQUALIZER_BANDS = stringPreferencesKey("equalizer_bands")
+        val EQUALIZER_ENABLED = stringPreferencesKey("equalizer_enabled")
+        val EQUALIZER_PREAMP = stringPreferencesKey("equalizer_preamp")
         val SPOTIFY_CANVAS = stringPreferencesKey("spotify_canvas")
         val SPOTIFY_CLIENT_TOKEN = stringPreferencesKey("spotify_client_token")
         val SPOTIFY_CLIENT_TOKEN_EXPIRES = longPreferencesKey("spotify_client_token_expires")

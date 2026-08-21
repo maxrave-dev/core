@@ -115,6 +115,15 @@ class MpvPlayer private constructor(
         private const val PITCH_LABEL = "simpDjPitch"
 
         /**
+         * `@label:` of the equalizer entry, kept apart from the crossfade labels because the two
+         * tiers are installed and removed independently — see [applyAudioFilters].
+         */
+        private const val EQ_LABEL = "simpEq"
+
+        /** ISO octave centres for a ten-band equalizer, the spacing AutoEq profiles assume. */
+        val EQ_BANDS_HZ = listOf(31, 62, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000)
+
+        /**
          * Create and initialize a libmpv handle.
          *
          * @param audioOnly disables video decoding and the video output entirely. When false, an
@@ -742,6 +751,60 @@ class MpvPlayer private constructor(
         return CrossfadeChain.NONE
     }
 
+    /**
+     * The equalizer entry, or null while the equalizer is off or flat.
+     *
+     * Held here because `af` is one property: writing it replaces the entire chain, so every write
+     * has to carry both tiers. Crossfade used to write the property directly, which is why
+     * anything else placed in `af` vanished the moment a transition started or ended.
+     */
+    @Volatile
+    private var eqEntry: String? = null
+
+    /** Crossfade entries currently installed, so an equalizer change can rewrite around them. */
+    @Volatile
+    private var crossfadeEntries: List<String> = emptyList()
+
+    /**
+     * Write `af` from both tiers at once.
+     *
+     * The equalizer goes first so the crossfade sweep acts on the signal the listener actually
+     * hears, rather than on one that is about to be re-shaped behind it.
+     */
+    private fun applyAudioFilters(): Boolean {
+        val entries = listOfNotNull(eqEntry) + crossfadeEntries
+        return setPropertyString("af", entries.joinToString(","))
+    }
+
+    /**
+     * Install a ten-band equalizer, or remove it when every band and the preamp are at zero.
+     *
+     * Each band is a peaking filter on its ISO centre at Q 1.41 — the width at which ten
+     * octave-spaced bands overlap without leaving gaps or stacking into ripple. [preampDb] is a
+     * plain gain in front: boosting bands without pulling the level down first is what clips.
+     */
+    fun setEqualizer(
+        bandsDb: List<Float>,
+        preampDb: Float,
+    ): Boolean {
+        if (isReleased) return false
+        val flat = preampDb == 0f && bandsDb.all { it == 0f }
+        eqEntry =
+            if (flat) {
+                null
+            } else {
+                val stages =
+                    EQ_BANDS_HZ.mapIndexed { index, hz ->
+                        val gain = bandsDb.getOrElse(index) { 0f }
+                        "equalizer=f=$hz:width_type=q:width=1.41:g=${mpvNumber(gain)}"
+                    }
+                // Wrapped in [ ] for the same reason the crossfade sweep is: the graph contains
+                // `,` and `=`, which mpv's own filter-list parser would otherwise consume.
+                "@$EQ_LABEL:lavfi=[volume=${mpvNumber(preampDb)}dB,${stages.joinToString(",")}]"
+            }
+        return applyAudioFilters()
+    }
+
     private fun applyCrossfadeChain(
         sweep: MpvCrossfadeFilter?,
         sweepStartHz: Float,
@@ -765,7 +828,8 @@ class MpvPlayer private constructor(
             // Frequencies are multiplied by this value. (default: 1.0)"*.
             entries += "@$PITCH_LABEL:rubberband=pitch-scale=1.0"
         }
-        return setPropertyString("af", entries.joinToString(","))
+        crossfadeEntries = entries
+        return applyAudioFilters()
     }
 
     /**
@@ -817,7 +881,10 @@ class MpvPlayer private constructor(
      */
     fun clearAudioFilters() {
         if (isReleased) return
-        setPropertyString("af", "")
+        // Drops the crossfade tier only. This used to blank the whole property, which took the
+        // equalizer down with it at the end of every transition.
+        crossfadeEntries = emptyList()
+        applyAudioFilters()
     }
 
     /**

@@ -334,6 +334,27 @@ class JvmMediaPlayerHandlerImpl(
         getFormatJob = Job()
         jobWatchtime = Job()
         skipSilent = runBlocking { dataStoreManager.skipSilent.first() == TRUE }
+        // Collected rather than read once like the settings around it: the equalizer is adjusted
+        // while music is playing, and a curve that only takes effect after a restart is useless
+        // for judging what you just changed.
+        backgroundScope.launch {
+            combine(
+                dataStoreManager.equalizerEnabled,
+                dataStoreManager.equalizerBands,
+                dataStoreManager.equalizerPreamp,
+            ) { enabled, bands, preamp -> Triple(enabled == TRUE, bands, preamp) }
+                .distinctUntilChanged()
+                .collect { (enabled, bands, preamp) ->
+                    // Switched off sends a flat curve rather than skipping the call: the filter
+                    // chain has to actually come out of mpv, and the stored bands are left alone
+                    // so switching back on returns to the user's own shape.
+                    player.setEqualizer(
+                        bandsDb =
+                            if (enabled) bands.split(",").mapNotNull { it.trim().toFloatOrNull() } else emptyList(),
+                        preampDb = if (enabled) preamp else 0f,
+                    )
+                }
+        }
         normalizeVolume =
             runBlocking { dataStoreManager.normalizeVolume.first() == TRUE }
         _nowPlaying.value = player.currentMediaItem

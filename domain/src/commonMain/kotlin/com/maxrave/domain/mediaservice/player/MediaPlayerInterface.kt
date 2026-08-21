@@ -122,6 +122,23 @@ interface MediaPlayerInterface {
     var albumTrackIds: Set<String>
     var skipSilenceEnabled: Boolean
 
+    /**
+     * Apply a ten-band equalizer, in dB per band plus a preamp.
+     *
+     * Bands are the ISO octave centres 31 Hz to 16 kHz, the spacing AutoEq profiles are published
+     * at. A shorter list leaves the remaining bands flat; a longer one is truncated.
+     *
+     * [preampDb] is normally negative and is what keeps a boosted curve from clipping — the sum of
+     * several boosted bands can exceed full scale long before any single band looks extreme.
+     *
+     * Default no-op so a backend without an equalizer simply ignores it rather than every
+     * implementation having to carry an empty override.
+     */
+    fun setEqualizer(
+        bandsDb: List<Float>,
+        preampDb: Float,
+    ) = Unit
+
     // Listener management
     fun addListener(listener: MediaPlayerListener)
 

@@ -166,6 +166,31 @@ interface DataStoreManager {
      * Off by default and only settable while signed in: Follow has always been local-only, and
      * writing to someone's account is not something to start doing without being asked.
      */
+    /**
+     * Ten equalizer band gains in dB, comma separated, or empty for flat.
+     *
+     * Stored as text rather than ten keys because the bands are only ever read and written
+     * together — a curve is one setting, not ten.
+     */
+    /**
+     * Whether the equalizer is applied at all.
+     *
+     * Separate from the curve so switching it off keeps the shape the user built — turning it back
+     * on returns to their settings rather than to flat.
+     */
+    val equalizerEnabled: Flow<String>
+
+    suspend fun setEqualizerEnabled(enabled: Boolean)
+
+    val equalizerBands: Flow<String>
+
+    suspend fun setEqualizerBands(bandsDb: List<Float>)
+
+    /** Equalizer preamp in dB. Usually negative: it is what stops a boosted curve from clipping. */
+    val equalizerPreamp: Flow<Float>
+
+    suspend fun setEqualizerPreamp(preampDb: Float)
+
     val syncFollowToYouTube: Flow<String>
 
     suspend fun setSyncFollowToYouTube(enabled: Boolean)

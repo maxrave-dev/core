@@ -1002,6 +1002,12 @@ class MpvPlayerAdapter(
         )
         setRate(internalPlaybackSpeed)
         applyPitch()
+        // A fresh handle starts with an empty filter chain, so the curve has to be re-applied or
+        // the equalizer silently stops working at the next track — including on secondaryPlayer,
+        // which belongs to neither collection while it is being promoted.
+        if (internalEqualizerBands.isNotEmpty() || internalEqualizerPreamp != 0f) {
+            setEqualizer(internalEqualizerBands, internalEqualizerPreamp)
+        }
     }
 
     /**
@@ -1030,6 +1036,26 @@ class MpvPlayerAdapter(
     }
 
     override var skipSilenceEnabled: Boolean = false
+
+    /** Current curve, so a handle created later can be brought up to the same setting. */
+    @Volatile
+    private var internalEqualizerBands: List<Float> = emptyList()
+
+    @Volatile
+    private var internalEqualizerPreamp: Float = 0f
+
+    override fun setEqualizer(
+        bandsDb: List<Float>,
+        preampDb: Float,
+    ) {
+        internalEqualizerBands = bandsDb
+        internalEqualizerPreamp = preampDb
+        // Same hop as volume and sleepFadeFactor: mpv properties are written on the player thread,
+        // because a handle released between the isReleased check and the write is a use-after-free.
+        coroutineScope.launch {
+            forEachLiveHandle { it.setEqualizer(bandsDb, preampDb) }
+        }
+    }
 
     // ========== Listener Management ==========
 
