@@ -1879,6 +1879,22 @@ class YouTube {
         ytMusic.createYouTubePlaylist(title, listVideoId).body<CreatePlaylistResponse>()
     }
 
+    /**
+     * Subscribes the signed-in account to a channel.
+     *
+     * Returns the HTTP status rather than a parsed body, the same way the like endpoints do —
+     * these calls answer with an empty payload, so the status is the whole result.
+     */
+    suspend fun subscribeChannel(channelId: String) =
+        runCatching {
+            ytMusic.subscribeChannel(channelId).status.value
+        }
+
+    suspend fun unsubscribeChannel(channelId: String) =
+        runCatching {
+            ytMusic.unsubscribeChannel(channelId).status.value
+        }
+
     suspend fun addToLiked(mediaId: String) =
         runCatching {
             ytMusic.addToLiked(mediaId).status.value

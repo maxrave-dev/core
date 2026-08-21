@@ -559,6 +559,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val syncFollowToYouTube: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[SYNC_FOLLOW_TO_YOUTUBE] ?: FALSE
+        }
+
+    override suspend fun setSyncFollowToYouTube(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[SYNC_FOLLOW_TO_YOUTUBE] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
     override val spotifyLyrics: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[SPOTIFY_LYRICS] ?: FALSE
@@ -1563,6 +1576,7 @@ internal class DataStoreManagerImpl(
         val PLAYER_VOLUME = floatPreferencesKey("player_volume")
         val SPDC = stringPreferencesKey("sp_dc")
         val SPOTIFY_LYRICS = stringPreferencesKey("spotify_lyrics")
+        val SYNC_FOLLOW_TO_YOUTUBE = stringPreferencesKey("sync_follow_to_youtube")
         val SPOTIFY_CANVAS = stringPreferencesKey("spotify_canvas")
         val SPOTIFY_CLIENT_TOKEN = stringPreferencesKey("spotify_client_token")
         val SPOTIFY_CLIENT_TOKEN_EXPIRES = longPreferencesKey("spotify_client_token_expires")

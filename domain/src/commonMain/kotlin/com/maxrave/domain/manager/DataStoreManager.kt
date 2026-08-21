@@ -160,6 +160,16 @@ interface DataStoreManager {
 
     suspend fun setSpdc(spdc: String)
 
+    /**
+     * Whether following an artist in the app also subscribes to their YouTube channel.
+     *
+     * Off by default and only settable while signed in: Follow has always been local-only, and
+     * writing to someone's account is not something to start doing without being asked.
+     */
+    val syncFollowToYouTube: Flow<String>
+
+    suspend fun setSyncFollowToYouTube(enabled: Boolean)
+
     val spotifyLyrics: Flow<String>
 
     suspend fun setSpotifyLyrics(spotifyLyrics: Boolean)

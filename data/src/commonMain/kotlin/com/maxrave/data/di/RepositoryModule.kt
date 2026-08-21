@@ -46,7 +46,7 @@ val repositoryModule =
         }
 
         single<ArtistRepository>(createdAtStart = true) {
-            ArtistRepositoryImpl(get(), get())
+            ArtistRepositoryImpl(get(), get(), get())
         }
 
         single<CommonRepository>(createdAtStart = true) {

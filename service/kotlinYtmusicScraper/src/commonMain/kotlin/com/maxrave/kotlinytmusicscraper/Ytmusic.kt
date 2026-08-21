@@ -18,6 +18,7 @@ import com.maxrave.kotlinytmusicscraper.models.body.FormData
 import com.maxrave.kotlinytmusicscraper.models.body.GetQueueBody
 import com.maxrave.kotlinytmusicscraper.models.body.GetSearchSuggestionsBody
 import com.maxrave.kotlinytmusicscraper.models.body.LikeBody
+import com.maxrave.kotlinytmusicscraper.models.body.SubscribeBody
 import com.maxrave.kotlinytmusicscraper.models.body.NextBody
 import com.maxrave.kotlinytmusicscraper.models.body.PlayerBody
 import com.maxrave.kotlinytmusicscraper.models.body.SearchBody
@@ -830,6 +831,28 @@ class Ytmusic {
             parameter("referrer", "https://music.youtube.com/playlist?list=$playlistId")
         }
     }
+
+    suspend fun subscribeChannel(channelId: String) =
+        httpClient.post("subscription/subscribe") {
+            ytClient(WEB_REMIX, true)
+            setBody(
+                SubscribeBody(
+                    context = WEB_REMIX.toContext(locale, visitorData),
+                    channelIds = listOf(channelId),
+                ),
+            )
+        }
+
+    suspend fun unsubscribeChannel(channelId: String) =
+        httpClient.post("subscription/unsubscribe") {
+            ytClient(WEB_REMIX, true)
+            setBody(
+                SubscribeBody(
+                    context = WEB_REMIX.toContext(locale, visitorData),
+                    channelIds = listOf(channelId),
+                ),
+            )
+        }
 
     suspend fun addToLiked(videoId: String) =
         httpClient.post("like/like") {
