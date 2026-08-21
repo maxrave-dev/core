@@ -108,6 +108,24 @@ internal class LocalPlaylistRepositoryImpl(
             .getListTracksFlowOfLocalPlaylist(id)
             .map { Converters().fromString(it.firstOrNull()) ?: emptyList() }
 
+    override fun searchTracks(
+        id: Long,
+        query: String,
+        limit: Int,
+    ): Flow<List<Pair<SongEntity, PairSongLocalPlaylist>>> =
+        flow {
+            val pairs = localDataSource.searchPlaylistPairSong(id, query, limit)
+            if (pairs.isEmpty()) {
+                emit(emptyList())
+                return@flow
+            }
+            // Two steps, the same shape LocalPlaylistPagingSource uses: the join narrows the rows,
+            // then the songs are fetched by id. Re-sorted by the pair order afterwards because the
+            // id lookup returns them in whatever order the database finds them.
+            val byId = localDataSource.getSongByListVideoIdFull(pairs.map { it.songId }).associateBy { it.videoId }
+            emit(pairs.mapNotNull { pair -> byId[pair.songId]?.let { it to pair } })
+        }.flowOn(Dispatchers.IO)
+
     override fun getTracksPaging(
         id: Long,
         filter: FilterState,

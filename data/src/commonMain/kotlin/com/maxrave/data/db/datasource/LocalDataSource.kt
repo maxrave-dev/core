@@ -486,6 +486,23 @@ internal class LocalDataSource(
         listPosition: List<Int>,
     ) = databaseDao.getPlaylistPairSongByListPosition(playlistId, listPosition)
 
+    /**
+     * Search one local playlist by title or artist.
+     *
+     * Escaping happens here rather than in the DAO because the term is a bind parameter, not a
+     * column: Room passes the value through untouched, and LIKE still reads `%` and `_` inside it
+     * as wildcards. A user typing `%` would otherwise get the whole playlist back.
+     */
+    suspend fun searchPlaylistPairSong(
+        playlistId: Long,
+        query: String,
+        limit: Int,
+    ) = databaseDao.searchPlaylistPairSong(
+        playlistId = playlistId,
+        query = "%" + query.escapeForLike() + "%",
+        limit = limit,
+    )
+
     suspend fun getPlaylistPairSongByOffset(
         playlistId: Long,
         offset: Int,
@@ -682,3 +699,14 @@ internal class LocalDataSource(
         databaseDao.deleteAllYourYouTubePlaylist()
 
 }
+
+/**
+ * Escapes the LIKE wildcards in a user-typed term, for use with `ESCAPE '\\'`.
+ *
+ * The backslash goes first: escaping it after `_` and `%` would escape the backslashes this very
+ * function just added, turning `\_` back into a literal backslash followed by a wildcard.
+ */
+private fun String.escapeForLike(): String =
+    replace("\\", "\\\\")
+        .replace("_", "\\_")
+        .replace("%", "\\%")

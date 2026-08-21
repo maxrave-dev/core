@@ -748,6 +748,34 @@ interface DatabaseDao {
         positionList: List<Int>,
     ): List<PairSongLocalPlaylist>
 
+    /**
+     * Songs of one local playlist matching a search term, by title or artist.
+     *
+     * Joined rather than filtered in Kotlin: the paged reader walks
+     * `pair_song_local_playlist` fifty rows at a time and only then looks the songs up, so a
+     * filter applied to what it returned would search whatever the user had already scrolled
+     * past and nothing else.
+     *
+     * [query] arrives ready to use — wildcards already wrapped around it and its own `%`, `_`
+     * and `\\` already escaped by the caller, which is what ESCAPE refers to. A term typed as
+     * `%` would otherwise match the entire playlist.
+     *
+     * `artistName` is a converted `List<String>` held as a JSON array, so this matches inside
+     * that text. Good enough for a search box — a name is a name wherever it sits in the array —
+     * unlike the id lookups elsewhere in this file, which have to match quoted tokens exactly.
+     */
+    @Query(
+        "SELECT p.* FROM pair_song_local_playlist p JOIN song s ON s.videoId = p.songId " +
+            "WHERE p.playlistId = :playlistId AND " +
+            "(s.title LIKE :query ESCAPE '\\' OR s.artistName LIKE :query ESCAPE '\\') " +
+            "ORDER BY p.position ASC LIMIT :limit",
+    )
+    suspend fun searchPlaylistPairSong(
+        playlistId: Long,
+        query: String,
+        limit: Int,
+    ): List<PairSongLocalPlaylist>
+
     @Query(
         "SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId ORDER BY position " +
             "ASC LIMIT 50 OFFSET :offset",
