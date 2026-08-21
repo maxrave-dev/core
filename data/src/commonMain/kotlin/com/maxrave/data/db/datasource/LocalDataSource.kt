@@ -4,6 +4,9 @@ import DatabaseDao
 import com.maxrave.data.db.MusicDatabase
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
+import com.maxrave.domain.data.entities.AutoEqCurveEntity
+import com.maxrave.domain.data.entities.AutoEqEntryEntity
+import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
@@ -698,6 +701,36 @@ internal class LocalDataSource(
     suspend fun deleteAllYourYouTubePlaylist() =
         databaseDao.deleteAllYourYouTubePlaylist()
 
+
+    // ========== AutoEq ==========
+
+    suspend fun getAutoEqEntryCount(): Int = databaseDao.getAutoEqEntryCount()
+
+    suspend fun searchAutoEqEntries(
+        query: String,
+        limit: Int,
+    ): List<AutoEqEntryEntity> =
+        if (query.isBlank()) {
+            databaseDao.getAutoEqEntries(limit)
+        } else {
+            databaseDao.searchAutoEqEntries(query.escapeForLike(), limit)
+        }
+
+    suspend fun getAutoEqCurve(path: String): AutoEqCurveEntity? = databaseDao.getAutoEqCurve(path)
+
+    suspend fun insertAutoEqCurve(curve: AutoEqCurveEntity) = databaseDao.insertAutoEqCurve(curve)
+
+    suspend fun getAutoEqCachedCurvePaths(): List<String> = databaseDao.getAutoEqCachedCurvePaths()
+
+    suspend fun getAutoEqIndexMeta(): AutoEqIndexMetaEntity? = databaseDao.getAutoEqIndexMeta()
+
+    /** Records that the cache was checked, without touching the rows it describes. */
+    suspend fun updateAutoEqIndexMeta(meta: AutoEqIndexMetaEntity) = databaseDao.upsertAutoEqIndexMeta(meta)
+
+    suspend fun replaceAutoEqIndex(
+        entries: List<AutoEqEntryEntity>,
+        meta: AutoEqIndexMetaEntity,
+    ) = databaseDao.replaceAutoEqIndex(entries, meta)
 }
 
 /**

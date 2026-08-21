@@ -191,6 +191,20 @@ interface DataStoreManager {
 
     suspend fun setEqualizerPreamp(preampDb: Float)
 
+    /**
+     * The AutoEq profile last imported, as `"<label>\n<comma-separated gains>"`.
+     *
+     * Label and curve share one key on purpose. The label is only shown while the equalizer still
+     * holds exactly those gains, so storing them apart would create two values that have to agree
+     * — and a moment during the write where they do not.
+     */
+    val equalizerAutoEqProfile: Flow<String>
+
+    suspend fun setEqualizerAutoEqProfile(
+        label: String,
+        bandsDb: List<Float>,
+    )
+
     val syncFollowToYouTube: Flow<String>
 
     suspend fun setSyncFollowToYouTube(enabled: Boolean)

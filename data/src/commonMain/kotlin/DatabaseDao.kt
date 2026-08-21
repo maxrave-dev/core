@@ -9,6 +9,9 @@ import androidx.room.Transaction
 import androidx.room.Update
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
+import com.maxrave.domain.data.entities.AutoEqCurveEntity
+import com.maxrave.domain.data.entities.AutoEqEntryEntity
+import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
@@ -1322,4 +1325,65 @@ interface DatabaseDao {
         startTimestamp: LocalDateTime,
         endTimestamp: LocalDateTime,
     ): Long
+
+    // ========== AutoEq ==========
+
+    @Query("SELECT COUNT(*) FROM autoeq_entry")
+    suspend fun getAutoEqEntryCount(): Int
+
+    @Query("SELECT * FROM autoeq_entry ORDER BY name LIMIT :limit")
+    suspend fun getAutoEqEntries(limit: Int): List<AutoEqEntryEntity>
+
+    /**
+     * Name search over the cached index.
+     *
+     * `ESCAPE` is declared and the caller escapes the query, because `_` and `%` are LIKE
+     * wildcards: a user typing either would otherwise silently match far more than they asked for.
+     */
+    @Query(
+        "SELECT * FROM autoeq_entry WHERE name LIKE '%' || :query || '%' ESCAPE '\\' " +
+            "ORDER BY name LIMIT :limit",
+    )
+    suspend fun searchAutoEqEntries(
+        query: String,
+        limit: Int,
+    ): List<AutoEqEntryEntity>
+
+    @Query("SELECT * FROM autoeq_curve WHERE path = :path")
+    suspend fun getAutoEqCurve(path: String): AutoEqCurveEntity?
+
+    @Insert(onConflict = REPLACE)
+    suspend fun insertAutoEqCurve(curve: AutoEqCurveEntity)
+
+    /** Only the keys: the picker needs to know which rows are usable offline, not their gains. */
+    @Query("SELECT path FROM autoeq_curve")
+    suspend fun getAutoEqCachedCurvePaths(): List<String>
+
+    @Query("SELECT * FROM autoeq_index_meta WHERE id = 0")
+    suspend fun getAutoEqIndexMeta(): AutoEqIndexMetaEntity?
+
+    @Insert(onConflict = REPLACE)
+    suspend fun insertAutoEqEntries(entries: List<AutoEqEntryEntity>)
+
+    @Insert(onConflict = REPLACE)
+    suspend fun upsertAutoEqIndexMeta(meta: AutoEqIndexMetaEntity)
+
+    @Query("DELETE FROM autoeq_entry")
+    suspend fun deleteAllAutoEqEntries()
+
+    /**
+     * Swap in a freshly downloaded index.
+     *
+     * The rows and the ETag that describes them are written together, so there is no window in
+     * which the stored ETag claims a version of the index the table does not actually hold.
+     */
+    @Transaction
+    suspend fun replaceAutoEqIndex(
+        entries: List<AutoEqEntryEntity>,
+        meta: AutoEqIndexMetaEntity,
+    ) {
+        deleteAllAutoEqEntries()
+        insertAutoEqEntries(entries)
+        upsertAutoEqIndexMeta(meta)
+    }
 }

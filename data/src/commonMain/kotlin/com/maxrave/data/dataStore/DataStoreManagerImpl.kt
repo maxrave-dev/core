@@ -601,6 +601,23 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val equalizerAutoEqProfile: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[EQUALIZER_AUTOEQ_PROFILE] ?: ""
+        }
+
+    override suspend fun setEqualizerAutoEqProfile(
+        label: String,
+        bandsDb: List<Float>,
+    ) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[EQUALIZER_AUTOEQ_PROFILE] =
+                    if (label.isBlank()) "" else label + "\n" + bandsDb.joinToString(",")
+            }
+        }
+    }
+
     override val syncFollowToYouTube: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[SYNC_FOLLOW_TO_YOUTUBE] ?: FALSE
@@ -1619,6 +1636,7 @@ internal class DataStoreManagerImpl(
         val SPDC = stringPreferencesKey("sp_dc")
         val SPOTIFY_LYRICS = stringPreferencesKey("spotify_lyrics")
         val SYNC_FOLLOW_TO_YOUTUBE = stringPreferencesKey("sync_follow_to_youtube")
+        val EQUALIZER_AUTOEQ_PROFILE = stringPreferencesKey("equalizer_autoeq_profile")
         val EQUALIZER_BANDS = stringPreferencesKey("equalizer_bands")
         val EQUALIZER_ENABLED = stringPreferencesKey("equalizer_enabled")
         val EQUALIZER_PREAMP = stringPreferencesKey("equalizer_preamp")

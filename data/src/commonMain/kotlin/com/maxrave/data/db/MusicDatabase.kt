@@ -9,6 +9,9 @@ import androidx.room.execSQL
 import androidx.room.useWriterConnection
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
+import com.maxrave.domain.data.entities.AutoEqCurveEntity
+import com.maxrave.domain.data.entities.AutoEqEntryEntity
+import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
@@ -35,9 +38,10 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         AlbumEntity::class, PlaylistEntity::class, LocalPlaylistEntity::class, LyricsEntity::class, QueueEntity::class,
         SetVideoIdEntity::class, PairSongLocalPlaylist::class, GoogleAccountEntity::class, FollowedArtistSingleAndAlbum::class,
         NotificationEntity::class, TranslatedLyricsEntity::class, PodcastsEntity::class, EpisodeEntity::class,
-        YourYouTubePlaylistList::class, PlaybackEventEntity::class, EventArtistEntity::class
+        YourYouTubePlaylistList::class, PlaybackEventEntity::class, EventArtistEntity::class,
+        AutoEqEntryEntity::class, AutoEqIndexMetaEntity::class, AutoEqCurveEntity::class
     ],
-    version = 24,
+    version = 25,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3), AutoMigration(
@@ -78,6 +82,11 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         AutoMigration(23, 24),
         AutoMigration(22, 24),
         AutoMigration(21, 24),
+        // 25 adds the AutoEq cache. Three new tables and nothing else, so Room generates
+        // the migration itself — no spec, and no path by which existing rows can be touched.
+        AutoMigration(24, 25),
+        AutoMigration(23, 25),
+        AutoMigration(22, 25),
     ],
 )
 @TypeConverters(Converters::class)

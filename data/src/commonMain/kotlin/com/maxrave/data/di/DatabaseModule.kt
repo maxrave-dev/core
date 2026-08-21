@@ -20,6 +20,7 @@ import org.koin.dsl.module
 import org.simpmusic.aiservice.AiClient
 import org.simpmusic.lyrics.SimpMusicLyricsClient
 import kotlin.time.ExperimentalTime
+import org.simpmusic.autoeq.AutoEq
 
 @OptIn(ExperimentalTime::class)
 val databaseModule =
@@ -72,5 +73,11 @@ val databaseModule =
 
         single(createdAtStart = true) {
             SimpMusicLyricsClient()
+        }
+
+        // Not created at start, unlike the rest: nothing needs it until someone opens the AutoEq
+        // picker, and it holds an HTTP client the vast majority of sessions never use.
+        single {
+            AutoEq()
         }
     }
