@@ -190,6 +190,9 @@ class MpvPlayerAdapter(
     @Volatile
     private var crossfadeEnabled = false
 
+    /** See MediaPlayerInterface.crossfadeSuppressed — set while in a Listen Together room. */
+    override var crossfadeSuppressed: Boolean = false
+
     @Volatile
     private var crossfadeDurationMs = 5000
 
@@ -1623,6 +1626,7 @@ class MpvPlayerAdapter(
 
         val shouldCrossfade =
             crossfadeEnabled &&
+                !crossfadeSuppressed &&
                 hasNextMediaItem() &&
                 !isCurrentTrackVideo() &&
                 !isNextTrackVideo() &&
@@ -2503,6 +2507,7 @@ class MpvPlayerAdapter(
                             // Block when paused (internalPlayWhenReady=false) to prevent
                             // crossfade during queue restore.
                             if (crossfadeEnabled &&
+                                !crossfadeSuppressed &&
                                 !isCrossfading &&
                                 internalPlayWhenReady &&
                                 !isCurrentTrackVideo() &&

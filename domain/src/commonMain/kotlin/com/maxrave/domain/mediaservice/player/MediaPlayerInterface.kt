@@ -111,6 +111,15 @@ interface MediaPlayerInterface {
     var sleepFadeFactor: Float
 
     /**
+     * Suppresses crossfade without touching the user's setting.
+     *
+     * Listen Together needs every device in a room to change track at the same instant; a fade
+     * overlaps two tracks for seconds and drifts the room apart. Overwriting `crossfadeEnabled` in
+     * DataStore instead would lose the user's real preference if the process died mid-room.
+     */
+    var crossfadeSuppressed: Boolean
+
+    /**
      * `mediaId`s of the tracks that came from the album currently loaded in the queue, or empty
      * when the queue is not an album.
      *

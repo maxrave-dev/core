@@ -301,6 +301,9 @@ internal class CrossfadeExoPlayerAdapter(
     @Volatile
     private var crossfadeEnabled = false
 
+    /** See MediaPlayerInterface.crossfadeSuppressed — set while in a Listen Together room. */
+    override var crossfadeSuppressed: Boolean = false
+
     @Volatile
     private var crossfadeDurationMs = 5000
 
@@ -1874,6 +1877,7 @@ internal class CrossfadeExoPlayerAdapter(
         // Check if crossfade should be used
         val shouldCrossfade =
             crossfadeEnabled &&
+                !crossfadeSuppressed &&
                 hasNextMediaItem() &&
                 !isCrossfading &&
                 !isCurrentTrackVideo() &&
@@ -2743,6 +2747,7 @@ internal class CrossfadeExoPlayerAdapter(
                                 // is NOT precached, URL resolution + buffering time doesn't
                                 // eat into the audible crossfade window.
                                 if (crossfadeEnabled &&
+                                    !crossfadeSuppressed &&
                                     !isCrossfading &&
                                     player.isPlaying &&
                                     dur > 0 &&
