@@ -104,7 +104,15 @@ class ListenTogetherPlaybackBridge(
             .distinctUntilChanged()
             .collect { inRoom ->
                 withContext(Dispatchers.Main) { handler.player.crossfadeSuppressed = inRoom }
-                if (!inRoom) lastRoomPlaying = false
+                if (!inRoom) {
+                    lastRoomPlaying = false
+                } else if (!repository.room.value.isHost) {
+                    // Ask for the live position the moment we are in. The state pushed on join
+                    // carries the position as of the host's LAST command, which can be minutes old
+                    // — obeying it drops a joiner at the start of a song everyone else is halfway
+                    // through. sync_state answers with where the room actually is.
+                    repository.requestSync()
+                }
                 Logger.i(TAG, if (inRoom) "Crossfade suppressed for the room" else "Crossfade restored")
             }
     }
@@ -175,11 +183,16 @@ class ListenTogetherPlaybackBridge(
                         // Decided BEFORE loading, not corrected afterwards: loading with a hardcoded
                         // playWhenReady=true and letting applyTransport pause it is a race, and the
                         // guest wins it by starting to play in a room the host has paused.
-                        playTrack(
-                            track,
-                            keepPosition = if (sameTrack) handler.player.currentPosition else 0L,
-                            playWhenReady = playing,
-                        )
+                        // A NEW track still starts where the room is, not at zero: someone joining
+                        // a room mid-song must land next to everyone else. Only the same track
+                        // being rebuilt (the queue arrived late) keeps the local playhead.
+                        val startAt =
+                            if (sameTrack) {
+                                handler.player.currentPosition
+                            } else {
+                                session.positionAt(position, playing)
+                            }
+                        playTrack(track, keepPosition = startAt, playWhenReady = playing)
                     }
                     applyTransport(playing, position)
                 } catch (e: Exception) {
