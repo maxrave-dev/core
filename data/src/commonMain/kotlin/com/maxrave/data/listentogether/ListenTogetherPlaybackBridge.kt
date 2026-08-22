@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -26,6 +27,9 @@ import org.simpmusic.listentogether.PlaybackActions
 import org.simpmusic.listentogether.TrackInfo
 
 private const val PLAY_SETTLE_TIMEOUT_MS = 2_000L
+
+/** Poll step for the settle wait; playWhenReady has no flow to collect. */
+private const val PLAY_SETTLE_POLL_MS = 50L
 private const val TAG = "ListenTogetherBridge"
 
 /** What the guest reacts to. A data class so `distinctUntilChanged` compares every field. */
@@ -410,7 +414,14 @@ class ListenTogetherPlaybackBridge(
                 // simply never satisfies this and the room stays paused.
                 val started =
                     withTimeoutOrNull(PLAY_SETTLE_TIMEOUT_MS) {
-                        handler.controlState.first { it.isPlaying }
+                        // playWhenReady, not isPlaying: the intent flips the moment the load path
+                        // commits, while audible playback waits for the stream URL to resolve —
+                        // which can take longer than any reasonable timeout. Waiting for audio here
+                        // is why picking a track still left guests paused. Polled, because
+                        // playWhenReady is a plain property with no flow behind it.
+                        while (!handler.player.playWhenReady && !handler.player.isPlaying) {
+                            delay(PLAY_SETTLE_POLL_MS)
+                        }
                     } != null
                 if (started) {
                     session.sendPlaybackAction(
