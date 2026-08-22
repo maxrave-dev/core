@@ -373,7 +373,6 @@ class MpvPlayerAdapter(
                 player.stop()
                 transitionToState(InternalState.IDLE)
                 stopPositionUpdates()
-                notifyEqualizerIntent(false)
             }
         }
     }
@@ -1445,7 +1444,6 @@ class MpvPlayerAdapter(
                         if (currentPlayer !== player) return@launch
                         if (internalState != InternalState.PLAYING) {
                             transitionToState(InternalState.PLAYING)
-                            notifyEqualizerIntent(true)
                             // Reset retry counter on successful playback
                             retryCount = 0
                             retryVideoId = null
@@ -1458,14 +1456,7 @@ class MpvPlayerAdapter(
                         if (currentPlayer !== player) return@launch
                         if (internalState == InternalState.PLAYING) {
                             transitionToState(InternalState.PAUSED)
-                            notifyEqualizerIntent(false)
                         }
-                    }
-                }
-
-                override fun stopped(player: MpvPlayer) {
-                    coroutineScope.launch {
-                        notifyEqualizerIntent(false)
                     }
                 }
 
@@ -1656,8 +1647,6 @@ class MpvPlayerAdapter(
                 else -> {
                     if (localCurrentMediaItemIndex < playlist.size - 1) {
                         seekToNext()
-                    } else {
-                        notifyEqualizerIntent(false)
                     }
                 }
             }
@@ -2665,10 +2654,6 @@ class MpvPlayerAdapter(
         coroutineScope.launch {
             listeners.forEach(block)
         }
-    }
-
-    private fun notifyEqualizerIntent(shouldOpen: Boolean) {
-        notifyListeners { shouldOpenOrCloseEqualizerIntent(shouldOpen) }
     }
 
     // ========== Shuffle Management ==========

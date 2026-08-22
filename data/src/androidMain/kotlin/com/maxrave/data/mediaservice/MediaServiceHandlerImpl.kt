@@ -4,8 +4,6 @@ import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.ActivityManager.RunningAppProcessInfo
 import android.content.Context
-import android.content.Intent
-import android.media.audiofx.AudioEffect
 import android.media.audiofx.LoudnessEnhancer
 import com.maxrave.common.ASC
 import com.maxrave.common.CUSTOM_ORDER
@@ -304,6 +302,27 @@ internal class MediaServiceHandlerImpl(
         getFormatJob = Job()
         jobWatchtime = Job()
         skipSilent = runBlocking { dataStoreManager.skipSilent.first() == TRUE }
+        // Collected rather than read once like the settings around it: the equalizer is adjusted
+        // while music is playing, and a curve that only takes effect after a restart is useless
+        // for judging what you just changed.
+        backgroundScope.launch {
+            combine(
+                dataStoreManager.equalizerEnabled,
+                dataStoreManager.equalizerBands,
+                dataStoreManager.equalizerPreamp,
+            ) { enabled, bands, preamp -> Triple(enabled == TRUE, bands, preamp) }
+                .distinctUntilChanged()
+                .collect { (enabled, bands, preamp) ->
+                    // Switched off sends a flat curve rather than skipping the call: the filter
+                    // has to actually come out of the audio chain, and the stored bands are left
+                    // alone so switching back on returns to the user's own shape.
+                    player.setEqualizer(
+                        bandsDb =
+                            if (enabled) bands.split(",").mapNotNull { it.trim().toFloatOrNull() } else emptyList(),
+                        preampDb = if (enabled) preamp else 0f,
+                    )
+                }
+        }
         normalizeVolume =
             runBlocking { dataStoreManager.normalizeVolume.first() == TRUE }
         _nowPlaying.value = player.currentMediaItem
@@ -774,27 +793,6 @@ internal class MediaServiceHandlerImpl(
         } else if (position > player.duration) {
             player.seekToNext()
         }
-    }
-
-    private fun sendOpenEqualizerIntent() {
-        // No local audio session to expose to an equalizer while casting (or before one exists).
-        if (_castState.value.isRemote || player.audioSessionId == PlayerConstants.AUDIO_SESSION_ID_UNSET) return
-        context.sendBroadcast(
-            Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
-                putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
-                putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
-            },
-        )
-    }
-
-    private fun sendCloseEqualizerIntent() {
-        if (_castState.value.isRemote || player.audioSessionId == PlayerConstants.AUDIO_SESSION_ID_UNSET) return
-        context.sendBroadcast(
-            Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
-            },
-        )
     }
 
     @SuppressLint("PrivateResource")
@@ -2398,9 +2396,6 @@ internal class MediaServiceHandlerImpl(
                 Logger.e("ServiceHandler", "Error releasing audio effects ${e.message}")
             }
 
-            // Send close equalizer intent
-            sendCloseEqualizerIntent()
-
             // Cancel all jobs
             progressJob?.cancel()
             progressJob = null
@@ -2638,10 +2633,6 @@ internal class MediaServiceHandlerImpl(
                 player.pause()
             }
         }
-    }
-
-    override fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {
-        if (shouldOpen) sendOpenEqualizerIntent() else sendCloseEqualizerIntent()
     }
 
     override fun onShuffleModeEnabledChanged(

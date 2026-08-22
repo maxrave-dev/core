@@ -32,6 +32,8 @@ import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.audio.BiquadFilter
 import com.maxrave.media3.audio.CrossfadeFilterAudioProcessor
+import com.maxrave.media3.audio.EqualizerAudioProcessor
+import com.maxrave.media3.audio.EqualizerCurve
 import com.maxrave.media3.audio.SleepFadeAudioProcessor
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter.Companion.SPEED_PITCH_STEP
 import com.maxrave.media3.service.mediasourcefactory.MergingMediaSourceFactory
@@ -150,6 +152,14 @@ internal class CrossfadeExoPlayerAdapter(
      */
     @Volatile
     private var internalSleepFadeFactor = 1.0f
+
+    /**
+     * The equalizer curve in force. Read the same way as [internalSleepFadeFactor]: every player's
+     * [EqualizerAudioProcessor] samples it on every buffer, so one write covers both players of a
+     * crossfade and every precached one without any of them having to be found first.
+     */
+    @Volatile
+    private var internalEqualizerCurve: EqualizerCurve = EqualizerCurve.FLAT
 
     @Volatile
     private var internalRepeatMode = PlayerConstants.REPEAT_MODE_OFF
@@ -437,7 +447,6 @@ internal class CrossfadeExoPlayerAdapter(
                 currentPlayer?.pause()
                 stopPositionUpdates()
                 abandonAudioFocusInternal()
-                notifyEqualizerIntent(false)
             }
             listeners.forEach { it.onCastStateChanged(GenericCastState(isRemote = true, deviceName = deviceName)) }
         } else {
@@ -492,6 +501,7 @@ internal class CrossfadeExoPlayerAdapter(
     private fun createExoPlayerInstance(): PlayerWithFilter {
         val crossfadeFilter = CrossfadeFilterAudioProcessor()
         val sleepFade = SleepFadeAudioProcessor { internalSleepFadeFactor }
+        val equalizer = EqualizerAudioProcessor { internalEqualizerCurve }
 
         val perPlayerRenderers =
             object : DefaultRenderersFactory(context) {
@@ -506,7 +516,12 @@ internal class CrossfadeExoPlayerAdapter(
                         .setEnableAudioOutputPlaybackParameters(enableAudioTrackPlaybackParams)
                         .setAudioProcessorChain(
                             DefaultAudioSink.DefaultAudioProcessorChain(
-                                arrayOf(crossfadeFilter, sleepFade),
+                                // Equalizer first, matching the desktop graph, where the ten
+                                // `equalizer` entries sit ahead of the crossfade ones in mpv's
+                                // `af` list. All three are linear, so the order does not change
+                                // the response — it decides which stage a boost can clip in, and
+                                // the preamp that makes room for the boost belongs with it.
+                                arrayOf(equalizer, crossfadeFilter, sleepFade),
                                 SilenceSkippingAudioProcessor(
                                     2_000_000,
                                     (20_000 / 2_000_000).toFloat(),
@@ -655,7 +670,6 @@ internal class CrossfadeExoPlayerAdapter(
                 transitionToState(InternalState.IDLE)
                 stopPositionUpdates()
                 abandonAudioFocusInternal()
-                notifyEqualizerIntent(false)
             }
         }
     }
@@ -1240,6 +1254,25 @@ internal class CrossfadeExoPlayerAdapter(
             internalSleepFadeFactor = value.coerceIn(0f, 1f)
         }
 
+    /**
+     * Hand the equalizer a new curve.
+     *
+     * Nothing is pushed anywhere, for the same reason the sleep fade pushes nothing: the value is
+     * sampled per buffer. A fresh [EqualizerCurve] is allocated on every call precisely so each
+     * processor can decide whether to rebuild its coefficients with one reference comparison,
+     * rather than diffing eleven floats on every buffer for the whole of playback.
+     *
+     * Not forwarded to `castRemotePlayer`: while casting, the audio is decoded on the receiver and
+     * never passes through this pipeline at all, which is why the settings screen greys the
+     * equalizer out for the duration.
+     */
+    override fun setEqualizer(
+        bandsDb: List<Float>,
+        preampDb: Float,
+    ) {
+        internalEqualizerCurve = EqualizerCurve(bandsDb, preampDb)
+    }
+
     override var skipSilenceEnabled: Boolean
         get() = internalSkipSilence
         set(value) {
@@ -1581,13 +1614,11 @@ internal class CrossfadeExoPlayerAdapter(
                     if (isPlaying) {
                         if (internalState != InternalState.PLAYING) {
                             transitionToState(InternalState.PLAYING)
-                            notifyEqualizerIntent(true)
                         }
                     } else {
                         if (internalState == InternalState.PLAYING) {
                             if (!player.playWhenReady) {
                                 transitionToState(InternalState.PAUSED)
-                                notifyEqualizerIntent(false)
                             }
                         }
                     }
@@ -1693,31 +1724,6 @@ internal class CrossfadeExoPlayerAdapter(
                     // raw ExoPlayer. seekTo() does no manual notification, so this is the single source.
                     if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
                         listeners.forEach { it.onSeeked(newPosition.positionMs) }
-                    }
-                }
-
-                override fun onEvents(
-                    player: Player,
-                    events: Player.Events,
-                ) {
-                    if (player != currentPlayer) {
-                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
-                        return
-                    }
-                    val shouldBePlaying =
-                        !(player.playbackState == Player.STATE_ENDED || !player.playWhenReady)
-                    if (events.containsAny(
-                            Player.EVENT_PLAYBACK_STATE_CHANGED,
-                            Player.EVENT_PLAY_WHEN_READY_CHANGED,
-                            Player.EVENT_IS_PLAYING_CHANGED,
-                            Player.EVENT_POSITION_DISCONTINUITY,
-                        )
-                    ) {
-                        if (shouldBePlaying) {
-                            listeners.forEach { it.shouldOpenOrCloseEqualizerIntent(true) }
-                        } else {
-                            listeners.forEach { it.shouldOpenOrCloseEqualizerIntent(false) }
-                        }
                     }
                 }
             }
@@ -1894,8 +1900,6 @@ internal class CrossfadeExoPlayerAdapter(
                 else -> {
                     if (localCurrentMediaItemIndex < playlist.size - 1) {
                         seekToNext()
-                    } else {
-                        notifyEqualizerIntent(false)
                     }
                 }
             }
@@ -2873,12 +2877,6 @@ internal class CrossfadeExoPlayerAdapter(
         Logger.d(TAG, "Clearing all precache")
         precachedPlayers.values.forEach { cleanupPlayerInternal(it.player) }
         precachedPlayers.clear()
-    }
-
-    // ========== Internal: Notifications ==========
-
-    private fun notifyEqualizerIntent(shouldOpen: Boolean) {
-        listeners.forEach { it.shouldOpenOrCloseEqualizerIntent(shouldOpen) }
     }
 
     // ========== Internal: Shuffle Management ==========

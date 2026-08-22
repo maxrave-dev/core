@@ -29,8 +29,6 @@ interface MediaPlayerListener {
 
     fun onPlayerError(error: PlayerError) {}
 
-    fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {}
-
     fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean, list: List<GenericMediaItem>) {}
 
     fun onRepeatModeChanged(repeatMode: Int) {}

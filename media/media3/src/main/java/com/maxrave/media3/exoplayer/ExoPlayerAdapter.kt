@@ -360,30 +360,6 @@ class ExoPlayerAdapter(
             listeners.forEach { it.onPlayerError(genericError) }
         }
 
-        override fun onEvents(
-            player: Player,
-            events: Player.Events,
-        ) {
-            val shouldBePlaying = !(player.playbackState == Player.STATE_ENDED || !player.playWhenReady)
-            if (events.containsAny(
-                    Player.EVENT_PLAYBACK_STATE_CHANGED,
-                    Player.EVENT_PLAY_WHEN_READY_CHANGED,
-                    Player.EVENT_IS_PLAYING_CHANGED,
-                    Player.EVENT_POSITION_DISCONTINUITY,
-                )
-            ) {
-                if (shouldBePlaying) {
-                    listeners.forEach {
-                        it.shouldOpenOrCloseEqualizerIntent(true)
-                    }
-                } else {
-                    listeners.forEach {
-                        it.shouldOpenOrCloseEqualizerIntent(false)
-                    }
-                }
-            }
-        }
-
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
             if (shuffleModeEnabled) {
                 createShuffleOrder()

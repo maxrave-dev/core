@@ -871,12 +871,6 @@ class JvmMediaPlayerHandlerImpl(
         }
     }
 
-    private fun sendOpenEqualizerIntent() {
-    }
-
-    private fun sendCloseEqualizerIntent() {
-    }
-
     private fun updateNotification() {
         updateNotificationJob?.cancel()
         updateNotificationJob =
@@ -2493,9 +2487,6 @@ class JvmMediaPlayerHandlerImpl(
 //                Logger.e("ServiceHandler", "Error releasing audio effects ${e.message}")
 //            }
 
-            // Send close equalizer intent
-            sendCloseEqualizerIntent()
-
             // Cancel all jobs
             progressJob?.cancel()
             progressJob = null
@@ -2735,10 +2726,6 @@ class JvmMediaPlayerHandlerImpl(
                 player.pause()
             }
         }
-    }
-
-    override fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {
-        if (shouldOpen) sendOpenEqualizerIntent() else sendCloseEqualizerIntent()
     }
 
     override fun onShuffleModeEnabledChanged(
