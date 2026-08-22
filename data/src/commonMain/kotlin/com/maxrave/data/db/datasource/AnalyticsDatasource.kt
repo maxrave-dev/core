@@ -83,4 +83,44 @@ internal class AnalyticsDatasource(
         startTimestamp,
         endTimestamp,
     )
+
+    suspend fun getPlaybackSamplesInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.getPlaybackSamplesInRange(startTimestamp, endTimestamp)
+
+    suspend fun getDistinctTrackCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.getDistinctTrackCountInRange(startTimestamp, endTimestamp)
+
+    suspend fun getDistinctAlbumCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.getDistinctAlbumCountInRange(startTimestamp, endTimestamp)
+
+    suspend fun getDistinctArtistCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.getDistinctArtistCountInRange(startTimestamp, endTimestamp)
+
+    suspend fun getNewArtistCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.getNewArtistCountInRange(startTimestamp, endTimestamp)
+
+    suspend fun getArtistPlayCountsInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.getArtistPlayCountsInRange(startTimestamp, endTimestamp)
+
+    suspend fun getDecadeCountsInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.getDecadeCountsInRange(startTimestamp, endTimestamp)
+
+    suspend fun getDatedPlayCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.getDatedPlayCountInRange(startTimestamp, endTimestamp)
 }

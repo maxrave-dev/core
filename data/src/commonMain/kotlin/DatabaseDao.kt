@@ -32,6 +32,8 @@ import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.entities.YourYouTubePlaylistList
 import com.maxrave.domain.data.entities.analytics.EventArtistEntity
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
+import com.maxrave.domain.data.entities.analytics.query.DecadeCount
+import com.maxrave.domain.data.entities.analytics.query.PlaybackSample
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedAlbum
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtist
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedTracks
@@ -1325,6 +1327,113 @@ interface DatabaseDao {
         startTimestamp: LocalDateTime,
         endTimestamp: LocalDateTime,
     ): Long
+
+    /**
+     * Every play in the range, as timestamp + listened seconds.
+     *
+     * One pass feeds the listening clock, the busiest day, the plays-per-day average and the
+     * consistency axis — all of which are LOCAL-time questions over the same rows. Doing them as
+     * four SQL aggregates would mean four scans and `'localtime'` in each, whose answer depends on
+     * the process timezone; doing them in Kotlin costs one scan and is timezone-correct.
+     */
+    @Query(
+        "SELECT timestamp, listenedSecond FROM playback_event" +
+            " WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp",
+    )
+    suspend fun getPlaybackSamplesInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): List<PlaybackSample>
+
+    @Query(
+        "SELECT COUNT(DISTINCT videoId) FROM playback_event" +
+            " WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp",
+    )
+    suspend fun getDistinctTrackCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Int
+
+    @Query(
+        "SELECT COUNT(DISTINCT albumBrowseId) FROM playback_event" +
+            " WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp AND albumBrowseId IS NOT NULL",
+    )
+    suspend fun getDistinctAlbumCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Int
+
+    @Query(
+        "SELECT COUNT(DISTINCT channelId) FROM event_artist" +
+            " WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp",
+    )
+    suspend fun getDistinctArtistCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Int
+
+    /**
+     * Artists heard for the FIRST time inside the range.
+     *
+     * `MIN(timestamp)` is taken over the artist's whole history, not over the range, so an artist
+     * played last year and again this week is not new — grouping inside the window instead would
+     * call every artist new, which is the obvious wrong answer this guards against.
+     */
+    @Query(
+        "SELECT COUNT(*) FROM (SELECT channelId FROM event_artist GROUP BY channelId" +
+            " HAVING MIN(timestamp) BETWEEN :startTimestamp AND :endTimestamp)",
+    )
+    suspend fun getNewArtistCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Int
+
+    /**
+     * Play counts for EVERY artist in the range, unbounded.
+     *
+     * [queryTopArtistsInRange] caps at 100, which is right for a top-five list and wrong here: the
+     * concentration and diversity axes are shares of the whole, so a cut-off tail would inflate
+     * both.
+     */
+    @Query(
+        "SELECT channelId, COUNT(*) AS playCount FROM event_artist" +
+            " WHERE timestamp BETWEEN :startTimestamp AND :endTimestamp" +
+            " GROUP BY channelId ORDER BY playCount DESC",
+    )
+    suspend fun getArtistPlayCountsInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): List<TopPlayedArtist>
+
+    /**
+     * Plays bucketed by the release decade of the album they belong to.
+     *
+     * `album.year` is whatever YouTube returned — usually "2020", sometimes absent, occasionally
+     * something else — so the row is only counted when the first four characters parse to a
+     * plausible year.
+     */
+    @Query(
+        "SELECT (CAST(SUBSTR(a.year, 1, 4) AS INTEGER) / 10) * 10 AS decade, COUNT(*) AS playCount" +
+            " FROM playback_event p JOIN album a ON a.browseId = p.albumBrowseId" +
+            " WHERE p.timestamp BETWEEN :startTimestamp AND :endTimestamp" +
+            " AND a.year IS NOT NULL AND CAST(SUBSTR(a.year, 1, 4) AS INTEGER) > 1900" +
+            " GROUP BY decade ORDER BY decade",
+    )
+    suspend fun getDecadeCountsInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): List<DecadeCount>
+
+    /** How many plays in the range could be dated at all — the denominator for the decade chart. */
+    @Query(
+        "SELECT COUNT(*) FROM playback_event p JOIN album a ON a.browseId = p.albumBrowseId" +
+            " WHERE p.timestamp BETWEEN :startTimestamp AND :endTimestamp" +
+            " AND a.year IS NOT NULL AND CAST(SUBSTR(a.year, 1, 4) AS INTEGER) > 1900",
+    )
+    suspend fun getDatedPlayCountInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Int
 
     // ========== AutoEq ==========
 

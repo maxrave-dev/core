@@ -1,6 +1,7 @@
 package com.maxrave.domain.repository
 
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
+import com.maxrave.domain.data.model.analytics.AnalyticsPeriodStats
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedAlbum
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtist
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedTracks
@@ -61,4 +62,16 @@ interface AnalyticsRepository {
         startTimestamp: LocalDateTime,
         endTimestamp: LocalDateTime,
     ): Flow<Long>
+
+    /**
+     * One coherent snapshot of a span, rather than a dozen flows the caller has to line up.
+     *
+     * Suspending, not a Flow: the screen asks for exactly two of these — the period on screen and
+     * the one before it — and needs them as a matched pair. Ten independent flows would let a
+     * count from this week render against a total from last.
+     */
+    suspend fun getPeriodStats(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): AnalyticsPeriodStats
 }
