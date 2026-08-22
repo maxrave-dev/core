@@ -2,27 +2,30 @@ package com.maxrave.data.listentogether
 
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.model.browse.album.Track
-import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
-import com.maxrave.domain.mediaservice.handler.QueueData
-import com.maxrave.domain.mediaservice.handler.SimpleMediaState
 import com.maxrave.domain.data.model.listentogether.RoomTrack
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericMediaMetadata
+import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
+import com.maxrave.domain.mediaservice.handler.QueueData
+import com.maxrave.domain.mediaservice.handler.SimpleMediaState
+import com.maxrave.domain.repository.ListenTogetherRepository
 import com.maxrave.logger.Logger
+import kotlin.math.abs
+import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlin.time.TimeSource
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlin.math.abs
-import com.maxrave.domain.repository.ListenTogetherRepository
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.simpmusic.listentogether.ListenTogetherSession
 import org.simpmusic.listentogether.PlaybackActions
 import org.simpmusic.listentogether.TrackInfo
 
+private const val PLAY_SETTLE_TIMEOUT_MS = 2_000L
 private const val TAG = "ListenTogetherBridge"
 
 /** What the guest reacts to. A data class so `distinctUntilChanged` compares every field. */
@@ -187,10 +190,13 @@ class ListenTogetherPlaybackBridge(
                         // a room mid-song must land next to everyone else. Only the same track
                         // being rebuilt (the queue arrived late) keeps the local playhead.
                         val startAt =
-                            if (sameTrack) {
-                                handler.player.currentPosition
-                            } else {
-                                session.positionAt(position, playing)
+                            when {
+                                sameTrack -> handler.player.currentPosition
+                                // change_track carries position 0, and 0 means "from the top" —
+                                // running it through the clock correction turns it into however
+                                // long ago the last command was, which can seek past the end.
+                                position <= 0L -> 0L
+                                else -> session.positionAt(position, playing)
                             }
                         playTrack(track, keepPosition = startAt, playWhenReady = playing)
                     }
@@ -396,15 +402,21 @@ class ListenTogetherPlaybackBridge(
                 // track follows another, so nothing else would ever send this and guests would load
                 // each new track and sit there stopped.
                 //
-                // playWhenReady, NOT isPlaying. isPlaying means "audio is coming out right now" and
-                // is false while the new track buffers — which is exactly when this runs. Asking
-                // isPlaying here made the PLAY never get sent on precisely the transitions it
-                // exists for. playWhenReady is the intent to play and stays true across the gap.
-                if (handler.player.playWhenReady) {
+                // Whether the host is actually going to play this, decided by WAITING rather than
+                // by sampling. Reading playWhenReady inline was wrong twice over: it is false while
+                // a next-track buffers, and false again for a moment while the player is rebuilt
+                // for a track the host picked from a list — so the PLAY that guests depend on was
+                // dropped on exactly the transitions it exists for. A host who is genuinely paused
+                // simply never satisfies this and the room stays paused.
+                val started =
+                    withTimeoutOrNull(PLAY_SETTLE_TIMEOUT_MS) {
+                        handler.controlState.first { it.isPlaying }
+                    } != null
+                if (started) {
                     session.sendPlaybackAction(
                         action = PlaybackActions.PLAY,
                         trackId = "",
-                        position = 0L,
+                        position = handler.player.currentPosition,
                         trackInfo = null,
                     )
                 }
