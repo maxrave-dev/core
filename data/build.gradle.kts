@@ -77,6 +77,7 @@ kotlin {
                 implementation(projects.spotify)
                 implementation(projects.kotlinYtmusicScraper)
                 implementation(projects.kizzy)
+                implementation(projects.listenTogether)
 
                 // Last.fm (gated: real scrobbler for full builds, no-op stub for FOSS builds)
                 if (isFullBuild) {
@@ -100,6 +101,12 @@ kotlin {
 
                 // Koin
                 implementation(libs.koin.core)
+            }
+        }
+
+        commonTest {
+            dependencies {
+                implementation(libs.kotlin.test)
             }
         }
 

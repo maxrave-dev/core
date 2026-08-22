@@ -126,4 +126,56 @@ class MessageCodecTest {
         assertNotNull(decoded.trackInfo)
         assertEquals(track, decoded.trackInfo)
     }
+
+    /**
+     * The handshake is the one exchange whose type strings are NOT in `listentogether.proto` — the
+     * schema defines the two messages but never names the envelope type that carries them. These
+     * literals therefore come from the server: metroserver `internal/server/protocol.go`,
+     * `MsgTypeClientCapabilities` / `MsgTypeServerCapabilities`.
+     *
+     * Getting either wrong fails in the worst possible way. The socket opens, the frame is sent,
+     * and the server answers `unknown_message_type` — so the connection looks alive while the
+     * handshake never completes and no room is ever joined. Pinning the literals is what turns
+     * that into a test failure instead.
+     */
+    @Test
+    fun capabilityHandshakeUsesTheServersOwnTypeNames() {
+        assertEquals("client_capabilities", MessageTypes.CLIENT_CAPABILITIES)
+        assertEquals("server_capabilities", MessageTypes.SERVER_CAPABILITIES)
+
+        val (sentType, sentPayload) =
+            codec.decode(
+                codec.encode(
+                    MessageTypes.CLIENT_CAPABILITIES,
+                    ClientCapabilities(supportsProtobuf = true, supportsCompression = true, clientVersion = "test"),
+                ),
+            )
+        assertEquals(MessageTypes.CLIENT_CAPABILITIES, sentType)
+        val sent = proto.decodeFromByteArray(ClientCapabilities.serializer(), sentPayload)
+        // The server rejects a client that claims false, with `unsupported_client`.
+        assertTrue(sent.supportsProtobuf)
+        assertEquals("test", sent.clientVersion)
+
+        // Built the way the server builds it: the client never encodes a ServerCapabilities, so
+        // this half only ever arrives through decodePayload — which is exactly the path that was
+        // missing and left the handshake undetectable.
+        val answer =
+            proto.encodeToByteArray(
+                Envelope.serializer(),
+                Envelope(
+                    type = MessageTypes.SERVER_CAPABILITIES,
+                    payload =
+                        proto.encodeToByteArray(
+                            ServerCapabilities.serializer(),
+                            ServerCapabilities(supportsProtobuf = true, supportsCompression = true, serverVersion = "1"),
+                        ),
+                ),
+            )
+        val (answerType, answerPayload) = codec.decode(answer)
+        val caps = codec.decodePayload(answerType, answerPayload) as? ServerCapabilities
+
+        assertNotNull(caps)
+        assertEquals("1", caps.serverVersion)
+        assertTrue(caps.supportsCompression)
+    }
 }

@@ -1,0 +1,114 @@
+package org.simpmusic.listentogether
+
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.test.Ignore
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+/**
+ * Two real clients, one real room, against the public server.
+ *
+ * This is the test that answers "you join and then nothing happens": it drives a host and a guest
+ * through the whole sequence — create, request, approve, and a transport command — and asserts the
+ * guest's state actually moved. Nothing below is mocked; if the server, the codec or the session
+ * disagree anywhere, one of these assertions fails.
+ *
+ * Network-dependent and it creates a room on someone else's server, so it is `@Ignore`d. Delete the
+ * annotation to run it.
+ */
+class LiveRoomSyncTest {
+    /** Generous: this is a real network hop to Poland, not a latency assertion. */
+    private val MAX_TRAVEL_MS = 5_000L
+
+    private fun session(version: String) =
+        ListenTogetherSession(ListenTogetherClient(clientVersion = version))
+
+    private suspend fun <T> eventually(
+        label: String,
+        timeoutMs: Long = 25_000,
+        block: () -> T?,
+    ): T? =
+        withTimeoutOrNull(timeoutMs) {
+            while (true) {
+                block()?.let { return@withTimeoutOrNull it }
+                delay(150)
+            }
+            @Suppress("UNREACHABLE_CODE")
+            null
+        }.also { if (it == null) println("  ✗ timed out waiting for $label") }
+
+
+    @Ignore
+    @Test
+    fun aGuestFollowsTheHostThroughARealRoom() =
+        runBlocking {
+            val host = session("simpmusic-host-test")
+            val guest = session("simpmusic-guest-test")
+
+            try {
+                host.connect()
+                guest.connect()
+                assertNotNull(eventually("host connected") { host.state.value.isConnected.takeIf { it } }, "host never connected")
+                assertNotNull(eventually("guest connected") { guest.state.value.isConnected.takeIf { it } }, "guest never connected")
+                println("✓ both clients connected")
+
+                host.createRoom("HostUser")
+                val code = eventually("room_created") { host.state.value.roomCode }
+                assertNotNull(code, "host never got a room")
+                assertTrue(host.state.value.isHost, "creator should be host")
+                println("✓ room $code created")
+
+                guest.joinRoom(code, "GuestUser")
+                val request = eventually("join_request") { host.state.value.joinRequests.firstOrNull() }
+                assertNotNull(request, "host never saw the join request")
+                assertEquals("GuestUser", request.username)
+                println("✓ host received the join request")
+
+                host.approveJoin(request.userId)
+                assertNotNull(eventually("join_approved") { guest.state.value.roomCode }, "guest never got in")
+                assertTrue(!guest.state.value.isHost, "guest must not be host")
+                println("✓ guest is in the room")
+
+                // The whole point: a transport command issued by the host reaches the guest.
+                host.sendPlaybackAction(
+                    action = PlaybackActions.CHANGE_TRACK,
+                    trackId = "dQw4w9WgXcQ",
+                    position = 0L,
+                    trackInfo = TrackInfo(id = "dQw4w9WgXcQ", title = "Test Track", artist = "Tester", duration = 180_000L),
+                )
+                val track = eventually("track on guest") { guest.state.value.currentTrack?.takeIf { it.id.isNotBlank() } }
+                assertNotNull(track, "the guest never received the host's track")
+                assertEquals("dQw4w9WgXcQ", track.id)
+                println("✓ guest received the track: ${track.title}")
+
+                host.sendPlaybackAction(PlaybackActions.PLAY, "dQw4w9WgXcQ", 12_345L, null)
+                val playing = eventually("play on guest") { guest.state.value.takeIf { it.isPlaying } }
+                assertNotNull(playing, "the guest never saw PLAY")
+                // NOT assertEquals: the server advances the position by the time the command spent
+                // in flight, which is the synchronisation working rather than a mismatch. A first
+                // run saw 12_518 for a sent 12_345 — 173 ms of travel.
+                val drift = playing.position - 12_345L
+                assertTrue(
+                    drift in 0..MAX_TRAVEL_MS,
+                    "position should arrive advanced by travel time, not $drift ms off",
+                )
+                println("✓ guest received PLAY at ${playing.position} (advanced ${drift}ms in flight)")
+
+                // Members list must show both, with exactly one host.
+                val members = eventually("members") { guest.state.value.members.takeIf { it.size >= 2 } }
+                assertNotNull(members, "guest never saw a full member list")
+                println("✓ guest sees ${members.size} members")
+
+                host.leaveRoom()
+                guest.leaveRoom()
+                delay(300)
+            } finally {
+                host.release()
+                guest.release()
+            }
+        }
+}

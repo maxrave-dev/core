@@ -37,6 +37,15 @@ object MessageTypes {
     const val APPROVE_SUGGESTION = "approve_suggestion"
     const val REJECT_SUGGESTION = "reject_suggestion"
 
+    /**
+     * Capability negotiation rides in an ordinary [Envelope] like everything else — the `.proto`
+     * only says "first message from client" and never names the type, so these two strings come
+     * from the server itself: metroserver `internal/server/protocol.go`, `MsgTypeClientCapabilities`
+     * / `MsgTypeServerCapabilities`. Getting either one wrong is answered with `unknown_message_type`
+     * and the handshake simply never completes.
+     */
+    const val CLIENT_CAPABILITIES = "client_capabilities"
+
     const val ROOM_CREATED = "room_created"
     const val JOIN_REQUEST = "join_request"
     const val JOIN_APPROVED = "join_approved"
@@ -57,6 +66,9 @@ object MessageTypes {
     const val SUGGESTION_RECEIVED = "suggestion_received"
     const val SUGGESTION_APPROVED = "suggestion_approved"
     const val SUGGESTION_REJECTED = "suggestion_rejected"
+
+    /** The server's half of the handshake — see [CLIENT_CAPABILITIES]. */
+    const val SERVER_CAPABILITIES = "server_capabilities"
 }
 
 /** Values of [PlaybackActionPayload.action]. */

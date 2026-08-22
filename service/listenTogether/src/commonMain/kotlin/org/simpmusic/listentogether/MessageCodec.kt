@@ -26,7 +26,17 @@ import okio.buffer
 internal class MessageCodec(
     private val compressionEnabled: Boolean = true,
 ) {
-    private val proto = ProtoBuf { encodeDefaults = true }
+    /**
+     * `encodeDefaults = false` is not a preference — it is what proto3 means.
+     *
+     * A proto3 field holding its default value is simply absent from the wire, which is what
+     * `protoc` emits and what Go's `proto.Marshal` emits, so this is the setting that makes the
+     * "same bytes as protoc" claim in Protocol.kt actually true. With `true`, encoding any payload
+     * carrying a null message field — `PlaybackActionPayload.trackInfo` on every play, pause, seek
+     * and volume command — threw `'null' is not supported for optional properties in ProtoBuf`
+     * instead, so no transport command could be sent at all.
+     */
+    private val proto = ProtoBuf { encodeDefaults = false }
 
     /** Encodes one message into a complete frame. */
     fun encode(
@@ -103,6 +113,8 @@ internal class MessageCodec(
             MessageTypes.SUGGESTION_RECEIVED -> decode(SuggestionReceivedPayload.serializer(), payloadBytes)
             MessageTypes.SUGGESTION_APPROVED -> decode(SuggestionApprovedPayload.serializer(), payloadBytes)
             MessageTypes.SUGGESTION_REJECTED -> decode(SuggestionRejectedPayload.serializer(), payloadBytes)
+
+            MessageTypes.SERVER_CAPABILITIES -> decode(ServerCapabilities.serializer(), payloadBytes)
 
             else -> null
         }
