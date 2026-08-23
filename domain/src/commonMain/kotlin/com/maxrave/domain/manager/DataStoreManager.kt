@@ -424,6 +424,11 @@ interface DataStoreManager {
 
     suspend fun setCustomThemeColor(argbHex: String)
 
+    /** One of [NOW_PLAYING_STYLE_SPOTIFY], [NOW_PLAYING_STYLE_M3_EXPRESSIVE]. */
+    val nowPlayingStyle: Flow<String>
+
+    suspend fun setNowPlayingStyle(style: String)
+
     val explicitContentEnabled: Flow<String>
 
     suspend fun setExplicitContentEnabled(enabled: Boolean)
@@ -507,6 +512,9 @@ interface DataStoreManager {
         const val THEME_COLOR_CUSTOM = "CUSTOM"
 
         const val DEFAULT_THEME_COLOR_HEX = "FF8ECAE6"
+
+        const val NOW_PLAYING_STYLE_SPOTIFY = "SPOTIFY"
+        const val NOW_PLAYING_STYLE_M3_EXPRESSIVE = "M3_EXPRESSIVE"
 
         const val CROSSFADE_DURATION_AUTO = 0
 

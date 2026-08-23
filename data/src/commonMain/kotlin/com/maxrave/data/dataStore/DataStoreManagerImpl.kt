@@ -834,6 +834,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val nowPlayingStyle =
+        settingsDataStore.data.map { preferences ->
+            preferences[NOW_PLAYING_STYLE] ?: DataStoreManager.NOW_PLAYING_STYLE_SPOTIFY
+        }
+
+    override suspend fun setNowPlayingStyle(style: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[NOW_PLAYING_STYLE] = style
+            }
+        }
+    }
+
     override val usingProxy =
         settingsDataStore.data.map { preferences ->
             preferences[USING_PROXY] ?: FALSE
@@ -1653,6 +1666,7 @@ internal class DataStoreManagerImpl(
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_COLOR_SOURCE = stringPreferencesKey("theme_color_source")
         val CUSTOM_THEME_COLOR = stringPreferencesKey("custom_theme_color")
+        val NOW_PLAYING_STYLE = stringPreferencesKey("now_playing_style")
         val USING_PROXY = stringPreferencesKey("using_proxy")
         val PROXY_TYPE = stringPreferencesKey("proxy_type")
         val PROXY_HOST = stringPreferencesKey("proxy_host")
