@@ -406,6 +406,14 @@ internal class CrossfadeExoPlayerAdapter(
                 override fun seekToPrevious(): Unit = this@CrossfadeExoPlayerAdapter.seekToPrevious()
 
                 override fun seekToPreviousMediaItem(): Unit = this@CrossfadeExoPlayerAdapter.seekToPreviousMediaItem()
+
+                override fun play(): Unit = this@CrossfadeExoPlayerAdapter.play()
+
+                override fun pause(): Unit = this@CrossfadeExoPlayerAdapter.pause()
+
+                override fun setPlayWhenReady(playWhenReady: Boolean) {
+                    this@CrossfadeExoPlayerAdapter.playWhenReady = playWhenReady
+                }
             }
     }
 

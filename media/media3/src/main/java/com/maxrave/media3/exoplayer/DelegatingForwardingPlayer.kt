@@ -70,6 +70,19 @@ internal class DelegatingForwardingPlayer(
          * default to [seekToPrevious] if the distinction is irrelevant.
          */
         fun seekToPreviousMediaItem() = seekToPrevious()
+
+        /**
+         * Transport intent must round-trip through the adapter, not the delegate:
+         * [ForwardingPlayer]'s own play/pause/setPlayWhenReady act on the raw
+         * ExoPlayer, which resumes audio while the adapter's internalPlayWhenReady
+         * stays stale — the next track change then captures shouldPlay=false and
+         * loads paused.
+         */
+        fun play()
+
+        fun pause()
+
+        fun setPlayWhenReady(playWhenReady: Boolean)
     }
 
     /**
@@ -316,6 +329,27 @@ internal class DelegatingForwardingPlayer(
         } else {
             super.seekToPreviousMediaItem()
         }
+    }
+
+    // ========== Transport Intent Overrides ==========
+    // MediaController surfaces (notification, Bluetooth, headset, Android Auto) land here.
+    // Without these overrides the calls fall through to the raw delegate ExoPlayer: audio
+    // resumes but the adapter's internalPlayWhenReady stays false, so the next track
+    // change captures shouldPlay=false and the incoming track loads paused.
+
+    override fun play() {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.play() else super.play()
+    }
+
+    override fun pause() {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.pause() else super.pause()
+    }
+
+    override fun setPlayWhenReady(playWhenReady: Boolean) {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.setPlayWhenReady(playWhenReady) else super.setPlayWhenReady(playWhenReady)
     }
 
     // NOTE: Do NOT override getMediaItemCount() or getCurrentMediaItemIndex() here.

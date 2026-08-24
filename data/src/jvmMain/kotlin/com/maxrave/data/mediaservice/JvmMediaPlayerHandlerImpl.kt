@@ -1857,7 +1857,10 @@ class JvmMediaPlayerHandlerImpl(
             )
             Logger.d("MusicSource", "updateCatalog: ${track.title}")
         }
-        if (!player.isPlaying && isAddToQueue) {
+        // Intent, not observed: isPlaying is also false while paused OR while the next track
+        // is still preparing, so reading it here let a background queue append strip a live
+        // play-intent mid-load and the incoming track came up silent.
+        if (!player.playWhenReady && isAddToQueue) {
             player.playWhenReady = false
         }
         _queueData.update {
