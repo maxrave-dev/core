@@ -847,6 +847,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val lyricsStyle =
+        settingsDataStore.data.map { preferences ->
+            preferences[LYRICS_STYLE] ?: DataStoreManager.LYRICS_STYLE_CLASSIC
+        }
+
+    override suspend fun setLyricsStyle(style: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[LYRICS_STYLE] = style
+            }
+        }
+    }
+
     override val usingProxy =
         settingsDataStore.data.map { preferences ->
             preferences[USING_PROXY] ?: FALSE
@@ -1667,6 +1680,7 @@ internal class DataStoreManagerImpl(
         val THEME_COLOR_SOURCE = stringPreferencesKey("theme_color_source")
         val CUSTOM_THEME_COLOR = stringPreferencesKey("custom_theme_color")
         val NOW_PLAYING_STYLE = stringPreferencesKey("now_playing_style")
+        val LYRICS_STYLE = stringPreferencesKey("lyrics_style")
         val USING_PROXY = stringPreferencesKey("using_proxy")
         val PROXY_TYPE = stringPreferencesKey("proxy_type")
         val PROXY_HOST = stringPreferencesKey("proxy_host")

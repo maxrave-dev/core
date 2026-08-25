@@ -429,6 +429,15 @@ interface DataStoreManager {
 
     suspend fun setNowPlayingStyle(style: String)
 
+    /**
+     * One of [LYRICS_STYLE_CLASSIC], [LYRICS_STYLE_APPLE_MUSIC]. Deliberately independent of
+     * [nowPlayingStyle]: it governs how a lyric line is drawn, everywhere lyrics are drawn —
+     * the fullscreen sheet included, whichever player style is in use.
+     */
+    val lyricsStyle: Flow<String>
+
+    suspend fun setLyricsStyle(style: String)
+
     val explicitContentEnabled: Flow<String>
 
     suspend fun setExplicitContentEnabled(enabled: Boolean)
@@ -516,6 +525,9 @@ interface DataStoreManager {
         const val NOW_PLAYING_STYLE_SPOTIFY = "SPOTIFY"
         const val NOW_PLAYING_STYLE_M3_EXPRESSIVE = "M3_EXPRESSIVE"
         const val NOW_PLAYING_STYLE_APPLE_MUSIC = "APPLE_MUSIC"
+
+        const val LYRICS_STYLE_CLASSIC = "CLASSIC"
+        const val LYRICS_STYLE_APPLE_MUSIC = "APPLE_MUSIC"
 
         const val CROSSFADE_DURATION_AUTO = 0
 
