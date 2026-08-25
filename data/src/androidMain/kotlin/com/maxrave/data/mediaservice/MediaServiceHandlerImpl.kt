@@ -2362,6 +2362,11 @@ internal class MediaServiceHandlerImpl(
                     loadJob?.join()
                     resetCrossfade()
                     player.seekTo(index, savedPosition)
+                    // Announce the restored position once. Nothing plays after a restore
+                    // (playWhenReady = false above), and startProgressUpdate only runs while
+                    // isPlaying — so no state is ever published and the UI sits at 0:00 on a
+                    // queue the user left half-finished, until they press play.
+                    _simpleMediaState.value = SimpleMediaState.Progress(savedPosition)
                 }
             }
         }
