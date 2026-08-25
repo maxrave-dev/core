@@ -7,6 +7,7 @@ import com.maxrave.data.repository.AlbumRepositoryImpl
 import com.maxrave.data.repository.AnalyticsRepositoryImpl
 import com.maxrave.data.repository.ArtistRepositoryImpl
 import com.maxrave.data.repository.AutoEqRepositoryImpl
+import com.maxrave.data.lyrics.LyricsRomanizerRepositoryImpl
 import com.maxrave.data.repository.CommonRepositoryImpl
 import com.maxrave.data.repository.HomeRepositoryImpl
 import com.maxrave.data.repository.ImportRepositoryImpl
@@ -23,6 +24,7 @@ import com.maxrave.domain.repository.AlbumRepository
 import com.maxrave.domain.repository.AnalyticsRepository
 import com.maxrave.domain.repository.ArtistRepository
 import com.maxrave.domain.repository.AutoEqRepository
+import com.maxrave.domain.repository.LyricsRomanizerRepository
 import com.maxrave.domain.repository.CommonRepository
 import com.maxrave.domain.repository.HomeRepository
 import com.maxrave.domain.repository.ImportRepository
@@ -60,6 +62,13 @@ val repositoryModule =
         // Lazy for the same reason its client is: the picker is the only thing that wants it.
         single<AutoEqRepository> {
             AutoEqRepositoryImpl(get(), get())
+        }
+
+        // Stateless, and lazy: constructing it costs nothing, but the kuromoji dictionary behind
+        // it is loaded on first Japanese line and never before — so this must NOT be
+        // createdAtStart, or every launch pays for a feature most listeners leave off.
+        single<LyricsRomanizerRepository> {
+            LyricsRomanizerRepositoryImpl()
         }
 
         single<HomeRepository>(createdAtStart = true) {

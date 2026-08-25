@@ -438,6 +438,20 @@ interface DataStoreManager {
 
     suspend fun setLyricsStyle(style: String)
 
+    /**
+     * Which languages get a Latin-script reading shown for their lyrics, as a comma-separated list
+     * of [org.simpmusic.lyrics.romanization.RomanizationLanguage] NAMES — empty string means the
+     * feature is off, which is the default.
+     *
+     * Stored as names rather than ordinals because an enum's ordinal is a position, not an
+     * identity: inserting a language into the middle of that enum would silently repoint every
+     * saved preference. Stored as ONE key rather than twelve booleans so reading it is a single
+     * flow rather than a combine of twelve.
+     */
+    val romanizationLanguages: Flow<String>
+
+    suspend fun setRomanizationLanguages(languages: String)
+
     val explicitContentEnabled: Flow<String>
 
     suspend fun setExplicitContentEnabled(enabled: Boolean)

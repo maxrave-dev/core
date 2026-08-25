@@ -74,6 +74,21 @@ kotlin {
                 // Add Android-specific dependencies here. Note that this source set depends on
                 // commonMain by default and will correctly pull the Android artifacts of any KMP
                 // dependencies declared in commonMain.
+                //
+                // Romanization for Japanese and Chinese. Declared per JVM-ish target rather than in
+                // commonMain because both are ordinary Java libraries with no Kotlin/Native build:
+                // putting them in commonMain would break the iOS compilation, which gets a no-op
+                // actual instead. Kanji readings are context-dependent, so a lookup table cannot do
+                // it — kuromoji is a real morphological analyzer, which is why it costs ~12.7 MB.
+                //
+                // pinyin4j rather than TinyPinyin, which is what Metrolist uses: TinyPinyin is only
+                // published on JitPack, its POM there names its own groupId with the wrong case
+                // (promeG vs promeg) so the transitive resolve dead-ends, and it drags in
+                // `tinypinyin-android-asset-lexicons` — an Android-asset artifact that has no
+                // business in jvmMain. pinyin4j sits on Maven Central, is 316 KB, and its only
+                // declared dependency is junit at test scope.
+                implementation(libs.kuromoji.ipadic)
+                implementation(libs.pinyin4j)
             }
         }
 
@@ -89,6 +104,10 @@ kotlin {
 
         jvmMain {
             dependencies {
+                // Same two as androidMain — see the note there. The desktop build gets Japanese and
+                // Chinese romanization for free because neither library is Android-specific.
+                implementation(libs.kuromoji.ipadic)
+                implementation(libs.pinyin4j)
             }
         }
     }
