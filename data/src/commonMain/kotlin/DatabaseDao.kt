@@ -36,6 +36,7 @@ import com.maxrave.domain.data.entities.analytics.query.DecadeCount
 import com.maxrave.domain.data.entities.analytics.query.PlaybackSample
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedAlbum
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtist
+import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtistTime
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedTracks
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.data.type.RecentlyType
@@ -1296,6 +1297,26 @@ interface DatabaseDao {
         startTimestamp: LocalDateTime,
         endTimestamp: LocalDateTime,
     ): List<TopPlayedArtist>
+
+    /**
+     * The same ranking as [queryTopArtistsInRange], carrying the seconds as well.
+     *
+     * `event_artist` holds one row per artist per play and no duration at all, so the time can only
+     * come from the join back to `playback_event`. A track credited to several artists hands its
+     * full `listenedSecond` to each of them — the figure means "time spent with this artist", so a
+     * duet counts as time with both and the column deliberately does not sum to the period total.
+     */
+    @Query(
+        "SELECT ea.channelId, COUNT(*) AS playCount, SUM(pe.listenedSecond) AS totalListeningTime" +
+            " FROM event_artist ea JOIN playback_event pe ON pe.eventId = ea.eventId" +
+            " WHERE ea.timestamp BETWEEN :startTimestamp AND :endTimestamp" +
+            " GROUP BY ea.channelId" + " ORDER BY playCount DESC" +
+            " LIMIT 100",
+    )
+    suspend fun queryTopArtistsWithTimeInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): List<TopPlayedArtistTime>
 
     @Query(
         "SELECT \n" +

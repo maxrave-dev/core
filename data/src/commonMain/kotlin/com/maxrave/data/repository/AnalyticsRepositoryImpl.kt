@@ -4,6 +4,7 @@ import com.maxrave.data.db.datasource.AnalyticsDatasource
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedAlbum
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtist
+import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtistTime
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedTracks
 import com.maxrave.domain.data.model.analytics.AnalyticsPeriodStats
 import com.maxrave.domain.data.model.analytics.DecadePlays
@@ -100,6 +101,19 @@ internal class AnalyticsRepositoryImpl(
         flow {
             emit(
                 analyticsDatasource.queryTopArtistsInRange(
+                    startTimestamp,
+                    endTimestamp,
+                ),
+            )
+        }.flowOn(Dispatchers.IO)
+
+    override suspend fun queryTopArtistsWithTimeInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Flow<List<TopPlayedArtistTime>> =
+        flow {
+            emit(
+                analyticsDatasource.queryTopArtistsWithTimeInRange(
                     startTimestamp,
                     endTimestamp,
                 ),

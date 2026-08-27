@@ -59,6 +59,11 @@ internal class AnalyticsDatasource(
         endTimestamp: LocalDateTime,
     ) = databaseDao.queryTopArtistsInRange(startTimestamp, endTimestamp)
 
+    suspend fun queryTopArtistsWithTimeInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ) = databaseDao.queryTopArtistsWithTimeInRange(startTimestamp, endTimestamp)
+
     suspend fun queryTopAlbumsLastXDays(x: Int) =
         databaseDao.queryTopAlbumsInRange(
             startTimestamp = now().beforeXDays(x),
