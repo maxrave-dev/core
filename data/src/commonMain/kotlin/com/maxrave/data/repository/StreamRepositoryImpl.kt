@@ -1,5 +1,6 @@
 package com.maxrave.data.repository
 
+import com.maxrave.common.ITAG
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.common.QUALITY
 import com.maxrave.common.VIDEO_QUALITY
@@ -89,9 +90,9 @@ internal class StreamRepositoryImpl(
         flow {
             val itag =
                 if (isDownloading) {
-                    QUALITY.itags.getOrNull(QUALITY.items.indexOf(dataStoreManager.downloadQuality.first()))
+                    QUALITY.itagOf(dataStoreManager.downloadQuality.first())
                 } else {
-                    QUALITY.itags.getOrNull(QUALITY.items.indexOf(dataStoreManager.quality.first()))
+                    QUALITY.itagOf(dataStoreManager.quality.first())
                 }
             val videoItag =
                 if (!muxed) {
@@ -104,11 +105,10 @@ internal class StreamRepositoryImpl(
                             },
                         ),
                     )
-                        ?: 134
+                        ?: ITAG.VIDEO_360P
                 } else {
-                    18
+                    ITAG.MUXED_360P
                 }
-            // 134, 136, 137
             youTube
                 .player(videoId, noLogIn = muxed)
                 .onSuccess { data ->
@@ -143,12 +143,13 @@ internal class StreamRepositoryImpl(
                     Logger.w("Stream", "Get stream for video $isVideo")
                     val videoFormat =
                         formatList.find { it.itag == videoItag }
-                            ?: formatList.find { it.itag == 136 }
-                            ?: formatList.find { it.itag == 134 }
+                            ?: formatList.find { it.itag == ITAG.VIDEO_720P }
+                            ?: formatList.find { it.itag == ITAG.VIDEO_360P }
                             ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
+                    val audioTwinItag = ITAG.highQualityTwinOf(itag)
                     val audioFormat =
-                        formatList.find { it.itag == itag } ?: if (itag == 774) {
-                            formatList.find { it.itag == 141 }
+                        formatList.find { it.itag == itag } ?: if (audioTwinItag != null) {
+                            formatList.find { it.itag == audioTwinItag }
                         } else {
                             formatList.find { it.isAudio && it.url.isNullOrEmpty().not() }
                         }
@@ -207,7 +208,7 @@ internal class StreamRepositoryImpl(
                     insertNewFormat(
                         NewFormatEntity(
                             videoId = if (VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
-                            itag = format?.itag ?: itag ?: 141,
+                            itag = format?.itag ?: itag,
                             mimeType =
                                 Regex("""([^;]+);\s*codecs=["']([^"']+)["']""")
                                     .find(

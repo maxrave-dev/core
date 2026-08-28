@@ -1,6 +1,7 @@
 package com.maxrave.kotlinytmusicscraper
 
 import com.eygraber.uri.toKmpUri
+import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
@@ -1961,9 +1962,11 @@ class YouTube {
         )
     }
 
+    // Any format carrying a signatureCipher would do; medium Opus is the one YouTube returns for
+    // every video, logged in or not, which is why the lookup pins that itag rather than scanning.
     private fun getNParam(listFormat: List<PlayerResponse.StreamingData.Format>): String? =
         listFormat
-            .firstOrNull { it.itag == 251 }
+            .firstOrNull { it.itag == ITAG.AUDIO_OPUS_MEDIUM }
             ?.let { format ->
                 val sc = format.signatureCipher ?: format.url ?: return null
                 val params = parseQueryString(sc)
