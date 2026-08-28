@@ -4,6 +4,7 @@ import com.eygraber.uri.toKmpUri
 import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
+import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
 import com.maxrave.kotlinytmusicscraper.models.AlbumItem
 import com.maxrave.kotlinytmusicscraper.models.Artist
@@ -1964,6 +1965,12 @@ class YouTube {
 
     // Any format carrying a signatureCipher would do; medium Opus is the one YouTube returns for
     // every video, logged in or not, which is why the lookup pins that itag rather than scanning.
+    /**
+     * Which extractor and cipher decoder produced this video's URLs in THIS run of the app, or null
+     * if it has not been extracted yet. Diagnostic only — see [com.maxrave.kotlinytmusicscraper.extractor.ExtractSource].
+     */
+    fun getExtractSource(videoId: String): String? = ExtractSource.of(videoId)
+
     private fun getNParam(listFormat: List<PlayerResponse.StreamingData.Format>): String? =
         listFormat
             .firstOrNull { it.itag == ITAG.AUDIO_OPUS_MEDIUM }
