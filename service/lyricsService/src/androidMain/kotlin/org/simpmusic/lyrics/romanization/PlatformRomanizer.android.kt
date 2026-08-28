@@ -8,24 +8,39 @@ import net.sourceforge.pinyin4j.format.HanyuPinyinToneType
 import net.sourceforge.pinyin4j.format.HanyuPinyinVCharType
 
 /**
- * Japanese and Chinese romanization on the JVM — shared verbatim by the Android and desktop
- * targets, because both libraries are ordinary Java with no platform code.
+ * Japanese and Chinese romanization on Android.
  *
- * The file is duplicated rather than shared through an intermediate source set: this module
- * declares its targets one by one with no android/jvm group, and inventing that hierarchy is a
- * Gradle change nobody can verify without a full build. Two identical 40-line files is the
- * cheaper mistake.
+ * No longer identical to the jvm actual: desktop keeps building the plain classpath `Tokenizer()`,
+ * while here the ipadic dictionary is not in the APK at all — it arrives by download (see
+ * [KuromojiDictionary]) and the analyzer can only be built once every file is on disk. Until then
+ * [japanese] answers null, which the pipeline already treats as "show nothing extra".
  */
 internal actual object PlatformRomanizer {
     // Loading the ipadic dictionary costs real time and memory, so it happens once, on first use —
-    // never at startup, since most listeners never play a Japanese track.
-    private val tokenizer: Tokenizer by lazy { Tokenizer() }
+    // never at startup, since most listeners never play a Japanese track. Only a SUCCESSFUL build
+    // is cached: a failed attempt (mid-download, corrupted file) stays null and the next Japanese
+    // line simply tries again, which is also how the analyzer comes alive right after a download
+    // finishes, with no restart.
+    @Volatile
+    private var tokenizer: Tokenizer? = null
 
-    actual fun japanese(line: String): String? =
-        runCatching {
+    private fun tokenizerOrNull(): Tokenizer? {
+        tokenizer?.let { return it }
+        val directory = RomanizationDictionaryPack.dictionaryDirectory ?: return null
+        if (!KuromojiDictionary.isReady(directory)) return null
+        return synchronized(this) {
+            tokenizer ?: runCatching { KuromojiDictionary.buildTokenizer(directory) }
+                .getOrNull()
+                ?.also { tokenizer = it }
+        }
+    }
+
+    actual fun japanese(line: String): String? {
+        val analyzer = tokenizerOrNull() ?: return null
+        return runCatching {
             val reading =
                 buildString {
-                    tokenizer.tokenize(line).forEach { token ->
+                    analyzer.tokenize(line).forEach { token ->
                         // getReading() is katakana, and "*" is kuromoji's way of saying it does not
                         // know the word — Latin text, numbers, or a name outside the dictionary.
                         // Falling back to the surface form keeps those readable instead of printing
@@ -36,6 +51,7 @@ internal actual object PlatformRomanizer {
                 }
             KanaRomanizer.romanize(reading)
         }.getOrNull()
+    }
 
     actual fun chinese(line: String): String? =
         runCatching {

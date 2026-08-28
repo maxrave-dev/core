@@ -64,11 +64,13 @@ val repositoryModule =
             AutoEqRepositoryImpl(get(), get())
         }
 
-        // Stateless, and lazy: constructing it costs nothing, but the kuromoji dictionary behind
-        // it is loaded on first Japanese line and never before — so this must NOT be
-        // createdAtStart, or every launch pays for a feature most listeners leave off.
+        // Lazy: constructing it costs a few File.length() calls, but the kuromoji dictionary
+        // behind it is loaded on first Japanese line and never before — so this must NOT be
+        // createdAtStart, or every launch pays for a feature most listeners leave off. The path
+        // is where Android keeps the downloaded ipadic pack (the APK no longer bundles it);
+        // Desktop and iOS ignore it.
         single<LyricsRomanizerRepository> {
-            LyricsRomanizerRepositoryImpl()
+            LyricsRomanizerRepositoryImpl("${fileDir()}/kuromoji-ipadic")
         }
 
         single<HomeRepository>(createdAtStart = true) {
