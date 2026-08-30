@@ -158,6 +158,7 @@ class Ytmusic {
             expectSuccess = true
             install(CurlLogger) {
                 logger = { Logger.d(TAG, it) }
+                redactHeaders = setOf("Cookie", "Authorization")
             }
             install(HttpRedirect) {
                 checkHttpMethod = false
@@ -166,6 +167,7 @@ class Ytmusic {
             install(Logging) {
                 logger = io.ktor.client.plugins.logging.Logger.DEFAULT
                 level = LogLevel.ALL
+                sanitizeHeader { header -> header.equals("Cookie", ignoreCase = true) || header.equals("Authorization", ignoreCase = true) }
             }
             install(ContentNegotiation) {
                 protobuf()

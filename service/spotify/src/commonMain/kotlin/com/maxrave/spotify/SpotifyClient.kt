@@ -59,9 +59,15 @@ class SpotifyClient {
             install(Logging) {
                 logger = Logger.DEFAULT
                 level = LogLevel.ALL
+                sanitizeHeader { header ->
+                    header.equals("Cookie", ignoreCase = true) ||
+                        header.equals("Authorization", ignoreCase = true) ||
+                        header.equals("Client-Token", ignoreCase = true)
+                }
             }
             install(CurlLogger) {
                 logger = { Logger.DEFAULT.log(it) }
+                redactHeaders = setOf("Cookie", "Authorization", "Client-Token")
             }
             install(HttpSend) {
                 maxSendCount = 100
