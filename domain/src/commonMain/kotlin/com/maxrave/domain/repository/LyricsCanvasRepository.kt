@@ -38,6 +38,12 @@ interface LyricsCanvasRepository {
         duration: Int,
     ): Flow<Resource<CanvasResult>>
 
+    /**
+     * Animated album artwork from the hidden AM catalog, returned as the same [CanvasResult] a
+     * Spotify canvas produces and stored in the same columns. Needs no login.
+     */
+    fun getAMAnimatedArtwork(videoId: String): Flow<Resource<CanvasResult>>
+
     suspend fun updateCanvasUrl(
         videoId: String,
         canvasUrl: String,

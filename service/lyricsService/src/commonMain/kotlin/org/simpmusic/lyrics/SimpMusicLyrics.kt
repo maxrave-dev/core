@@ -252,4 +252,84 @@ class SimpMusicLyrics {
         parameter("platform", "web")
         buildAMHeaders(token)
     }
+
+    /**
+     * Search the AM catalog for an album. `extend=editorialVideo` fills the animated artwork in
+     * on the search response itself, so — unlike the artist flow — no per-album follow-up request
+     * is needed. Mirrors [searchAMArtist], including the refresh-once-on-401 retry.
+     */
+    suspend fun searchAMAlbum(
+        query: String,
+        limit: Int,
+    ): HttpResponse {
+        val response = requestAMAlbumSearch(query, limit, amTokenManager.getToken(httpClient))
+        // Expired bearer -> refresh the token once and retry on a fresh request.
+        if (response.status.value == 401) {
+            amTokenManager.clearToken()
+            return requestAMAlbumSearch(query, limit, amTokenManager.getToken(httpClient))
+        }
+        return response
+    }
+
+    private suspend fun requestAMAlbumSearch(
+        query: String,
+        limit: Int,
+        token: String,
+    ) = httpClient.get("https://amp-api-edge.music.apple.com/v1/catalog/us/search") {
+        parameter("term", query)
+        parameter("types", "albums")
+        // Narrowing to the fields actually read drops ~23% off the response without losing
+        // editorialVideo, and this runs once per played track.
+        parameter("fields[albums]", "name,artistName,url,artwork,editorialVideo")
+        parameter("format[resources]", "map")
+        parameter("extend", "editorialVideo")
+        parameter("l", "en-US")
+        parameter("limit", limit)
+        parameter("platform", "web")
+        buildAMHeaders(token)
+    }
+
+    /**
+     * Find the album a *track* belongs to, and bring that album's animated artwork back with it.
+     *
+     * Searching `types=albums` with a track title cannot do this: AM answers with the singles that
+     * share the title — "Blinding Lights - Single" rather than "After Hours" — and a single never
+     * carries animated artwork, so the search succeeds while the result is always empty. Asking for
+     * songs and including their albums returns the parent album itself, already extended.
+     */
+    suspend fun searchAMSongs(
+        query: String,
+        limit: Int,
+    ): HttpResponse {
+        val response = requestAMSongSearch(query, limit, amTokenManager.getToken(httpClient))
+        // Expired bearer -> refresh the token once and retry on a fresh request.
+        if (response.status.value == 401) {
+            amTokenManager.clearToken()
+            return requestAMSongSearch(query, limit, amTokenManager.getToken(httpClient))
+        }
+        return response
+    }
+
+    private suspend fun requestAMSongSearch(
+        query: String,
+        limit: Int,
+        token: String,
+    ) = httpClient.get("https://amp-api-edge.music.apple.com/v1/catalog/us/search") {
+        parameter("term", query)
+        parameter("types", "songs")
+        parameter("include[songs]", "albums")
+        parameter("format[resources]", "map")
+        parameter("extend", "editorialVideo")
+        parameter("l", "en-US")
+        parameter("limit", limit)
+        parameter("platform", "web")
+        buildAMHeaders(token)
+    }
+
+    /**
+     * Fetch an animated-artwork playlist off Apple's media CDN. Deliberately without the AM headers:
+     * this host takes no bearer, serves no DRM and needs no origin — sending them only invites the
+     * edge to treat the request as something it is not.
+     */
+    suspend fun fetchAMHlsPlaylist(url: String): HttpResponse = httpClient.get(url)
 }

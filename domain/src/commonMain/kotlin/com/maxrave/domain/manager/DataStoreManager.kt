@@ -217,6 +217,14 @@ interface DataStoreManager {
 
     suspend fun setSpotifyCanvas(spotifyCanvas: Boolean)
 
+    /**
+     * Animated album artwork from the hidden AM catalog, used in place of a Spotify canvas. It
+     * needs no account of any kind, so unlike [spotifyCanvas] it is never gated on a login.
+     */
+    val amAnimatedArtwork: Flow<String>
+
+    suspend fun setAMAnimatedArtwork(enabled: Boolean)
+
     val spotifyClientToken: Flow<String>
 
     suspend fun setSpotifyClientToken(token: String)

@@ -669,6 +669,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val amAnimatedArtwork: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[AM_ANIMATED_ARTWORK] ?: FALSE
+        }
+
+    override suspend fun setAMAnimatedArtwork(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[AM_ANIMATED_ARTWORK] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
     override val spotifyClientToken: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[SPOTIFY_CLIENT_TOKEN] ?: ""
@@ -1680,6 +1693,7 @@ internal class DataStoreManagerImpl(
         val EQUALIZER_ENABLED = stringPreferencesKey("equalizer_enabled")
         val EQUALIZER_PREAMP = stringPreferencesKey("equalizer_preamp")
         val SPOTIFY_CANVAS = stringPreferencesKey("spotify_canvas")
+        val AM_ANIMATED_ARTWORK = stringPreferencesKey("am_animated_artwork")
         val SPOTIFY_CLIENT_TOKEN = stringPreferencesKey("spotify_client_token")
         val SPOTIFY_CLIENT_TOKEN_EXPIRES = longPreferencesKey("spotify_client_token_expires")
         val SPOTIFY_PERSONAL_TOKEN = stringPreferencesKey("spotify_personal_token")

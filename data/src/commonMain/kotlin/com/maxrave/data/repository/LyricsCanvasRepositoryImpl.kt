@@ -32,9 +32,15 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.simpmusic.aiservice.AiClient
 import org.simpmusic.lyrics.SimpMusicLyricsClient
+import org.simpmusic.lyrics.am.AMAlbumResource
+import org.simpmusic.lyrics.am.AMEditorialVideo
+import org.simpmusic.lyrics.am.AMMotionVideo
+import org.simpmusic.lyrics.am.AMSongWithAlbum
 import org.simpmusic.lyrics.am.toImageUrl
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
@@ -50,6 +56,13 @@ internal class LyricsCanvasRepositoryImpl(
     private val simpMusicLyrics: SimpMusicLyricsClient,
     private val aiClient: AiClient,
 ) : LyricsCanvasRepository {
+    /**
+     * Video ids whose animated artwork is being searched right now, so the same track is never sent
+     * to AM twice at once. Not a cancellation: the first attempt is the one that fills the cache.
+     */
+    private val amArtworkInFlight = mutableSetOf<String>()
+    private val amArtworkLock = Mutex()
+
     override fun getSavedLyrics(videoId: String): Flow<LyricsEntity?> = flow { emit(localDataSource.getSavedLyrics(videoId)) }.flowOn(Dispatchers.IO)
 
     override suspend fun insertLyrics(lyricsEntity: LyricsEntity) =
@@ -227,6 +240,136 @@ internal class LyricsCanvasRepositoryImpl(
                 }
             }
         }.flowOn(Dispatchers.IO)
+
+    /**
+     * Animated album artwork from the hidden AM catalog. It fills exactly the slot a Spotify canvas
+     * fills — same [CanvasResult], same two columns on `song` — so everything downstream is unaware
+     * of which source produced it. Unlike the canvas path it needs no account of any kind.
+     */
+    override fun getAMAnimatedArtwork(videoId: String): Flow<Resource<CanvasResult>> =
+        flow {
+            val song = localDataSource.getSong(videoId)
+            if (song == null) {
+                Logger.e(AM_ARTWORK_TAG, "Not found $videoId")
+                emit(Resource.Error<CanvasResult>("Song not found"))
+                return@flow
+            }
+            // Reuse what an earlier play already resolved. The column is shared with the Spotify
+            // canvas, so only an HLS url is taken back — an `.mp4` left there by that path would
+            // pin the track to it and this source would never be asked. Without this the number of
+            // requests grows with plays rather than with tracks, against an API that is not ours.
+            val cached = song.canvasUrl?.takeIf { it.contains(".m3u8") }
+            if (cached != null) {
+                emit(
+                    Resource.Success(
+                        CanvasResult(
+                            isVideo = true,
+                            canvasUrl = cached,
+                            canvasThumbUrl = song.canvasThumbUrl,
+                        ),
+                    ),
+                )
+                return@flow
+            }
+
+            // The caller launches this outside the collector that triggered it, so a second
+            // timeline emission for the same track — the duration changes once buffering finishes —
+            // fires an identical second search while the first is still in the air. Claiming the id
+            // drops the duplicate without cancelling the attempt that is already running.
+            if (!claimAmArtwork(videoId)) {
+                emit(Resource.Error<CanvasResult>("Already searching"))
+                return@flow
+            }
+
+            val artist = song.artistName?.firstOrNull().orEmpty()
+            // YouTube Music leaves the album name null on plenty of rows, and rows written by older
+            // builds carry the literal placeholder "Album"; neither can be searched for.
+            val albumName = song.albumName?.takeIf { it.isNotBlank() && it != PLACEHOLDER_ALBUM_NAME }
+            Logger.d(AM_ARTWORK_TAG, "resolving $videoId — album=$albumName title=${song.title} artist=$artist")
+
+            try {
+                // Tier 1 — the album name, which is what AM indexes one animated artwork against.
+                // Only an exact answer is taken: see pickAlbumMatch for why a near-miss is worse
+                // than no answer at all here.
+                val byAlbum =
+                    albumName?.let { name ->
+                        simpMusicLyrics
+                            .searchAMAlbum("$name $artist".cleanForSearch(), limit = AM_SEARCH_LIMIT)
+                            .onFailure { Logger.e(AM_ARTWORK_TAG, "album search failed: ${it.message}") }
+                            .getOrNull()
+                            ?.pickAlbumMatch(name, artist)
+                    }
+
+                // Tier 2 — the track itself, which carries the album it belongs to. A title cannot
+                // be searched as an album (AM answers a title with the singles that share it), so
+                // this goes through songs; the album name, when known, still decides between the
+                // several albums a track can legitimately appear on.
+                val album =
+                    byAlbum ?: simpMusicLyrics
+                        .searchAMSongsWithAlbums("${song.title} $artist".cleanForSearch(), limit = AM_SEARCH_LIMIT)
+                        .onFailure { Logger.e(AM_ARTWORK_TAG, "song search failed: ${it.message}") }
+                        .getOrNull()
+                        ?.pickSongMatch(
+                            title = song.title,
+                            artist = artist,
+                            durationSeconds = song.durationSeconds,
+                            albumHint = albumName,
+                        )
+                        ?.album
+
+                val master =
+                    album
+                        ?.attributes
+                        ?.editorialVideo
+                        ?.preferredRendition()
+                        ?.video
+                Logger.d(AM_ARTWORK_TAG, "Matched ${album?.attributes?.name} for $videoId --> $master")
+                if (master == null) {
+                    emit(Resource.Error<CanvasResult>("No animated artwork"))
+                    return@flow
+                }
+                // Resolve the ladder down to one rendition here, so neither player has to choose:
+                // mpv would take the top of it by default (10-bit HEVC at 2048x2732, ~52 MB for a
+                // 22-second loop) and ExoPlayer would pick by bandwidth estimate, giving the two
+                // platforms different results for the same track. Falls back to the master url,
+                // which still plays — just not as cheaply.
+                val url =
+                    simpMusicLyrics
+                        .selectAMRendition(master, AM_MIN_RENDITION_WIDTH)
+                        .getOrNull()
+                        ?: master
+                Logger.d(AM_ARTWORK_TAG, "Rendition for $videoId --> $url")
+                val previewFrame =
+                    album.attributes
+                        ?.editorialVideo
+                        ?.preferredRendition()
+                        ?.previewFrame
+                emit(
+                    Resource.Success(
+                        CanvasResult(
+                            isVideo = true,
+                            canvasUrl = url,
+                            // The url is a {w}x{h} template and the frame carries its own
+                            // dimensions — the tall rendition is 2048x2732, not square — so asking
+                            // for a square crop of it would squash the image.
+                            canvasThumbUrl =
+                                previewFrame?.toImageUrl(
+                                    width = previewFrame.width ?: AM_PREVIEW_FRAME_SIZE,
+                                    height = previewFrame.height ?: AM_PREVIEW_FRAME_SIZE,
+                                ),
+                        ),
+                    ),
+                )
+            } finally {
+                amArtworkLock.withLock { amArtworkInFlight -= videoId }
+            }
+        }.flowOn(Dispatchers.IO)
+
+    /** Returns true when this call took ownership of [videoId]; false when a search is already out. */
+    private suspend fun claimAmArtwork(videoId: String): Boolean =
+        amArtworkLock.withLock {
+            if (videoId in amArtworkInFlight) false else amArtworkInFlight.add(videoId)
+        }
 
     override suspend fun updateCanvasUrl(
         videoId: String,
@@ -692,3 +835,220 @@ internal class LyricsCanvasRepositoryImpl(
                 }
         }.flowOn(Dispatchers.IO)
 }
+
+private const val AM_ARTWORK_TAG = "AMArtwork"
+private const val AM_SEARCH_LIMIT = 5
+
+// Narrowest animated-artwork rendition considered sharp enough. On the measured ladders this lands
+// on 830x1106 for the tall cut and 768x768 for the square one, both H.264 at roughly 2-3 Mbps.
+private const val AM_MIN_RENDITION_WIDTH = 720
+
+/** [matchScore] tier for an exact name match. */
+private const val EXACT_NAME_TIER = 0
+
+/**
+ * How far two running times may differ and still be the same recording. Wide enough to absorb the
+ * encoding differences between YouTube and Apple, far narrower than the gap between a studio take
+ * and a live one.
+ */
+private const val AM_DURATION_TOLERANCE_SECONDS = 3
+// Only used when AM omits the preview frame's own dimensions, which it normally supplies.
+private const val AM_PREVIEW_FRAME_SIZE = 1080
+
+// The album name YouTube Music rows fall back to when the real one is unknown. Declared here for
+// the same reason the DAO and the local data source each declare their own: it is a value this
+// file has to recognise, not one it shares.
+private const val PLACEHOLDER_ALBUM_NAME = "Album"
+
+/**
+ * The query cleaning the Spotify canvas search applies before it hits the network — featured-artist
+ * markers, the conjunctions that join two artists, and the punctuation that survives them. Kept
+ * character-for-character identical to that chain so both sources search for the same thing.
+ */
+private fun String.cleanForSearch(): String =
+    this
+        .replace(
+            Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
+            " ",
+        ).replace(
+            Regex("( và | & | и | e | und |, |和| dan)"),
+            " ",
+        ).replace("  ", " ")
+        .replace(Regex("([()])"), "")
+        .replace(".", " ")
+        .replace("  ", " ")
+
+/**
+ * Lowercase, and reduce anything that is not a letter or a digit to a single space. Deliberately
+ * built on [Char.isLetterOrDigit] rather than an `[^a-z0-9]` character class: that class treats
+ * every accented letter as punctuation, which would grind "Hoàng Thùy Linh" down to "ho ng th y
+ * linh" and make the comparison below meaningless for most of the languages this app serves.
+ */
+private fun String.normalizeForMatch(): String =
+    lowercase()
+        .map { if (it.isLetterOrDigit()) it else ' ' }
+        .joinToString("")
+        .split(' ')
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+
+/**
+ * Comparison key. Falls back to the raw lowercased text when normalising leaves nothing behind,
+ * which is exactly what happens to an album titled with a symbol: Ed Sheeran's "÷" and "=" contain
+ * no letters or digits at all, reduce to an empty string, and would otherwise match nothing.
+ */
+private fun String.matchKey(): String = normalizeForMatch().ifEmpty { trim().lowercase() }
+
+private fun String.matchesLoosely(other: String): Boolean {
+    val a = matchKey()
+    val b = other.matchKey()
+    if (a.isEmpty() || b.isEmpty()) return false
+    return a.contains(b) || b.contains(a)
+}
+
+/**
+ * How closely an album name answers the name that was searched for — lower is better, null means
+ * it is not that album at all.
+ *
+ * AM's search cannot be told to sort, and its own ranking puts reissues above the plain edition:
+ * "Hybrid Theory (Deluxe Edition)" ranks above "Hybrid Theory", "1989 (Taylor's Version) [Deluxe]"
+ * above "1989". Taking the first loose match therefore returns the artwork of a *different edition*
+ * of the right album. Ranking by how much text the candidate adds picks the plain one back out.
+ */
+private fun matchScore(
+    candidate: String,
+    subject: String,
+): Pair<Int, Int>? {
+    val c = candidate.matchKey()
+    val s = subject.matchKey()
+    if (c.isEmpty() || s.isEmpty()) return null
+    return when {
+        c == s -> 0 to 0
+        // The subject plus a suffix — "<album> (Deluxe Edition)". The shorter the addition, the
+        // closer the edition is to the one being played.
+        c.startsWith(s) -> 1 to (c.length - s.length)
+        c.contains(s) -> 2 to (c.length - s.length)
+        s.contains(c) -> 3 to (s.length - c.length)
+        else -> null
+    }
+}
+
+private data class ScoredMatch(
+    val tier: Int,
+    val extraLength: Int,
+    val demoted: Int,
+    val rank: Int,
+)
+
+/**
+ * Rank by how closely a name answers [subject] and return the best, or null when nothing is that
+ * thing at all.
+ *
+ * [demote] is consulted only AFTER name closeness, never before it — lower sorts first. Ordering
+ * those the other way round is what made a track pick up the wrong recording: filtering to "has
+ * artwork" first threw away the studio version and left the live one, which then won by default.
+ */
+private fun <T> List<T>.bestNameMatch(
+    subject: String,
+    demote: (T) -> Int = { 0 },
+    nameOf: (T) -> String?,
+): T? =
+    mapIndexedNotNull { rank, item ->
+        matchScore(nameOf(item).orEmpty(), subject)?.let { (tier, extra) ->
+            ScoredMatch(tier, extra, demote(item), rank) to item
+        }
+    }.minWithOrNull(
+        compareBy(
+            { it.first.tier },
+            { it.first.extraLength },
+            { it.first.demoted },
+            { it.first.rank },
+        ),
+    )?.second
+
+/**
+ * Pick the album by name, and only when the name matches EXACTLY.
+ *
+ * AM's album index is not complete enough to trust a near-miss. Searching "Mắt Nhắm Mắt Mở
+ * HIEUTHUHAI" returns exactly one album — *Mắt Nhắm Mắt Mở (Studio Live Session) - EP* — and not
+ * the album itself, so the best available match was a different release of a different recording,
+ * accepted purely because nothing else was on offer. The track search below finds the real album
+ * for the same track, so anything short of an exact name here defers to it rather than guessing.
+ */
+private fun List<AMAlbumResource>.pickAlbumMatch(
+    subject: String,
+    artist: String,
+): AMAlbumResource? =
+    filter { it.hasAnimatedArtwork() }
+        .filter { it.attributes?.artistName.agreesWith(artist) }
+        .bestNameMatch(subject) { it.attributes?.name }
+        ?.takeIf { matchScore(it.attributes?.name.orEmpty(), subject)?.first == EXACT_NAME_TIER }
+
+/**
+ * Pick the album for a track reached by title.
+ *
+ * The album must be the one the matched TRACK belongs to, which is why the search asks for songs
+ * and carries [AMSongWithAlbum.album] along. Reading an album straight out of the response instead
+ * — "the first one that has artwork" — attaches an unrelated release to the track: for an artist
+ * with exactly one animated release, every song of theirs ends up wearing it. Observed with
+ * HIEUTHUHAI, where a single carrying artwork was served for unrelated tracks.
+ *
+ * The track title is scored too, for the same reason the album name is on the other path: AM's
+ * order is a ranking, not an answer.
+ */
+private fun List<AMSongWithAlbum>.pickSongMatch(
+    title: String,
+    artist: String,
+    durationSeconds: Int,
+    albumHint: String?,
+): AMSongWithAlbum? =
+    filter { it.artistName.agreesWith(artist) }
+        .bestNameMatch(
+            subject = title,
+            // Three tiebreaks, weakest last. The name alone cannot separate a studio take from a
+            // live one when both are titled the same, so RUNNING TIME leads here — it is the same
+            // signal the Spotify canvas search picks its track with, and it separates them
+            // decisively: "Không Thể Say" is 228s, its Live Band cut 188s and its festival cut
+            // 327s. The album name comes next, deciding between the several albums one recording
+            // legitimately appears on. Whether artwork exists at all only breaks what is left.
+            demote = { candidate ->
+                val durationMisses = !candidate.matchesDuration(durationSeconds)
+                val albumName = candidate.album.attributes?.name.orEmpty()
+                val hintMisses = albumHint != null && matchScore(albumName, albumHint)?.first != EXACT_NAME_TIER
+                val hasNoArtwork = !candidate.album.hasAnimatedArtwork()
+                (if (durationMisses) 4 else 0) + (if (hintMisses) 2 else 0) + (if (hasNoArtwork) 1 else 0)
+            },
+        ) { it.songName }
+        ?.takeIf { it.album.hasAnimatedArtwork() }
+
+/**
+ * Whether this is the same recording, by length. Unknown on either side counts as agreement — an
+ * absent number is not evidence of a different take.
+ */
+private fun AMSongWithAlbum.matchesDuration(durationSeconds: Int): Boolean {
+    val theirs = durationInMillis ?: return true
+    if (durationSeconds <= 0) return true
+    return abs(theirs / 1000L - durationSeconds) <= AM_DURATION_TOLERANCE_SECONDS
+}
+
+/**
+ * Whether a credited name is the artist being played. Blank means the row carried no artist at all,
+ * which cannot disagree with anything.
+ */
+private fun String?.agreesWith(artist: String): Boolean =
+    artist.isBlank() || (this != null && this.matchesLoosely(artist))
+
+private fun AMAlbumResource.hasAnimatedArtwork(): Boolean =
+    attributes
+        ?.editorialVideo
+        ?.preferredRendition()
+        ?.video != null
+
+/**
+ * Every album that has animated artwork ships all four renditions, but they are read defensively
+ * anyway. The tall cut is preferred because the canvas slot it lands in is a full-height backdrop,
+ * which is what the Spotify canvas it replaces was shaped for.
+ */
+private fun AMEditorialVideo.preferredRendition(): AMMotionVideo? =
+    listOfNotNull(motionDetailTall, motionTallVideo3x4, motionDetailSquare, motionSquareVideo1x1)
+        .firstOrNull { it.video != null }
