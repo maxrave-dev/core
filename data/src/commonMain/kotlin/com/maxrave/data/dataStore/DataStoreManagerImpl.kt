@@ -411,14 +411,19 @@ internal class DataStoreManagerImpl(
     override suspend fun setSponsorBlockCategories(categories: ArrayList<String>) {
         withContext(Dispatchers.IO) {
             Logger.w("setSponsorBlockCategories", categories.toString())
-            for (category in categories) {
-                settingsDataStore.edit { settings ->
-                    settings[stringPreferencesKey(category)] = TRUE
-                }
-            }
-            SponsorBlockType.toList().filter { !categories.contains(it.value) }.forEach { category ->
-                settingsDataStore.edit { settings ->
-                    settings[stringPreferencesKey(category.toString())] = FALSE
+            // Every category is written in ONE edit, keyed by `value` on both branches.
+            //
+            // The clearing branch used to key on `category.toString()`. SponsorBlockType is a sealed
+            // class of data objects, so that is the object's NAME — "SPONSOR" — while the enabled
+            // branch and [getSponsorBlockCategories] both use `value`, "sponsor". Unticking a
+            // category therefore wrote FALSE to a key nobody reads and left the real one at TRUE:
+            // the choice came back unchanged every time the dialog was reopened, and all nine
+            // categories stayed on forever. Confirmed against a real settings store where every one
+            // of the nine read TRUE.
+            settingsDataStore.edit { settings ->
+                SponsorBlockType.toList().forEach { category ->
+                    settings[stringPreferencesKey(category.value)] =
+                        if (categories.contains(category.value)) TRUE else FALSE
                 }
             }
         }
