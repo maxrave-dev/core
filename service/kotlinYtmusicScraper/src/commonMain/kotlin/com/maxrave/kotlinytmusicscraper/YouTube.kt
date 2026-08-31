@@ -37,6 +37,7 @@ import com.maxrave.kotlinytmusicscraper.models.response.AccountSwitcherEndpointR
 import com.maxrave.kotlinytmusicscraper.models.response.AddItemYouTubePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
 import com.maxrave.kotlinytmusicscraper.models.response.CreatePlaylistResponse
+import com.maxrave.kotlinytmusicscraper.models.response.ImageUploadResponse
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
 import com.maxrave.kotlinytmusicscraper.models.response.GetQueueResponse
 import com.maxrave.kotlinytmusicscraper.models.response.GetSearchSuggestionsResponse
@@ -1872,6 +1873,37 @@ class YouTube {
         title: String,
     ) = runCatching {
         ytMusic.editYouTubePlaylist(playlistId, title).status.value
+    }
+
+    /**
+     * Puts a custom cover on a YouTube Music playlist.
+     *
+     * Three legs, because that is what the web client does: reserve a resumable upload slot, send
+     * the bytes, then attach the returned blob to the playlist. The upload id comes back as a
+     * response HEADER (`x-guploader-uploadid`) with an empty body, which is easy to miss.
+     *
+     * Returns the HTTP status of the final attach, the same way [editPlaylist] does — the response
+     * body is a fresh playlist header, and nothing here needs to read it back.
+     */
+    suspend fun setPlaylistCustomThumbnail(
+        playlistId: String,
+        image: ByteArray,
+    ) = runCatching {
+        val uploadId =
+            ytMusic
+                .getPlaylistThumbnailUploadSlot(image.size)
+                .headers["x-guploader-uploadid"]
+                ?: throw IllegalStateException("No upload id returned for playlist thumbnail")
+        // bodyAsText + manual decode, NOT body<T>(): this endpoint answers with JSON but does not
+        // label it as such — the response carries an html content type — so ContentNegotiation
+        // never engages and body<T>() fails with "expected ImageUploadResponse but was
+        // SourceByteReadChannel" on an otherwise perfectly good 200.
+        val blobId =
+            Json { ignoreUnknownKeys = true }
+                .decodeFromString<ImageUploadResponse>(
+                    ytMusic.uploadPlaylistThumbnail(uploadId, image).bodyAsText(),
+                ).encryptedBlobId
+        ytMusic.setYouTubePlaylistCustomThumbnail(playlistId, blobId).status.value
     }
 
     suspend fun createPlaylist(

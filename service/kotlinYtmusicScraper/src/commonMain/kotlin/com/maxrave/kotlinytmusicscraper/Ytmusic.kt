@@ -504,6 +504,62 @@ class Ytmusic {
         )
     }
 
+    /**
+     * Step 1 of setting a playlist cover: reserve a resumable upload slot.
+     *
+     * The upload id is returned in the `x-guploader-uploadid` RESPONSE HEADER, not in the body —
+     * the body is empty. This is Google's generic resumable-upload handshake, which is why the
+     * host is music.youtube.com but the path is outside the usual /youtubei/v1 tree.
+     */
+    suspend fun getPlaylistThumbnailUploadSlot(contentLength: Int) =
+        httpClient.post("https://music.youtube.com/playlist_image_upload/playlist_custom_thumbnail") {
+            ytClient(WEB_REMIX, setLogin = true)
+            headers {
+                append("X-Goog-Upload-Command", "start")
+                append("X-Goog-Upload-Protocol", "resumable")
+                append("X-Goog-Upload-Header-Content-Length", contentLength.toString())
+            }
+        }
+
+    /** Step 2: send the bytes and finalise, which answers with the blob id. */
+    suspend fun uploadPlaylistThumbnail(
+        uploadId: String,
+        image: ByteArray,
+    ) = httpClient.post("https://music.youtube.com/playlist_image_upload/playlist_custom_thumbnail") {
+        ytClient(WEB_REMIX, setLogin = true)
+        parameter("upload_id", uploadId)
+        parameter("upload_protocol", "resumable")
+        headers {
+            append("X-Goog-Upload-Command", "upload, finalize")
+            append("X-Goog-Upload-Offset", "0")
+        }
+        setBody(image)
+    }
+
+    /** Step 3: attach the uploaded blob to the playlist. */
+    suspend fun setYouTubePlaylistCustomThumbnail(
+        playlistId: String,
+        blobId: String,
+    ) = httpClient.post("browse/edit_playlist") {
+        ytClient(WEB_REMIX, setLogin = true)
+        setBody(
+            EditPlaylistBody(
+                context = WEB_REMIX.toContext(locale, visitorData),
+                playlistId = playlistId.removePrefix("VL"),
+                actions =
+                    listOf(
+                        EditPlaylistBody.Action(
+                            action = "ACTION_SET_CUSTOM_THUMBNAIL",
+                            addedCustomThumbnail =
+                                EditPlaylistBody.AddedCustomThumbnail(
+                                    playlistScottyEncryptedBlobId = blobId,
+                                ),
+                        ),
+                    ),
+            ),
+        )
+    }
+
     suspend fun addItemYouTubePlaylist(
         playlistId: String,
         videoId: String,
