@@ -260,6 +260,9 @@ internal class LyricsCanvasRepositoryImpl(
             // requests grows with plays rather than with tracks, against an API that is not ours.
             val cached = song.canvasUrl?.takeIf { it.contains(".m3u8") }
             if (cached != null) {
+                // Logged because a cache hit returns without touching the network: without this
+                // line a stale url looks identical to a fresh mismatch in the log.
+                Logger.d(AM_ARTWORK_TAG, "cache hit for $videoId (${song.title}) --> $cached")
                 emit(
                     Resource.Success(
                         CanvasResult(
