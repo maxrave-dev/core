@@ -102,13 +102,17 @@ class FaradayCipherEngine(
         val solver = solverFor(playerId) ?: return DecodeResult(emptyMap(), emptyMap())
         return DecodeResult(
             signatures =
-                signatures.distinct().mapNotNull { challenge ->
-                    solver.solveSignature(challenge)?.let { challenge to it }
-                }.toMap(),
+                signatures
+                    .distinct()
+                    .mapNotNull { challenge ->
+                        solver.solveSignature(challenge)?.let { challenge to it }
+                    }.toMap(),
             nParameters =
-                nParameters.distinct().mapNotNull { challenge ->
-                    solver.solveN(challenge)?.let { challenge to it }
-                }.toMap(),
+                nParameters
+                    .distinct()
+                    .mapNotNull { challenge ->
+                        solver.solveN(challenge)?.let { challenge to it }
+                    }.toMap(),
         )
     }
 
@@ -150,10 +154,11 @@ class FaradayCipherEngine(
      */
     private suspend fun fetchPlayerId(): String? =
         try {
-            val response = httpClient.getTextWithoutRedirects(Url(IFRAME_API_URL), MAX_IFRAME_BYTES) {
-                header(HttpHeaders.UserAgent, USER_AGENT)
-                header(HttpHeaders.Accept, "*/*")
-            }
+            val response =
+                httpClient.getTextWithoutRedirects(Url(IFRAME_API_URL), MAX_IFRAME_BYTES) {
+                    header(HttpHeaders.UserAgent, USER_AGENT)
+                    header(HttpHeaders.Accept, "*/*")
+                }
             val body = response.body
             if (body == null) {
                 logger.w(TAG, "iframe_api returned HTTP ${response.status.value}")
@@ -218,11 +223,12 @@ class FaradayCipherEngine(
 
     private suspend fun downloadPlayerCode(playerUrl: String): String? =
         try {
-            val response = httpClient.getTextWithoutRedirects(Url(playerUrl), MAX_PLAYER_SCRIPT_BYTES) {
-                header(HttpHeaders.UserAgent, USER_AGENT)
-                header(HttpHeaders.Accept, "*/*")
-                header("Referer", "https://www.youtube.com/")
-            }
+            val response =
+                httpClient.getTextWithoutRedirects(Url(playerUrl), MAX_PLAYER_SCRIPT_BYTES) {
+                    header(HttpHeaders.UserAgent, USER_AGENT)
+                    header(HttpHeaders.Accept, "*/*")
+                    header("Referer", "https://www.youtube.com/")
+                }
             response.body ?: run {
                 logger.w(TAG, "player script HTTP ${response.status.value}")
                 null
@@ -247,7 +253,7 @@ class FaradayCipherEngine(
          * A URL that fails either gate makes the store return null with no error anywhere.
          */
         const val PLAYER_CONFIG_URL: String =
-            "https://raw.githubusercontent.com/MetrolistGroup/faraday/master/registry/player_configs.json"
+            "https://raw.githubusercontent.com/maxrave-dev/simpmusic-files/main/registry/player_configs.json"
 
         private const val IFRAME_API_URL = "https://www.youtube.com/iframe_api"
         private const val USER_AGENT = "okhttp/5.4.0"
@@ -258,8 +264,7 @@ class FaradayCipherEngine(
         private val PLAYER_HASH_REGEX = Regex("""player\\?/([a-z0-9]{8})\\?/""")
         private val PLAYER_ID_REGEX = Regex("^[A-Za-z0-9_-]{4,32}$")
 
-        internal fun playerUrlFor(playerId: String): String =
-            "https://www.youtube.com/s/player/$playerId/player_ias.vflset/en_GB/base.js"
+        internal fun playerUrlFor(playerId: String): String = "https://www.youtube.com/s/player/$playerId/player_ias.vflset/en_GB/base.js"
     }
 }
 
