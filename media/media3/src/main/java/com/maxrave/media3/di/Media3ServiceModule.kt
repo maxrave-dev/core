@@ -242,7 +242,7 @@ private fun provideResolvingDataSourceFactory(
 ): DataSource.Factory {
     val chunkLength = 10 * 512 * 1024L
     return ResolvingDataSource.Factory(cacheDataSourceFactory) { dataSpec ->
-        val mediaId = dataSpec.key ?: error("No media id")
+        val mediaId = dataSpec.key ?: throw java.io.IOException("No media id for dataSpec: ${dataSpec.uri}")
         Logger.w("Stream", mediaId)
         Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
         if (downloadCache.isFullyCached(mediaId, dataSpec.position)) {
