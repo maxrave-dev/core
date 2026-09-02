@@ -408,7 +408,12 @@ class RemotePlayerConfigStore(
             ?.takeIf { url ->
                 url.protocol.name == "https" &&
                     when (url.host) {
-                        "raw.githubusercontent.com" -> url.encodedPath.startsWith("/MetrolistGroup/faraday/")
+                        // Our own published table comes first; the MetrolistGroup paths stay so that
+                        // pointing [FaradayCipherEngine.PLAYER_CONFIG_URL] back at upstream is a
+                        // one-line change if our registry ever stops being published.
+                        "raw.githubusercontent.com" ->
+                            url.encodedPath.startsWith("/maxrave-dev/simpmusic-files/") ||
+                                url.encodedPath.startsWith("/MetrolistGroup/faraday/")
                         "cdn.jsdelivr.net" -> url.encodedPath.startsWith("/gh/MetrolistGroup/faraday@")
                         "github.com" -> url.encodedPath.startsWith("/MetrolistGroup/faraday/releases/download/")
                         else -> false
