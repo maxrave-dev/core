@@ -67,7 +67,7 @@ internal class DownloadUtils(
                     ),
                 ),
         ) { dataSpec ->
-            val mediaId = dataSpec.key ?: error("No media id")
+            val mediaId = dataSpec.key ?: throw java.io.IOException("No media id for dataSpec: ${dataSpec.uri}")
             Logger.w("Stream", mediaId)
             Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
             // Already downloaded in full: hand the DataSpec back untouched so the enclosing

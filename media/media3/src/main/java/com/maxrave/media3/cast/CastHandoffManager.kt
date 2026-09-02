@@ -20,7 +20,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.simpmusic.cast.currentCastDeviceName
+import org.simpmusic.cast.getCurrentCastDeviceName
+import org.simpmusic.cast.getCastDeviceVolume
 
 /**
  * Owns the local ↔ Cast-receiver handoff.
@@ -46,10 +47,15 @@ internal class CastHandoffManager(
     private var remoteToPlaylist = listOf<Int>()
     private var pushJob: Job? = null
     private var positionPollJob: Job? = null
+    private var volumePollJob: Job? = null
     private var recoverJob: Job? = null
 
     @Volatile
     private var lastKnownRemotePositionMs = 0L
+
+    /** Timestamp of the last local volume change; the poll skips reads within [VOLUME_LOCAL_DEBOUNCE_MS] to avoid overwriting the user's adjustment. */
+    @Volatile
+    private var lastLocalVolumeChangeMs = 0L
 
     private var retryMediaId: String? = null
     private var retryCount = 0
@@ -61,9 +67,15 @@ internal class CastHandoffManager(
         object : Player.Listener {
             override fun onDeviceInfoChanged(deviceInfo: DeviceInfo) {
                 val remote = deviceInfo.playbackType == DeviceInfo.PLAYBACK_TYPE_REMOTE
+                Logger.d(TAG, "onDeviceInfoChanged: playbackType=${if (remote) "REMOTE" else "LOCAL"} (current=$isRemote)")
                 if (remote == isRemote) return
                 isRemote = remote
-                if (remote) onCastConnected() else onCastDisconnected()
+                if (remote) {
+                    adapter.notifyConnecting(getCurrentCastDeviceName())
+                    onCastConnected()
+                } else {
+                    onCastDisconnected()
+                }
             }
 
             override fun onMediaItemTransition(
@@ -105,6 +117,7 @@ internal class CastHandoffManager(
         adapter.castPlaybackRouter = { index, positionMs, playWhenReady ->
             pushQueueWindow(index, positionMs, playWhenReady)
         }
+        adapter.castLocalVolumeChangeCallback = { notifyLocalVolumeChange() }
         sessionPlayer.addListener(playerListener)
         Logger.d(TAG, "Cast handoff manager started")
     }
@@ -114,23 +127,29 @@ internal class CastHandoffManager(
         val startIndex = adapter.currentMediaItemIndex
         val startPositionMs = adapter.currentPosition
         val playWhenReady = adapter.isPlaying || adapter.playWhenReady
-        val deviceName = currentCastDeviceName()
-        Logger.w(TAG, "Cast connected to ${deviceName ?: "unknown"} — handing off index=$startIndex pos=${startPositionMs}ms")
+        val deviceName = getCurrentCastDeviceName()
+        Logger.w(TAG, "▶ CAST CONNECTED: device=$deviceName startIndex=$startIndex pos=${startPositionMs}ms")
         adapter.setCastActive(sessionPlayer, deviceName)
         lastKnownRemotePositionMs = startPositionMs
+        // Sync the adapter's volume to the Cast device's actual volume (what Google Home shows).
+        val deviceVolume = getCastDeviceVolume()
+        Logger.d(TAG, "Volume sync on connect: device=$deviceVolume adapter=${adapter.volume}")
+        deviceVolume?.let { adapter.updateVolumeFromDevice(it) }
         startPositionPolling()
+        startVolumePolling()
         if (startIndex >= 0) {
             pushQueueWindow(startIndex, startPositionMs, playWhenReady)
         }
     }
 
     private fun onCastDisconnected() {
-        Logger.w(TAG, "Cast disconnected — resuming locally at ${lastKnownRemotePositionMs}ms")
+        Logger.w(TAG, "⏹ CAST DISCONNECTED: resuming local at index=${adapter.currentMediaItemIndex} pos=${lastKnownRemotePositionMs}ms")
         stopPositionPolling()
-        pushJob?.cancel()
-        pushJob = null
+        stopVolumePolling()
         recoverJob?.cancel()
         recoverJob = null
+        pushJob?.cancel()
+        pushJob = null
         remoteToPlaylist = emptyList()
         retryMediaId = null
         retryCount = 0
@@ -161,45 +180,48 @@ internal class CastHandoffManager(
                     Logger.d(TAG, "pushQueueWindow start=$startIndex pos=${startPositionMs}ms playWhenReady=$playWhenReady shuffle=${adapter.shuffleModeEnabled}")
                     val itemCount = adapter.mediaItemCount
                     if (startIndex !in 0 until itemCount) return@launch
-                    val windowIndices =
-                        if (adapter.shuffleModeEnabled) {
-                            listOf(startIndex)
-                        } else {
-                            (startIndex until minOf(startIndex + INITIAL_WINDOW_SIZE, itemCount)).toList()
-                        }
-                    // Snapshot the items here (main thread) before going to IO: the adapter's playlist
-                    // is a plain ArrayList mutated on the main thread, so reading it from
-                    // Dispatchers.IO races with queue edits.
-                    val window = windowIndices.mapNotNull { index -> adapter.getMediaItemAt(index)?.let { index to it } }
-                    val resolved =
-                        window
-                            .map { (index, item) ->
-                                async(Dispatchers.IO) {
-                                    resolver.resolve(item.mediaId)?.let { stream ->
-                                        index to item.toCastMediaItem(stream)
-                                    }
-                                }
-                            }.awaitAll()
-                            .filterNotNull()
-                    if (resolved.isEmpty() || resolved.first().first != startIndex) {
+
+                    // --- First track: resolve and push immediately for minimal latency ---
+                    val firstItem = adapter.getMediaItemAt(startIndex) ?: return@launch
+                    val firstStream = withContext(Dispatchers.IO) { resolver.resolve(firstItem.mediaId) }
+                    if (firstStream == null) {
                         Logger.e(TAG, "Could not resolve a stream URL for index $startIndex — skipping ahead")
                         onResolveFailedWhileRemote(startIndex)
                         return@launch
                     }
                     resolveFailureCount = 0
-                    Logger.d(TAG, "pushQueueWindow: resolved ${resolved.size}/${window.size} items, playlistIndices=${resolved.map { it.first }}")
-                    remoteToPlaylist = resolved.map { it.first }
-                    // The receiver only ever holds this small window, so forwarding REPEAT_ALL would
-                    // loop the window forever instead of the real playlist. Map it to OFF and let
-                    // STATE_ENDED bubble back to the adapter, which owns shuffle/repeat. REPEAT_ONE is
-                    // safe to forward — it loops the current item, which is exactly the intent.
-                    // PlayerConstants repeat values match Player.REPEAT_MODE_* 1:1.
+                    remoteToPlaylist = listOf(startIndex)
+
                     sessionPlayer.repeatMode =
                         if (adapter.repeatMode == Player.REPEAT_MODE_ONE) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-                    sessionPlayer.setMediaItems(resolved.map { it.second }, 0, startPositionMs)
+                    sessionPlayer.setMediaItems(listOf(firstItem.toCastMediaItem(firstStream)), 0, startPositionMs)
                     sessionPlayer.playWhenReady = playWhenReady
                     sessionPlayer.prepare()
                     adapter.notifyRemoteTransition(startIndex)
+                    Logger.d(TAG, "pushQueueWindow: first track pushed immediately, resolving rest in background")
+
+                    // --- Remaining tracks: resolve and append in background ---
+                    if (!adapter.shuffleModeEnabled) {
+                        for (offset in 1 until minOf(INITIAL_WINDOW_SIZE, itemCount - startIndex)) {
+                            val idx = startIndex + offset
+                            val item = adapter.getMediaItemAt(idx) ?: continue
+                            launch(Dispatchers.IO) {
+                                try {
+                                    resolver.resolve(item.mediaId)?.let { stream ->
+                                        if (!isRemote) return@let
+                                        withContext(Dispatchers.Main) {
+                                            if (!isRemote) return@withContext
+                                            remoteToPlaylist = remoteToPlaylist + idx
+                                            sessionPlayer.addMediaItem(item.toCastMediaItem(stream))
+                                        }
+                                        Logger.d(TAG, "pushQueueWindow: appended index=$idx in background")
+                                    }
+                                } catch (e: Exception) {
+                                    Logger.e(TAG, "pushQueueWindow: background resolve failed for index=$idx: ${e.message}")
+                                }
+                            }
+                        }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -234,14 +256,15 @@ internal class CastHandoffManager(
         retryMediaId = null
         retryCount = 0
         resolveFailureCount = 0
-        // Keep one resolved item ahead of the receiver for near-gapless auto-advance.
-        if (remoteIndex == remoteToPlaylist.lastIndex && !adapter.shuffleModeEnabled) {
+        // Keep two resolved items ahead of the receiver for near-gapless auto-advance.
+        if (remoteIndex >= remoteToPlaylist.lastIndex - 1 && !adapter.shuffleModeEnabled) {
             appendNextToRemoteQueue(playlistIndex + 1)
         }
     }
 
     private fun appendNextToRemoteQueue(playlistIndex: Int) {
         if (playlistIndex >= adapter.mediaItemCount) return
+        Logger.d(TAG, "appendNextToRemoteQueue: playlistIndex=$playlistIndex (window look-ahead)")
         coroutineScope.launch {
             try {
                 val item = adapter.getMediaItemAt(playlistIndex) ?: return@launch
@@ -259,7 +282,8 @@ internal class CastHandoffManager(
 
     /**
      * Remote 403/expiry recovery: invalidate the cached format, re-resolve and re-push at
-     * the last known position. After [MAX_STREAM_RETRIES] the track is skipped instead.
+     * the last known position. Uses exponential backoff (1s, 2s, 4s) with jitter.
+     * After [MAX_STREAM_RETRIES] the track is skipped instead.
      */
     private fun recoverFromRemoteError() {
         val remoteIndex = sessionPlayer.currentMediaItemIndex
@@ -275,7 +299,9 @@ internal class CastHandoffManager(
                 if (!isRemote) return@launch
                 if (retryCount < MAX_STREAM_RETRIES) {
                     retryCount++
-                    Logger.w(TAG, "Refreshing stream URL for $mediaId (attempt $retryCount/$MAX_STREAM_RETRIES)")
+                    val backoffMs = (RETRY_BASE_DELAY_MS shl (retryCount - 1)) + (Math.random() * RETRY_JITTER_MS).toLong()
+                    Logger.w(TAG, "Refreshing stream URL for $mediaId (attempt $retryCount/$MAX_STREAM_RETRIES, delay=${backoffMs}ms)")
+                    delay(backoffMs)
                     withContext(Dispatchers.IO) { resolver.invalidate(mediaId) }
                     // The session can end while invalidate() suspends above; without this re-check the
                     // push below would land a resolved-URL queue on the *local* player and break the
@@ -317,6 +343,48 @@ internal class CastHandoffManager(
         positionPollJob = null
     }
 
+    /**
+     * Polls the Cast device volume every [VOLUME_POLL_INTERVAL_MS] and applies it to the adapter,
+     * so the UI slider stays in sync when the user changes volume on Google Home or another controller.
+     *
+     * Reads within [VOLUME_LOCAL_DEBOUNCE_MS] of a local slider change are skipped to avoid
+     * overwriting the user's adjustment with a stale cached value.
+     */
+    private fun startVolumePolling() {
+        volumePollJob?.cancel()
+        volumePollJob =
+            coroutineScope.launch {
+                while (isActive) {
+                    delay(VOLUME_POLL_INTERVAL_MS)
+                    val now = System.currentTimeMillis()
+                    val timeSinceLocalChange = now - lastLocalVolumeChangeMs
+                    if (timeSinceLocalChange < VOLUME_LOCAL_DEBOUNCE_MS) {
+                        Logger.d(TAG, "Volume poll: SKIPPED (local change ${timeSinceLocalChange}ms ago, debounce=${VOLUME_LOCAL_DEBOUNCE_MS}ms)")
+                        continue
+                    }
+                    val deviceVolume = getCastDeviceVolume() ?: continue
+                    if (deviceVolume != adapter.volume) {
+                        Logger.d(TAG, "Volume poll: device=${deviceVolume} adapter=${adapter.volume} — syncing")
+                        adapter.updateVolumeFromDevice(deviceVolume)
+                    }
+                }
+            }
+    }
+
+    private fun stopVolumePolling() {
+        volumePollJob?.cancel()
+        volumePollJob = null
+    }
+
+    /**
+     * Called by the adapter when the user changes volume via the UI slider.
+     * Records the timestamp so the volume poll knows to skip nearby reads.
+     */
+    internal fun notifyLocalVolumeChange() {
+        lastLocalVolumeChangeMs = System.currentTimeMillis()
+        Logger.d(TAG, "Local volume change recorded — poll debounce active for ${VOLUME_LOCAL_DEBOUNCE_MS}ms")
+    }
+
     private fun GenericMediaItem.toCastMediaItem(stream: CastStreamResolver.ResolvedStream): MediaItem {
         val base = toMedia3MediaItem()
         return base
@@ -333,9 +401,13 @@ internal class CastHandoffManager(
 
     companion object {
         private const val TAG = "CastHandoffManager"
-        private const val INITIAL_WINDOW_SIZE = 3
-        private const val MAX_STREAM_RETRIES = 2
+        private const val INITIAL_WINDOW_SIZE = 2
+        private const val MAX_STREAM_RETRIES = 3
         private const val MAX_RESOLVE_FAILURES = 3
-        private const val POSITION_POLL_INTERVAL_MS = 1000L
+        private const val POSITION_POLL_INTERVAL_MS = 500L
+        private const val VOLUME_POLL_INTERVAL_MS = 2000L
+        private const val VOLUME_LOCAL_DEBOUNCE_MS = 3000L
+        private const val RETRY_BASE_DELAY_MS = 1000L
+        private const val RETRY_JITTER_MS = 500L
     }
 }

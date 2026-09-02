@@ -33,6 +33,7 @@ import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.audio.BiquadFilter
 import com.maxrave.media3.audio.ConvolutionReverbAudioProcessor
+import org.simpmusic.cast.setCastDeviceVolume
 import com.maxrave.media3.audio.CrossfadeFilterAudioProcessor
 import com.maxrave.media3.audio.EchoAudioProcessor
 import com.maxrave.media3.audio.EqualizerAudioProcessor
@@ -447,6 +448,13 @@ internal class CrossfadeExoPlayerAdapter(
     /** Set by CastHandoffManager: (playlistIndex, startPositionMs, playWhenReady) -> load on receiver. */
     internal var castPlaybackRouter: ((Int, Long, Boolean) -> Unit)? = null
 
+    /** Set by CastHandoffManager: called when the user changes volume via the UI slider during Cast. */
+    internal var castLocalVolumeChangeCallback: (() -> Unit)? = null
+
+    internal fun notifyConnecting(deviceName: String?) {
+        listeners.forEach { it.onCastStateChanged(GenericCastState.connecting(deviceName)) }
+    }
+
     internal fun setCastActive(
         remotePlayer: Player?,
         deviceName: String?,
@@ -454,7 +462,6 @@ internal class CrossfadeExoPlayerAdapter(
         if (remotePlayer != null) {
             if (castRemotePlayer === remotePlayer) return
             castRemotePlayer = remotePlayer
-            Logger.w(TAG, "Cast session active on ${deviceName ?: "unknown device"} — local playback suspended")
             coroutineScope.launch {
                 // Kill anything that makes local noise or wastes battery while remote.
                 crossfadeJob?.cancel()
@@ -475,7 +482,6 @@ internal class CrossfadeExoPlayerAdapter(
         } else {
             if (castRemotePlayer == null) return
             castRemotePlayer = null
-            Logger.w(TAG, "Cast session ended — back to local playback")
             listeners.forEach { it.onCastStateChanged(GenericCastState.NOT_CASTING) }
         }
     }
@@ -705,6 +711,7 @@ internal class CrossfadeExoPlayerAdapter(
 
     override fun seekTo(positionMs: Long) {
         castRemotePlayer?.let { remote ->
+            Logger.d(TAG, "seekTo(Cast): positionMs=$positionMs")
             remote.seekTo(positionMs)
             cachedPosition = positionMs
             return
@@ -1258,10 +1265,26 @@ internal class CrossfadeExoPlayerAdapter(
         set(value) {
             Logger.w(TAG, "Setting volume to $value")
             internalVolume = value.coerceIn(0f, 1f)
-            castRemotePlayer?.volume = internalVolume
-            currentPlayer?.volume = internalVolume
+            if (castRemotePlayer != null) {
+                castLocalVolumeChangeCallback?.invoke()
+                setCastDeviceVolume(internalVolume)
+            } else {
+                currentPlayer?.volume = internalVolume
+            }
             listeners.forEach { it.onVolumeChanged(internalVolume) }
         }
+
+    /**
+     * Update the adapter volume from the Cast device (poll / connect-time sync).
+     * Does NOT invoke [castLocalVolumeChangeCallback] or write to the Cast device —
+     * those are for user-initiated changes only. Remote-driven sync going through
+     * the normal setter would be treated as a local change and trigger debounce
+     * + a redundant device write.
+     */
+    internal fun updateVolumeFromDevice(volume: Float) {
+        internalVolume = volume.coerceIn(0f, 1f)
+        listeners.forEach { it.onVolumeChanged(internalVolume) }
+    }
 
     override var albumTrackIds: Set<String>
         get() = internalAlbumTrackIds

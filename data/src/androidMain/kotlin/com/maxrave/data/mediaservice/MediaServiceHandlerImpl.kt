@@ -564,6 +564,10 @@ internal class MediaServiceHandlerImpl(
             it.copy(
                 mediaItem = mediaItem,
                 track = track,
+                // Clear stale songEntity immediately when the track changes so the UI never
+                // briefly shows the previous track's title/liked/explicit. The correct entity
+                // is emitted a few milliseconds later once the DB query completes.
+                songEntity = if (it.songEntity?.videoId != videoId) null else it.songEntity,
             )
         }
         _format.value = null
@@ -583,9 +587,12 @@ internal class MediaServiceHandlerImpl(
                         Logger.w(TAG, "getDataOfNowPlayingState before: $thumbUrl")
                         thumbUrl = Regex("=w\\d+-h\\d+").replace(thumbUrl, "=w544-h544")
                         Logger.w(TAG, "getDataOfNowPlayingState: $thumbUrl")
+                        // Parallelize DB writes — each touches a different column, no inter-dependency.
                         if (songEntity.thumbnails != thumbUrl) {
-                            songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
-                                Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                            launch {
+                                songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
+                                    Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                                }
                             }
                         }
                         // Rows written before the parsers carried YouTube's real MUSIC_VIDEO_TYPE_*
@@ -594,15 +601,19 @@ internal class MediaServiceHandlerImpl(
                         // anything that is not a real type, so an unknown never overwrites a known one.
                         MusicVideoType.normalize(track?.videoType)?.let { freshVideoType ->
                             if (songEntity.videoType != freshVideoType) {
-                                songRepository.updateVideoTypeSongEntity(freshVideoType, songEntity.videoId).singleOrNull()?.let {
-                                    Logger.w(TAG, "getDataOfNowPlayingState: Updated videoType $it")
+                                launch {
+                                    songRepository.updateVideoTypeSongEntity(freshVideoType, songEntity.videoId).singleOrNull()?.let {
+                                        Logger.w(TAG, "getDataOfNowPlayingState: Updated videoType $it")
+                                    }
                                 }
                             }
                         }
-                        songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
-                            Logger.w(TAG, "getDataOfNowPlayingState: $it")
+                        launch {
+                            songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
+                                Logger.w(TAG, "getDataOfNowPlayingState: $it")
+                            }
                         }
-                        songRepository.updateListenCount(songEntity.videoId)
+                        launch { songRepository.updateListenCount(songEntity.videoId) }
                         Logger.w(TAG, "getDataOfNowPlayingState: $songEntity")
                         Logger.w(TAG, "getDataOfNowPlayingState: $track")
                         _nowPlayingState.update {
@@ -932,7 +943,9 @@ internal class MediaServiceHandlerImpl(
 
     override suspend fun onPlayerEvent(playerEvent: PlayerEvent) {
         when (playerEvent) {
-            is PlayerEvent.UpdateVolume -> {}
+            is PlayerEvent.UpdateVolume -> {
+                player.volume = playerEvent.newVolume
+            }
 
             PlayerEvent.Backward -> {
                 player.seekBack()
@@ -2271,7 +2284,9 @@ internal class MediaServiceHandlerImpl(
             loudnessEnhancer?.release()
             loudnessEnhancer = null
             volumeNormalizationJob?.cancel()
-            player.volume = 1f
+            if (!_castState.value.isRemote) {
+                player.volume = 1f
+            }
             return
         }
 
@@ -2748,6 +2763,12 @@ internal class MediaServiceHandlerImpl(
     override fun onCrossfadeStateChanged(isCrossfading: Boolean) {
         _controlState.update {
             it.copy(isCrossfading = isCrossfading)
+        }
+    }
+
+    override fun onVolumeChanged(volume: Float) {
+        _controlState.update {
+            it.copy(volume = volume)
         }
     }
 
