@@ -1,5 +1,6 @@
 package com.maxrave.domain.mediaservice.player
 
+import com.maxrave.domain.data.player.AudioEffects
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 
@@ -147,6 +148,23 @@ interface MediaPlayerInterface {
         bandsDb: List<Float>,
         preampDb: Float,
     ) = Unit
+
+    /**
+     * Apply the delay/echo and reverb effects, or remove them.
+     *
+     * A `null` member of [effects] means that effect is off, and [AudioEffects.NONE] removes both —
+     * the distinction matters because a backend can then drop the filter out of its chain entirely
+     * rather than run a no-op convolution over every buffer.
+     *
+     * Both backends quote the same numbers, which is the whole point of [AudioEffects] living in
+     * `core/domain` rather than beside either implementation: Android samples the
+     * value per buffer from one instance per player, while desktop re-applies it to each mpv handle
+     * as that handle is created. Callers therefore pass a *fresh* object on every change and never
+     * mutate one they already handed over — both sides decide "has this changed?" by identity.
+     *
+     * Default no-op so a backend without effects simply ignores it, matching [setEqualizer].
+     */
+    fun setAudioEffects(effects: AudioEffects) = Unit
 
     // Listener management
     fun addListener(listener: MediaPlayerListener)

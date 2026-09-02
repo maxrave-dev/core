@@ -11,6 +11,7 @@ import com.maxrave.common.SELECTED_LANGUAGE
 import com.maxrave.common.SUPPORTED_LANGUAGE
 import com.maxrave.common.SponsorBlockType
 import com.maxrave.domain.data.model.network.ProxyConfiguration
+import com.maxrave.domain.data.player.ReverbPreset
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.AI_PROVIDER_GEMINI
 import com.maxrave.domain.manager.DataStoreManager.Values.FALSE
@@ -619,6 +620,102 @@ internal class DataStoreManagerImpl(
             settingsDataStore.edit { settings ->
                 settings[EQUALIZER_AUTOEQ_PROFILE] =
                     if (label.isBlank()) "" else label + "\n" + bandsDb.joinToString(",")
+            }
+        }
+    }
+
+    override val delayEnabled: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[DELAY_ENABLED] ?: FALSE
+        }
+
+    override suspend fun setDelayEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[DELAY_ENABLED] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
+    override val delayTimeMs: Flow<Int> =
+        settingsDataStore.data.map { preferences ->
+            // Written as text like the preamp is, so a value that cannot be read back — hand
+            // edited, or written by a build that stored something else here — falls to the
+            // default instead of failing the whole preferences read on a typed key.
+            preferences[DELAY_TIME_MS]?.toIntOrNull() ?: 400
+        }
+
+    override suspend fun setDelayTimeMs(timeMs: Int) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[DELAY_TIME_MS] = timeMs.toString()
+            }
+        }
+    }
+
+    override val delayFeedback: Flow<Float> =
+        settingsDataStore.data.map { preferences ->
+            preferences[DELAY_FEEDBACK]?.toFloatOrNull() ?: 0.45f
+        }
+
+    override suspend fun setDelayFeedback(feedback: Float) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[DELAY_FEEDBACK] = feedback.toString()
+            }
+        }
+    }
+
+    override val delayMix: Flow<Float> =
+        settingsDataStore.data.map { preferences ->
+            preferences[DELAY_MIX]?.toFloatOrNull() ?: 0.3f
+        }
+
+    override suspend fun setDelayMix(mix: Float) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[DELAY_MIX] = mix.toString()
+            }
+        }
+    }
+
+    override val reverbEnabled: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[REVERB_ENABLED] ?: FALSE
+        }
+
+    override suspend fun setReverbEnabled(enabled: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[REVERB_ENABLED] = if (enabled) TRUE else FALSE
+            }
+        }
+    }
+
+    override val reverbPreset: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            // Handed back as the raw name: this layer has no business deciding what an unknown
+            // room means, and the readers that build a filter out of it already have a default.
+            preferences[REVERB_PRESET] ?: ReverbPreset.HALL.name
+        }
+
+    override suspend fun setReverbPreset(preset: ReverbPreset) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[REVERB_PRESET] = preset.name
+            }
+        }
+    }
+
+    override val reverbMix: Flow<Float> =
+        settingsDataStore.data.map { preferences ->
+            preferences[REVERB_MIX]?.toFloatOrNull() ?: 0.35f
+        }
+
+    override suspend fun setReverbMix(mix: Float) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[REVERB_MIX] = mix.toString()
             }
         }
     }
@@ -1697,6 +1794,13 @@ internal class DataStoreManagerImpl(
         val EQUALIZER_BANDS = stringPreferencesKey("equalizer_bands")
         val EQUALIZER_ENABLED = stringPreferencesKey("equalizer_enabled")
         val EQUALIZER_PREAMP = stringPreferencesKey("equalizer_preamp")
+        val DELAY_ENABLED = stringPreferencesKey("delay_enabled")
+        val DELAY_TIME_MS = stringPreferencesKey("delay_time_ms")
+        val DELAY_FEEDBACK = stringPreferencesKey("delay_feedback")
+        val DELAY_MIX = stringPreferencesKey("delay_mix")
+        val REVERB_ENABLED = stringPreferencesKey("reverb_enabled")
+        val REVERB_PRESET = stringPreferencesKey("reverb_preset")
+        val REVERB_MIX = stringPreferencesKey("reverb_mix")
         val SPOTIFY_CANVAS = stringPreferencesKey("spotify_canvas")
         val AM_ANIMATED_ARTWORK = stringPreferencesKey("am_animated_artwork")
         val SPOTIFY_CLIENT_TOKEN = stringPreferencesKey("spotify_client_token")

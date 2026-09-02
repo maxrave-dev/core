@@ -1,6 +1,7 @@
 package com.maxrave.domain.manager
 
 import com.maxrave.domain.data.model.network.ProxyConfiguration
+import com.maxrave.domain.data.player.ReverbPreset
 import kotlinx.coroutines.flow.Flow
 
 interface DataStoreManager {
@@ -204,6 +205,64 @@ interface DataStoreManager {
         label: String,
         bandsDb: List<Float>,
     )
+
+    /**
+     * Whether the echo is applied at all.
+     *
+     * Separate from the three values below for the same reason the equalizer switch is separate
+     * from its curve: switching it off has to take the filter out of the audio chain, but the
+     * numbers the user dialled in stay put, so switching it back on returns to their echo rather
+     * than to the default one.
+     */
+    val delayEnabled: Flow<String>
+
+    suspend fun setDelayEnabled(enabled: Boolean)
+
+    /** Spacing between echo repeats in milliseconds — where the taps land, not how many there are. */
+    val delayTimeMs: Flow<Int>
+
+    suspend fun setDelayTimeMs(timeMs: Int)
+
+    /**
+     * How much of each repeat survives into the next one, 0..0.9.
+     *
+     * The number of audible taps is derived from this rather than stored beside it: a tail length
+     * and a tap count are two ways of saying the same thing, and storing both creates a pair that
+     * can disagree.
+     */
+    val delayFeedback: Flow<Float>
+
+    suspend fun setDelayFeedback(feedback: Float)
+
+    /** Echo level against the dry signal, 0..1. */
+    val delayMix: Flow<Float>
+
+    suspend fun setDelayMix(mix: Float)
+
+    /**
+     * Whether the reverb is applied at all. Separate from the room and the mix on the same
+     * reasoning as [delayEnabled] — the room the user picked outlives the switch.
+     */
+    val reverbEnabled: Flow<String>
+
+    suspend fun setReverbEnabled(enabled: Boolean)
+
+    /**
+     * The room being convolved against, as the raw [ReverbPreset] name.
+     *
+     * Stored as the name and handed back unresolved because a name survives the list growing —
+     * an index is a position, and inserting a room in the middle of the list would silently move
+     * every device onto a different one. Readers resolve it themselves and fall back to the
+     * default when the stored name comes from a newer build than the one reading it.
+     */
+    val reverbPreset: Flow<String>
+
+    suspend fun setReverbPreset(preset: ReverbPreset)
+
+    /** Wet level of the reverb against the dry signal, 0..1. */
+    val reverbMix: Flow<Float>
+
+    suspend fun setReverbMix(mix: Float)
 
     val syncFollowToYouTube: Flow<String>
 

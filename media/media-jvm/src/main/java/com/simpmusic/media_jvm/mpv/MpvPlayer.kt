@@ -1,5 +1,6 @@
 package com.simpmusic.media_jvm.mpv
 
+import com.maxrave.domain.data.player.AudioEffects
 import com.maxrave.logger.Logger
 import com.sun.jna.Memory
 import com.sun.jna.Pointer
@@ -119,6 +120,37 @@ class MpvPlayer private constructor(
          * tiers are installed and removed independently — see [applyAudioFilters].
          */
         private const val EQ_LABEL = "simpEq"
+
+        /** `@label:` of the multi-tap echo entry. */
+        private const val FX_ECHO_LABEL = "simpFxEcho"
+
+        /**
+         * `@label:` of the convolution reverb entry, which is also the `af-command` target a mix
+         * change addresses — see [setReverbMix].
+         */
+        private const val FX_REVERB_LABEL = "simpFxReverb"
+
+        /**
+         * Set once this libmpv has proven it cannot build the convolution reverb graph.
+         *
+         * A property of the LIBRARY rather than of a handle, which is why it lives here: the Linux
+         * bundle is compiled `--disable-filters --enable-filter=…` and ships no `afir`, `amovie`,
+         * `asplit` or `amix`, so every handle in the process fails identically. Remembering it
+         * once is what stops a fresh handle per track from re-running the fallback — and re-logging
+         * the warning — on every single song.
+         *
+         * Latching on one rejection is only sound because of a precondition upstream:
+         * `ReverbIrFiles` validates the cached impulse response against its exact expected byte
+         * length before handing over a path, so the other way this graph gets refused — a cache
+         * file too short for `amovie` to open — has already been ruled out, and what is left really
+         * is a build without the filters.
+         */
+        @Volatile
+        private var reverbFiltersUnavailable = false
+
+        /** Whether the convolution reverb can be built at all on this libmpv. */
+        private val reverbFiltersSupported: Boolean
+            get() = !reverbFiltersUnavailable
 
         /** ISO octave centres for a ten-band equalizer, the spacing AutoEq profiles assume. */
         val EQ_BANDS_HZ = listOf(31, 62, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000)
@@ -761,18 +793,32 @@ class MpvPlayer private constructor(
     @Volatile
     private var eqEntry: String? = null
 
+    /**
+     * The echo and reverb entries currently installed, in chain order.
+     *
+     * A third tier of its own rather than part of either neighbour: the effects outlive a
+     * crossfade (which clears only its own entries at the end of every transition) and change
+     * independently of the equalizer, so folding them into either list would make one setting
+     * erase the other.
+     */
+    @Volatile
+    private var fxEntries: List<String> = emptyList()
+
     /** Crossfade entries currently installed, so an equalizer change can rewrite around them. */
     @Volatile
     private var crossfadeEntries: List<String> = emptyList()
 
     /**
-     * Write `af` from both tiers at once.
+     * Write `af` from all three tiers at once.
      *
-     * The equalizer goes first so the crossfade sweep acts on the signal the listener actually
-     * hears, rather than on one that is about to be re-shaped behind it.
+     * Order is the design. The equalizer goes first so everything after it works on the curve the
+     * user chose. The effects sit next, so echo and reverb act on the equalised signal rather than
+     * on one that is about to be re-shaped behind them. The crossfade sweep goes last so it also
+     * sweeps the effects' tails — a reverb that kept ringing at full brightness through a
+     * transition would be the one thing in the mix that refuses to fade.
      */
     private fun applyAudioFilters(): Boolean {
-        val entries = listOfNotNull(eqEntry) + crossfadeEntries
+        val entries = listOfNotNull(eqEntry) + fxEntries + crossfadeEntries
         return setPropertyString("af", entries.joinToString(","))
     }
 
@@ -803,6 +849,91 @@ class MpvPlayer private constructor(
                 "@$EQ_LABEL:lavfi=[volume=${mpvNumber(preampDb)}dB,${stages.joinToString(",")}]"
             }
         return applyAudioFilters()
+    }
+
+    /**
+     * Install the echo and reverb tier, or remove it when [effects] carries neither.
+     *
+     * Both entries are built from the same numbers Android's processors read, so a setting sounds
+     * the same on either backend — see `MpvEffectGraphs` for the graphs themselves.
+     *
+     * The tiered fallback mirrors [installCrossfadeChain]'s treatment of the optional `rubberband`
+     * build: `af` is ONE property, so a filter this libmpv does not have does not fail on its own —
+     * mpv rejects the entire string and the equalizer disappears with it. The Linux bundle really
+     * is built without `afir`/`amovie`/`asplit`/`amix`, so this is the expected path there, not a
+     * theoretical one. Anything that cannot be installed is dropped and the rest is re-applied.
+     *
+     * @param reverbIrPath the impulse response WAV, which `amovie` opens while mpv is still
+     *   PARSING the graph — a missing file therefore fails the whole chain rather than just the
+     *   reverb, which is why a null path means "no reverb entry" instead of "try it and see".
+     * @return true only when everything [effects] asked for is now in the chain. An entry that had
+     *   to be dropped — an echo outside aecho's ranges, a reverb with no impulse response or no
+     *   filters to build it — reports false even though the write itself succeeded, because the
+     *   caller's real question is whether the effect it just enabled is actually running.
+     */
+    fun setAudioEffects(
+        effects: AudioEffects,
+        reverbIrPath: String?,
+    ): Boolean {
+        if (isReleased) return false
+
+        val delay = effects.delay
+        val echoGraph = delay?.let { aechoGraph(it.taps()) }
+        if (delay != null && echoGraph == null) {
+            Logger.w(TAG, "Echo settings fall outside aecho's accepted ranges; leaving the echo out of the chain")
+        }
+        val echoEntry = echoGraph?.let { "@$FX_ECHO_LABEL:lavfi=[$it]" }
+
+        val reverb = effects.reverb
+        val reverbEntry =
+            when {
+                reverb == null -> null
+                // Already proven impossible on this build; skip straight past the fallback so a
+                // new handle per track does not re-run it, and does not re-log its warning.
+                !reverbFiltersSupported -> null
+                reverbIrPath == null -> {
+                    Logger.w(TAG, "Reverb requested with no impulse response file; leaving the reverb out of the chain")
+                    null
+                }
+                else -> "@$FX_REVERB_LABEL:lavfi=[${convolutionReverbGraph(reverbIrPath, reverb.mix)}]"
+            }
+
+        // Asked for but not expressible. Tracked rather than inferred from the entry list, since
+        // "no echo entry" means one thing when the user wants an echo and another when they do not.
+        val dropped = (delay != null && echoEntry == null) || (reverb != null && reverbEntry == null)
+
+        if (applyFxEntries(listOfNotNull(echoEntry, reverbEntry))) return !dropped
+
+        if (reverbEntry != null && applyFxEntries(listOfNotNull(echoEntry))) {
+            reverbFiltersUnavailable = true
+            Logger.w(TAG, "reverb unavailable: this libmpv build lacks afir/amovie/asplit/amix")
+            return false
+        }
+        // aecho ships with every FFmpeg, so reaching here means something else is wrong with the
+        // chain. Blank the tier anyway: leaving a rejected entry behind would keep every later
+        // equalizer write failing along with it.
+        Logger.w(TAG, "mpv rejected the audio effect chain; continuing with neither echo nor reverb")
+        applyFxEntries(emptyList())
+        return false
+    }
+
+    /** Swap in a new effects tier and rewrite `af` around the other two. */
+    private fun applyFxEntries(entries: List<String>): Boolean {
+        fxEntries = entries
+        return applyAudioFilters()
+    }
+
+    /**
+     * Retune the live wet/dry balance to [mix] without rebuilding the chain.
+     *
+     * `weights` is a runtime-settable AVOption of `amix`, so a mix drag retunes the graph in place
+     * instead of tearing down and re-creating a partitioned convolution for every slider frame.
+     * Same call shape as [setCrossfadeCutoffHz], including the explicit target: mpv's lavfi graph
+     * also holds the `abuffer`/`abuffersink` endpoints, which answer any command with `ENOSYS`.
+     */
+    fun setReverbMix(mix: Float): Boolean {
+        if (isReleased) return false
+        return command("af-command", FX_REVERB_LABEL, "weights", reverbWeights(mix), "amix")
     }
 
     private fun applyCrossfadeChain(
@@ -1052,7 +1183,7 @@ class MpvPlayer private constructor(
  * update. (`MpvLibrary` already forces the NATIVE `LC_NUMERIC` to C for the same class of reason;
  * that does nothing for numbers formatted on the Java side.)
  */
-private fun mpvNumber(value: Float): String = String.format(Locale.ROOT, "%.4f", value)
+internal fun mpvNumber(value: Float): String = String.format(Locale.ROOT, "%.4f", value)
 
 /** mpv reports times in seconds; the whole player stack above speaks milliseconds. */
 private fun secondsToMs(seconds: Double): Long =

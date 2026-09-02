@@ -19,6 +19,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
+import com.maxrave.domain.data.player.AudioEffects
 import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
@@ -31,7 +32,9 @@ import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.audio.BiquadFilter
+import com.maxrave.media3.audio.ConvolutionReverbAudioProcessor
 import com.maxrave.media3.audio.CrossfadeFilterAudioProcessor
+import com.maxrave.media3.audio.EchoAudioProcessor
 import com.maxrave.media3.audio.EqualizerAudioProcessor
 import com.maxrave.media3.audio.EqualizerCurve
 import com.maxrave.media3.audio.SleepFadeAudioProcessor
@@ -160,6 +163,15 @@ internal class CrossfadeExoPlayerAdapter(
      */
     @Volatile
     private var internalEqualizerCurve: EqualizerCurve = EqualizerCurve.FLAT
+
+    /**
+     * The delay and reverb settings in force. Read exactly like [internalEqualizerCurve]: every
+     * player's [EchoAudioProcessor] and [ConvolutionReverbAudioProcessor] sample it on every
+     * buffer, so one write covers both players of a crossfade and every precached one without any
+     * of them having to be found first.
+     */
+    @Volatile
+    private var internalAudioEffects: AudioEffects = AudioEffects.NONE
 
     @Volatile
     private var internalRepeatMode = PlayerConstants.REPEAT_MODE_OFF
@@ -513,6 +525,8 @@ internal class CrossfadeExoPlayerAdapter(
         val crossfadeFilter = CrossfadeFilterAudioProcessor()
         val sleepFade = SleepFadeAudioProcessor { internalSleepFadeFactor }
         val equalizer = EqualizerAudioProcessor { internalEqualizerCurve }
+        val echo = EchoAudioProcessor { internalAudioEffects }
+        val reverb = ConvolutionReverbAudioProcessor { internalAudioEffects }
 
         val perPlayerRenderers =
             object : DefaultRenderersFactory(context) {
@@ -528,11 +542,15 @@ internal class CrossfadeExoPlayerAdapter(
                         .setAudioProcessorChain(
                             DefaultAudioSink.DefaultAudioProcessorChain(
                                 // Equalizer first, matching the desktop graph, where the ten
-                                // `equalizer` entries sit ahead of the crossfade ones in mpv's
-                                // `af` list. All three are linear, so the order does not change
-                                // the response — it decides which stage a boost can clip in, and
-                                // the preamp that makes room for the boost belongs with it.
-                                arrayOf(equalizer, crossfadeFilter, sleepFade),
+                                // `equalizer` entries sit ahead of everything else in mpv's `af`
+                                // list — it decides which stage a boost can clip in, and the
+                                // preamp that makes room for the boost belongs with it. Then the
+                                // two effects, and only then the crossfade filter: an echo tail
+                                // and a reverb tail belong to the track that caused them, so the
+                                // crossfade has to be able to sweep them out along with it rather
+                                // than the other way round. The sleep fade stays last, because it
+                                // is the master attenuation and has to survive everything above.
+                                arrayOf(equalizer, echo, reverb, crossfadeFilter, sleepFade),
                                 SilenceSkippingAudioProcessor(
                                     2_000_000,
                                     (20_000 / 2_000_000).toFloat(),
@@ -1282,6 +1300,22 @@ internal class CrossfadeExoPlayerAdapter(
         preampDb: Float,
     ) {
         internalEqualizerCurve = EqualizerCurve(bandsDb, preampDb)
+    }
+
+    /**
+     * Hand the delay and the reverb a new setting.
+     *
+     * Nothing is pushed anywhere, for the reason [setEqualizer] pushes nothing: the value is
+     * sampled per buffer. A fresh [AudioEffects] is allocated on every call precisely so each
+     * processor can decide whether to re-derive its taps — or rebuild its partitioned impulse
+     * response — with one reference comparison, rather than diffing the whole setting on every
+     * buffer for the whole of playback.
+     *
+     * Not forwarded to `castRemotePlayer`, again like the equalizer: while casting, the audio is
+     * decoded on the receiver and never passes through this pipeline at all.
+     */
+    override fun setAudioEffects(effects: AudioEffects) {
+        internalAudioEffects = effects
     }
 
     override var skipSilenceEnabled: Boolean

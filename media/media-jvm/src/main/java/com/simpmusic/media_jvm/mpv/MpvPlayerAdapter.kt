@@ -1,6 +1,7 @@
 package com.simpmusic.media_jvm.mpv
 
 import com.maxrave.common.MERGING_DATA_TYPE
+import com.maxrave.domain.data.player.AudioEffects
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
@@ -11,6 +12,7 @@ import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
+import com.simpmusic.media_jvm.audio.ReverbIrFiles
 import com.simpmusic.media_jvm.download.getDownloadPath
 import com.simpmusic.media_jvm.memory.MemoryTrimmer
 import kotlinx.coroutines.CancellationException
@@ -1010,6 +1012,12 @@ class MpvPlayerAdapter(
         if (internalEqualizerBands.isNotEmpty() || internalEqualizerPreamp != 0f) {
             setEqualizer(internalEqualizerBands, internalEqualizerPreamp)
         }
+        // Same reasoning for the effects tier, and the same handle to miss: an empty chain means a
+        // track started mid-session would play dry while the switches still read "on".
+        val effects = internalAudioEffects
+        if (effects != AudioEffects.NONE) {
+            setAudioEffects(effects, ensureReverbIr(effects))
+        }
     }
 
     /**
@@ -1057,6 +1065,70 @@ class MpvPlayerAdapter(
         coroutineScope.launch {
             forEachLiveHandle { it.setEqualizer(bandsDb, preampDb) }
         }
+    }
+
+    /** Current effects, so a handle created later can be brought up to the same setting. */
+    @Volatile
+    private var internalAudioEffects: AudioEffects = AudioEffects.NONE
+
+    /**
+     * Whether the reverb entry is actually in the chain right now.
+     *
+     * A mix change is delivered with `af-command`, which fails outright when the filter it names is
+     * not there — and it fails silently as far as the user is concerned, since the slider still
+     * moves. So this is set from what the handles REPORTED, never from what was asked of them: it
+     * stays false when the impulse response could not be written, when libmpv has no convolution
+     * filters, and when there were no live handles to install anything on. That last case is why it
+     * cannot be inferred from the request — with nothing playing, every input to the decision looks
+     * healthy while the chain is empty. A false here only costs the next mix change its shortcut.
+     */
+    @Volatile
+    private var reverbEntryLive: Boolean = false
+
+    override fun setAudioEffects(effects: AudioEffects) {
+        val previous = internalAudioEffects
+        internalAudioEffects = effects
+        // Same hop as setEqualizer, for the same use-after-free reason.
+        coroutineScope.launch {
+            val mix = effects.reverb?.mix
+            if (mix != null && reverbEntryLive && isReverbMixOnlyChange(previous, effects)) {
+                forEachLiveHandle { it.setReverbMix(mix) }
+                return@launch
+            }
+            // Resolved before any handle is touched: generating the impulse response is file I/O,
+            // and `amovie` opens that path while mpv is parsing the chain, so it has to be on disk
+            // already or the whole `af` write fails — equalizer included.
+            val irPath = ensureReverbIr(effects)
+            // Derived from what the handles answered, not from what was asked of them: with
+            // nothing playing this loop runs zero times, and every input to the decision still
+            // looks healthy while the chain is empty. `accepted` is read into its own local first
+            // so the call cannot be short-circuited away once one handle has already said yes.
+            var installedOnAny = false
+            forEachLiveHandle { handle ->
+                val accepted = handle.setAudioEffects(effects, irPath)
+                installedOnAny = installedOnAny || accepted
+            }
+            reverbEntryLive = irPath != null && installedOnAny
+        }
+    }
+
+    /** @return the impulse response path for [effects], or null when there is no reverb to install. */
+    private fun ensureReverbIr(effects: AudioEffects): String? = effects.reverb?.let { ReverbIrFiles.ensure(it.preset)?.absolutePath }
+
+    /**
+     * Whether [next] differs from [previous] only in how much reverb is mixed in.
+     *
+     * Everything else — a different preset, a changed delay, an effect switched on or off — needs
+     * a new graph, because the impulse response and the echo taps are baked into the filter string
+     * at parse time. The mix alone is a live `amix` weight.
+     */
+    private fun isReverbMixOnlyChange(
+        previous: AudioEffects,
+        next: AudioEffects,
+    ): Boolean {
+        val before = previous.reverb ?: return false
+        val after = next.reverb ?: return false
+        return previous.delay == next.delay && before.preset == after.preset
     }
 
     // ========== Listener Management ==========
