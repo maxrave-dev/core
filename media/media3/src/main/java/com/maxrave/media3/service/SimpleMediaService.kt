@@ -197,7 +197,14 @@ internal class SimpleMediaService :
         session: MediaSession,
         startInForegroundRequired: Boolean,
     ) {
-        super.onUpdateNotification(session, startInForegroundRequired)
+        // Media3's user-engaged tracking can go stale across delegate swaps and
+        // demote the service while music is still playing (#2233). Trust the
+        // actual player state: while it plays, keep the service in the foreground.
+        val player = session.player
+        val isActuallyPlaying =
+            player.playWhenReady &&
+                (player.playbackState == Player.STATE_READY || player.playbackState == Player.STATE_BUFFERING)
+        super.onUpdateNotification(session, startInForegroundRequired || isActuallyPlaying)
     }
 
     @UnstableApi

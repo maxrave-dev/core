@@ -300,6 +300,7 @@ internal class CrossfadeExoPlayerAdapter(
         val player: ExoPlayer,
         val mediaItem: GenericMediaItem,
         val filter: CrossfadeFilterAudioProcessor? = null,
+        val evictionListener: Player.Listener? = null,
     )
 
     // VideoId -> PrecachedPlayer
@@ -1496,8 +1497,8 @@ internal class CrossfadeExoPlayerAdapter(
                         )
                     }
 
-                    // Use precached player if available
-                    val cachedPlayerEntry = precachedPlayers.remove(videoId)
+                    // Use precached player if available and healthy
+                    val cachedPlayerEntry = takeHealthyPrecachedPlayer(videoId)
                     val player: ExoPlayer
                     val playerFilter: CrossfadeFilterAudioProcessor?
                     if (cachedPlayerEntry?.player != null) {
@@ -1532,31 +1533,12 @@ internal class CrossfadeExoPlayerAdapter(
                     // 4. Setup our listener on new player
                     setupPlayerListenerInternal(player)
 
-                    // 5. Swap ForwardingPlayer delegate (moves MediaSession's listeners from old to new)
-                    forwardingPlayer.swapDelegate(player)
-
-                    // 5b. Notify MediaSession about the new media item
-                    // The MediaItem was set before the swap (either during precache or above),
-                    // so MediaSession's listener missed the onMediaItemTransition event.
-                    // play() below will trigger onIsPlayingChanged which causes MediaSession
-                    // to re-query metadata, but this explicit notify is safer and ensures
-                    // the notification updates immediately even if play() is delayed.
-                    forwardingPlayer.notifyMediaItemChanged()
-
-                    // 6. NOW release old player (it has no listeners anymore)
-                    if (oldPlayer != null && oldPlayer !== player) {
-                        try {
-                            oldPlayer.stop()
-                            oldPlayer.release()
-                        } catch (e: Exception) {
-                            Logger.w(TAG, "Error releasing old player: ${e.message}")
-                        }
-                    }
-
-                    // Audio focus is held at the adapter level (see Audio Focus section),
-                    // not per-player, so it survives this swap (#2155).
-
-                    // Apply settings
+                    // 4b. Apply settings and set the play state BEFORE swapping the
+                    // MediaSession delegate. The session must never observe this player
+                    // with playWhenReady=false while a track should be playing: media3
+                    // treats that as the user disengaging, arms its user-engaged
+                    // foreground-service timeout and demotes the service 10 minutes
+                    // later in the middle of playback (#2233).
                     player.volume = internalVolume
                     player.playbackParameters = PlaybackParameters(internalPlaybackSpeed, internalPlaybackPitch)
                     player.skipSilenceEnabled = internalSkipSilence
@@ -1576,6 +1558,28 @@ internal class CrossfadeExoPlayerAdapter(
                         player.pause()
                         transitionToState(InternalState.READY)
                     }
+
+                    // 5. Swap ForwardingPlayer delegate (moves MediaSession's listeners from old to new)
+                    forwardingPlayer.swapDelegate(player)
+
+                    // 5b. Notify MediaSession about the new media item and play state.
+                    // The MediaItem was set and play() was called before the swap, so
+                    // MediaSession's listener missed those events; this explicit notify
+                    // makes it re-read the player (metadata and playWhenReady=true).
+                    forwardingPlayer.notifyMediaItemChanged()
+
+                    // 6. NOW release old player (it has no listeners anymore)
+                    if (oldPlayer != null && oldPlayer !== player) {
+                        try {
+                            oldPlayer.stop()
+                            oldPlayer.release()
+                        } catch (e: Exception) {
+                            Logger.w(TAG, "Error releasing old player: ${e.message}")
+                        }
+                    }
+
+                    // Audio focus is held at the adapter level (see Audio Focus section),
+                    // not per-player, so it survives this swap (#2155).
 
                     forwardingPlayer.suppressPlaybackEnded = false
 
@@ -1974,7 +1978,7 @@ internal class CrossfadeExoPlayerAdapter(
                 Logger.d(TAG, "Starting crossfade to track $nextIndex")
 
                 // Get or create secondary player
-                val cachedPlayerEntry = precachedPlayers.remove(nextVideoId)
+                val cachedPlayerEntry = takeHealthyPrecachedPlayer(nextVideoId)
                 val nextPlayer: ExoPlayer
                 val nextFilter: CrossfadeFilterAudioProcessor?
                 if (cachedPlayerEntry?.player != null) {
@@ -2886,8 +2890,22 @@ internal class CrossfadeExoPlayerAdapter(
                         try {
                             val pwf = createExoPlayerInstance()
                             pwf.player.setMediaItem(mediaItem.toMedia3MediaItem())
+                            // A precache player that fails (e.g. stream URL resolution
+                            // during a network loss) must leave the map, both so it is
+                            // never swapped in at a transition and so the track can be
+                            // precached again once connectivity returns (#2239).
+                            val evictionListener =
+                                object : Player.Listener {
+                                    override fun onPlayerError(error: PlaybackException) {
+                                        if (precachedPlayers[mediaItem.mediaId]?.player !== pwf.player) return
+                                        precachedPlayers.remove(mediaItem.mediaId)
+                                        Logger.w(TAG, "Evicting failed precached player for ${mediaItem.mediaId}: ${error.errorCodeName}")
+                                        coroutineScope.launch { cleanupPlayerInternal(pwf.player) }
+                                    }
+                                }
+                            pwf.player.addListener(evictionListener)
                             pwf.player.prepare()
-                            precachedPlayers[mediaItem.mediaId] = PrecachedPlayer(pwf.player, mediaItem, pwf.filter)
+                            precachedPlayers[mediaItem.mediaId] = PrecachedPlayer(pwf.player, mediaItem, pwf.filter, evictionListener)
                             Logger.d(TAG, "Precached player for index $idx")
                         } catch (e: Exception) {
                             Logger.e(TAG, "Precaching error for $idx: ${e.message}")
@@ -2906,6 +2924,24 @@ internal class CrossfadeExoPlayerAdapter(
     private fun cancelPrecaching() {
         precacheJob?.cancel()
         precacheJob = null
+    }
+
+    /**
+     * Remove and return the precached player for [videoId], or null if there is none
+     * or its preparation already failed. A failed player sits in STATE_IDLE with
+     * [ExoPlayer.getPlayerError] set; swapping it in would only surface that stale
+     * error and stop playback, so it is released here instead (#2239).
+     */
+    private fun takeHealthyPrecachedPlayer(videoId: String): PrecachedPlayer? {
+        val cached = precachedPlayers.remove(videoId) ?: return null
+        cached.evictionListener?.let { cached.player.removeListener(it) }
+        val error = cached.player.playerError
+        if (error != null) {
+            Logger.w(TAG, "Discarding failed precached player for $videoId: ${error.errorCodeName}")
+            cleanupPlayerInternal(cached.player)
+            return null
+        }
+        return cached
     }
 
     private fun clearPrecacheExceptCurrentInternal() {
