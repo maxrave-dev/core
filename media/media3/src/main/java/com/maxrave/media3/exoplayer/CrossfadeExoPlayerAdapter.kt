@@ -1465,9 +1465,7 @@ internal class CrossfadeExoPlayerAdapter(
         startPositionMs: Long,
         shouldPlay: Boolean,
     ) {
-        if (index !in playlist.indices) return
-
-        val mediaItem = playlist[index]
+        val mediaItem = playlist.getOrNull(index) ?: return
         val videoId = mediaItem.mediaId
 
         // While casting, playback starts on the receiver — never on a local ExoPlayer.
@@ -1496,34 +1494,31 @@ internal class CrossfadeExoPlayerAdapter(
                         )
                     }
 
-                    // Use precached player if available
+                    // Resolve player instance (promote precached player if available, else instantiate fresh)
                     val cachedPlayerEntry = precachedPlayers.remove(videoId)
-                    val player: ExoPlayer
-                    val playerFilter: CrossfadeFilterAudioProcessor?
-                    if (cachedPlayerEntry?.player != null) {
-                        Logger.d(TAG, "Using precached player for $videoId")
-                        player = cachedPlayerEntry.player
-                        playerFilter = cachedPlayerEntry.filter
-                    } else {
-                        Logger.d(TAG, "Creating new player for $videoId")
-                        val pwf = createExoPlayerInstance()
-                        player = pwf.player
-                        playerFilter = pwf.filter
-                        player.setMediaItem(mediaItem.toMedia3MediaItem())
-                        player.prepare()
-                    }
+                    val (player, playerFilter) =
+                        if (cachedPlayerEntry?.player != null) {
+                            Logger.d(TAG, "Promoting precached player for $videoId")
+                            cachedPlayerEntry.player to cachedPlayerEntry.filter
+                        } else {
+                            Logger.d(TAG, "Instantiating fresh player for $videoId")
+                            val pwf = createExoPlayerInstance()
+                            pwf.player.apply {
+                                setMediaItem(mediaItem.toMedia3MediaItem())
+                                prepare()
+                            }
+                            pwf.player to pwf.filter
+                        }
 
-                    // === CAREFUL ORDER for ForwardingPlayer integration ===
-
-                    // 1. Remove our active listener from old player
+                    // 1. Teardown active listeners and ongoing crossfade jobs before swapping
                     cleanupPlayerListenerInternal()
                     stopPositionUpdates()
                     crossfadeJob?.cancel()
                     crossfadeJob = null
                     setCrossfading(false)
 
-                    // 2. Save old player reference
-                    val oldPlayer = currentPlayer
+                    // 2. Save previous player reference
+                    val previousPlayer = currentPlayer
 
                     // 3. Set new player as current
                     currentPlayer = player
@@ -1532,39 +1527,22 @@ internal class CrossfadeExoPlayerAdapter(
                     // 4. Setup our listener on new player
                     setupPlayerListenerInternal(player)
 
-                    // 5. Swap ForwardingPlayer delegate (moves MediaSession's listeners from old to new)
-                    forwardingPlayer.swapDelegate(player)
+                    // 5. Swap between previous and current
 
-                    // 5b. Notify MediaSession about the new media item
-                    // The MediaItem was set before the swap (either during precache or above),
-                    // so MediaSession's listener missed the onMediaItemTransition event.
-                    // play() below will trigger onIsPlayingChanged which causes MediaSession
-                    // to re-query metadata, but this explicit notify is safer and ensures
-                    // the notification updates immediately even if play() is delayed.
-                    forwardingPlayer.notifyMediaItemChanged()
+                    // Configure playback parameters/initial play state prior to delegate swapping.
+                    // Swapping the delegate before starting playback causes MediaSession to observe an idle state,
+                    // which arms the Android foreground service demotion watchdog.
+                    player.apply {
+                        // Apply settings
+                        volume = internalVolume
+                        playbackParameters = PlaybackParameters(internalPlaybackSpeed, internalPlaybackPitch)
+                        skipSilenceEnabled = internalSkipSilence
 
-                    // 6. NOW release old player (it has no listeners anymore)
-                    if (oldPlayer != null && oldPlayer !== player) {
-                        try {
-                            oldPlayer.stop()
-                            oldPlayer.release()
-                        } catch (e: Exception) {
-                            Logger.w(TAG, "Error releasing old player: ${e.message}")
+                        // Seek if needed
+                        if (startPositionMs > 0) {
+                            seekTo(startPositionMs)
+                            cachedPosition = startPositionMs
                         }
-                    }
-
-                    // Audio focus is held at the adapter level (see Audio Focus section),
-                    // not per-player, so it survives this swap (#2155).
-
-                    // Apply settings
-                    player.volume = internalVolume
-                    player.playbackParameters = PlaybackParameters(internalPlaybackSpeed, internalPlaybackPitch)
-                    player.skipSilenceEnabled = internalSkipSilence
-
-                    // Seek if needed
-                    if (startPositionMs > 0) {
-                        player.seekTo(startPositionMs)
-                        cachedPosition = startPositionMs
                     }
 
                     // Auto-play if requested
@@ -1577,9 +1555,20 @@ internal class CrossfadeExoPlayerAdapter(
                         transitionToState(InternalState.READY)
                     }
 
-                    forwardingPlayer.suppressPlaybackEnded = false
+                    forwardingPlayer.swapDelegate(player)
+                    forwardingPlayer.notifyMediaItemChanged()
 
-                    // Start position updates
+                    // Asynchronously release the old player instance to prevent blocking the transition
+                    if (previousPlayer != null && previousPlayer !== player) {
+                        runCatching {
+                            previousPlayer.stop()
+                            previousPlayer.release()
+                        }.onFailure {
+                            Logger.w(TAG, "Failed to release previous player: ${it.message}")
+                        }
+                    }
+
+                    forwardingPlayer.suppressPlaybackEnded = false
                     startPositionUpdates()
 
                     // Eagerly load audio metadata for auto crossfade calculations
@@ -1592,8 +1581,7 @@ internal class CrossfadeExoPlayerAdapter(
                     triggerPrecachingInternal()
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
-                    Logger.e(TAG, "Load track error: ${e.message}", e)
-                    forwardingPlayer.suppressPlaybackEnded = false
+                    Logger.e(TAG, "Failed to load and play track: ${e.message}", e)
                     transitionToState(InternalState.ERROR)
                 }
             }
