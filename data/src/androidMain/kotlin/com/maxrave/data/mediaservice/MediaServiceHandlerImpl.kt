@@ -459,9 +459,17 @@ internal class MediaServiceHandlerImpl(
                 }
             val playbackSpeedPitchJob =
                 launch {
-                    combine(dataStoreManager.playbackSpeed, dataStoreManager.pitch) { speed, pitch ->
-                        Pair(speed, pitch)
-                    }.collectLatest { pair ->
+                    combine(
+                        dataStoreManager.playbackSpeed,
+                        dataStoreManager.pitch,
+                        dataStoreManager.crossfadeEnabled,
+                    ) { speed, pitch, crossfade ->
+                        if (crossfade == TRUE) {
+                            Pair(1.0f, 0)
+                        } else {
+                            Pair(speed, pitch)
+                        }
+                    }.distinctUntilChanged().collectLatest { pair ->
                         Logger.w(TAG, "Playback speed: ${pair.first}, Pitch: ${pair.second}")
                         player.playbackParameters =
                             GenericPlaybackParameters(
