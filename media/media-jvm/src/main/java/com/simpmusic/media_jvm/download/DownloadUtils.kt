@@ -4,16 +4,11 @@ import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
+import com.maxrave.domain.notification.DesktopNotificationManager
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
-import dev.nucleusframework.notification.AuthorizationOption
-import dev.nucleusframework.notification.NotificationCenter
-import dev.nucleusframework.notification.common.NotificationHandle
-import dev.nucleusframework.notification.common.NotificationManager
-import dev.nucleusframework.notification.common.NotificationResult
-import dev.nucleusframework.notification.common.notification
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,11 +25,14 @@ private const val TAG = "DownloadUtils"
 private const val DOWNLOAD_STARTED_TITLE = "Downloading"
 private const val DOWNLOAD_FINISHED_TITLE = "Download complete"
 private const val DOWNLOAD_FAILED_TITLE = "Download failed"
+private const val ACTIVE_DOWNLOAD_NOTIFICATION_ID = "downloads.active"
+private const val DOWNLOAD_RESULT_NOTIFICATION_ID = "downloads.result"
 
 internal class DownloadUtils(
     private val dataStoreManager: DataStoreManager,
     private val streamRepository: StreamRepository,
     private val songRepository: SongRepository,
+    private val desktopNotificationManager: DesktopNotificationManager,
 ) : DownloadHandler {
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -47,37 +45,6 @@ internal class DownloadUtils(
     override val downloadTask: StateFlow<Map<String, Int>> get() = _downloadTask
 
     val downloadingVideoIds = MutableStateFlow<MutableSet<String>>(mutableSetOf())
-
-    init {
-        requestNotificationAuthorization()
-    }
-
-    /**
-     * Ask macOS for permission to post notifications.
-     *
-     * Required, and easy to miss: `notification-common` does not expose authorization at all, and
-     * the macOS dispatcher never asks — its `initialize()` only registers a delegate. Without this
-     * call `UNUserNotificationCenter` accepts every notification and silently shows none, which
-     * looks exactly like the feature not being wired up.
-     *
-     * Safe to call on Windows and Linux: `requestAuthorization` short-circuits through
-     * `unavailableReason` when the macOS native bridge is not loaded, so it becomes a no-op there.
-     */
-    private fun requestNotificationAuthorization() {
-        runCatching {
-            NotificationCenter.requestAuthorization(
-                setOf(AuthorizationOption.ALERT, AuthorizationOption.SOUND),
-            ) { granted, error ->
-                if (granted) {
-                    Logger.d(TAG, "Notification permission granted")
-                } else {
-                    Logger.w(TAG, "Notification permission not granted: ${error ?: "denied by user"}")
-                }
-            }
-        }.onFailure {
-            Logger.w(TAG, "Could not request notification permission: ${it.message}")
-        }
-    }
 
     override suspend fun downloadTrack(
         videoId: String,
@@ -130,7 +97,6 @@ internal class DownloadUtils(
 
     private val batchLock = Any()
     private val activeDownloads = mutableSetOf<String>()
-    private var batchHandle: NotificationHandle? = null
     private var batchCompleted = 0
     private var batchFailed = 0
     private var batchTotal = 0
@@ -150,7 +116,11 @@ internal class DownloadUtils(
             lastSongTitle = songTitle
             // Only one track is known at this point, so name it. If more join the batch, the
             // closing notification switches to a count.
-            batchHandle = postNotification(DOWNLOAD_STARTED_TITLE, songTitle)
+            desktopNotificationManager.post(
+                id = ACTIVE_DOWNLOAD_NOTIFICATION_ID,
+                title = DOWNLOAD_STARTED_TITLE,
+                message = songTitle,
+            )
         }
         batchTotal++
     }
@@ -165,8 +135,7 @@ internal class DownloadUtils(
         if (succeeded) batchCompleted++ else batchFailed++
         if (activeDownloads.isEmpty()) {
             // Clear the "started" notification so the tray shows one line about this batch, not two.
-            batchHandle?.let { handle -> runCatching { handle.dismiss() } }
-            batchHandle = null
+            desktopNotificationManager.dismiss(ACTIVE_DOWNLOAD_NOTIFICATION_ID)
             // A single-track batch says which track — that is what the user was waiting on. Several
             // tracks can only be summarised, since one notification cannot list them all.
             val summary =
@@ -176,43 +145,13 @@ internal class DownloadUtils(
                     batchFailed == 0 -> "$batchCompleted songs downloaded"
                     else -> "$batchCompleted downloaded, $batchFailed failed"
                 }
-            postNotification(
-                if (batchCompleted == 0) DOWNLOAD_FAILED_TITLE else DOWNLOAD_FINISHED_TITLE,
-                summary,
+            desktopNotificationManager.post(
+                id = DOWNLOAD_RESULT_NOTIFICATION_ID,
+                title = if (batchCompleted == 0) DOWNLOAD_FAILED_TITLE else DOWNLOAD_FINISHED_TITLE,
+                message = summary,
             )
         }
     }
-
-    /**
-     * Best-effort by design: a headless session, a Linux box with no notification daemon, or a user
-     * who muted the app all end up here, and none of them should be able to break a download that
-     * already finished. Hence the availability check and the surrounding runCatching.
-     */
-    private fun postNotification(
-        headline: String,
-        message: String,
-    ): NotificationHandle? =
-        runCatching {
-            if (!NotificationManager.isAvailable()) {
-                // Most common cause on macOS: the process is not running from inside a .app bundle
-                // (e.g. `gradlew jvmRun`), where UNUserNotificationCenter has no bundle identifier
-                // to attach to. Also covers a Linux box with no notification daemon.
-                Logger.w(TAG, "Desktop notifications unavailable on this platform/session")
-                return null
-            }
-            when (val result = notification(title = headline, message = message).send()) {
-                is NotificationResult.Success -> {
-                    Logger.d(TAG, "Posted notification: $headline — $message")
-                    result.handle
-                }
-                is NotificationResult.Failure -> {
-                    Logger.w(TAG, "Notification rejected: ${result.reason}")
-                    null
-                }
-            }
-        }.onFailure {
-            Logger.w(TAG, "Could not post download notification: ${it.message}")
-        }.getOrNull()
 
     override fun removeDownload(videoId: String) {
         File(getDownloadPath())

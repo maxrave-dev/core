@@ -3,9 +3,11 @@ package com.simpmusic.media_jvm.di
 import com.maxrave.common.Config.SERVICE_SCOPE
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
+import com.maxrave.domain.notification.DesktopNotificationManager
 import com.maxrave.domain.repository.CacheRepository
 import com.simpmusic.media_jvm.download.DownloadUtils
 import com.simpmusic.media_jvm.mpv.MpvPlayerAdapter
+import com.simpmusic.media_jvm.notification.NucleusDesktopNotificationManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -49,11 +51,17 @@ private val desktopPlayerModule =
                 override suspend fun getAllCacheKeys(cacheName: String): List<String> = emptyList()
             }
         }
+        single<DesktopNotificationManager> {
+            NucleusDesktopNotificationManager(
+                dataStoreManager = get(),
+            )
+        }
         single<DownloadHandler> {
             DownloadUtils(
                 dataStoreManager = get(),
                 streamRepository = get(),
                 songRepository = get(),
+                desktopNotificationManager = get(),
             )
         }
     }
