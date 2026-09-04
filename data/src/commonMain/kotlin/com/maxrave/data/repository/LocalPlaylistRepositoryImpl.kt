@@ -1012,4 +1012,45 @@ internal class LocalPlaylistRepositoryImpl(
 
             emit(LocalResource.Success("Position updated"))
         }.flowOn(Dispatchers.IO)
+
+    /**
+     * Move a song within an unsynced local playlist.
+     * Same position bookkeeping as [moveItemInSyncedPlaylist], without the YouTube API call:
+     * shift the items between from/to by one, then place the moved item at the target position.
+     */
+    override fun moveItemInLocalPlaylist(
+        playlistId: Long,
+        fromIndex: Int,
+        toIndex: Int,
+    ): Flow<LocalResource<String>> =
+        flow<LocalResource<String>> {
+            if (fromIndex == toIndex) {
+                emit(LocalResource.Success("No change"))
+                return@flow
+            }
+            emit(LocalResource.Loading())
+
+            // Get all pairs ordered by position to resolve indexes
+            val allPairs = localDataSource.getAllPlaylistPairSongByPosition(playlistId)
+            if (fromIndex !in allPairs.indices || toIndex !in allPairs.indices) {
+                emit(LocalResource.Error("Index out of bounds"))
+                return@flow
+            }
+
+            val movedPair = allPairs[fromIndex]
+            val movedPosition = movedPair.position
+            val targetPosition = allPairs[toIndex].position
+
+            if (fromIndex < toIndex) {
+                // Moving down: shift items between (from, to] backward by 1
+                localDataSource.shiftPositionsBackward(playlistId, movedPosition, targetPosition)
+            } else {
+                // Moving up: shift items between [to, from) forward by 1
+                localDataSource.shiftPositionsForward(playlistId, targetPosition, movedPosition)
+            }
+            // Place the moved item at the target position
+            localDataSource.editPositionOfSongInPlaylist(playlistId, movedPair.songId, targetPosition)
+
+            emit(LocalResource.Success("Position updated"))
+        }.flowOn(Dispatchers.IO)
 }
