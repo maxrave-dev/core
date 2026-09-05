@@ -1,5 +1,6 @@
 package com.maxrave.data.di
 
+import com.maxrave.common.AppIdentity
 import com.maxrave.common.Config
 import com.maxrave.data.listentogether.ListenTogetherPlaybackBridge
 import com.maxrave.data.listentogether.ListenTogetherPrefs
@@ -26,6 +27,7 @@ val listenTogetherModule =
         single {
             ListenTogetherClient(
                 clientVersion = "SimpMusic",
+                userAgent = get<AppIdentity>().userAgent,
                 // Read per connection attempt, so a server changed in settings applies next time.
                 serverUrl = {
                     runBlocking { get<DataStoreManager>().getString(ListenTogetherPrefs.SERVER_URL).first().orEmpty() }

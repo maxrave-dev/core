@@ -25,7 +25,12 @@ class LiveRoomSyncTest {
     private val MAX_TRAVEL_MS = 5_000L
 
     private fun session(version: String) =
-        ListenTogetherSession(ListenTogetherClient(clientVersion = version))
+        ListenTogetherSession(
+            ListenTogetherClient(
+                clientVersion = version,
+                userAgent = "SimpMusic/test (org.simpmusic.test; JVM)",
+            ),
+        )
 
     private suspend fun <T> eventually(
         label: String,

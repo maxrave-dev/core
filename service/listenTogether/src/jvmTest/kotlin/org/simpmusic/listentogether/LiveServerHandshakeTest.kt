@@ -31,7 +31,11 @@ class LiveServerHandshakeTest {
     @Test
     fun handshakeAndRoomCreationAgainstTheRealServer() =
         runBlocking {
-            val client = ListenTogetherClient(clientVersion = "simpmusic-live-test")
+            val client =
+                ListenTogetherClient(
+                    clientVersion = "simpmusic-live-test",
+                    userAgent = "SimpMusic/test (org.simpmusic.test; JVM)",
+                )
             val received = Channel<ListenTogetherEvent>(Channel.UNLIMITED)
             val collector = launch { client.events.collect { received.send(it) } }
 

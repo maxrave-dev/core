@@ -1,14 +1,17 @@
 package com.maxrave.data.di.loader
 
+import com.maxrave.common.AppIdentity
 import com.maxrave.data.di.databaseModule
 import com.maxrave.data.di.listenTogetherModule
 import com.maxrave.data.di.mediaHandlerModule
 import com.maxrave.data.di.repositoryModule
 import org.koin.core.context.loadKoinModules
+import org.koin.dsl.module
 
-fun loadAllModules() {
+fun loadAllModules(appIdentity: AppIdentity) {
     loadKoinModules(
         listOf(
+            module { single { appIdentity } },
             databaseModule,
             repositoryModule,
         ),

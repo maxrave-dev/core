@@ -12,6 +12,7 @@ package org.simpmusic.listentogether
 import com.maxrave.ktorext.getEngine
 import com.maxrave.logger.Logger
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.UserAgent
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocketSession
@@ -92,6 +93,8 @@ sealed interface ListenTogetherEvent {
  */
 class ListenTogetherClient(
     private val clientVersion: String,
+    /** Application identity for the HTTP upgrade request, separate from protocol capabilities. */
+    userAgent: String,
     /**
      * Read on every connection attempt rather than captured once, so changing the server in
      * settings takes effect on the next connect instead of needing the screen to be recreated.
@@ -111,6 +114,7 @@ class ListenTogetherClient(
 
     private val client: HttpClient =
         HttpClient(getEngine()) {
+            install(UserAgent) { agent = userAgent }
             install(WebSockets)
         }
 
