@@ -7,6 +7,8 @@ import kotlinx.serialization.Serializable
 data class Lyrics(
     @SerialName("lyrics")
     val lyrics: LyricsX? = null,
+    @SerialName("songwriters")
+    val songwriters: List<String>? = null,
 ) {
     @Serializable
     data class LyricsX(

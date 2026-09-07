@@ -123,6 +123,7 @@ internal fun org.simpmusic.lyrics.domain.Lyrics.toLyrics(): Lyrics {
             error = false,
             lines = lines,
             syncType = this.lyrics!!.syncType,
+            songwriters = this.songwriters,
         )
     } else {
         return Lyrics(

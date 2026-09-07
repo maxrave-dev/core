@@ -6,4 +6,5 @@ data class TimeLine(
     val bufferedPercent: Int,
     val loading: Boolean = true,
     val isCrossfading: Boolean = false,
+    val lastUpdateTimeMs: Long = 0L,
 )

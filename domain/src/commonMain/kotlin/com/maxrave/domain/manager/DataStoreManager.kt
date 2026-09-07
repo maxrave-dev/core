@@ -519,6 +519,18 @@ interface DataStoreManager {
 
     suspend fun setRomanizationLanguages(languages: String)
 
+    val showLyricsTranslation: Flow<Boolean>
+
+    suspend fun setShowLyricsTranslation(show: Boolean)
+
+    val showLyricsRomanization: Flow<Boolean>
+
+    suspend fun setShowLyricsRomanization(show: Boolean)
+
+    val showLyricsOriginal: Flow<Boolean>
+
+    suspend fun setShowLyricsOriginal(show: Boolean)
+
     val explicitContentEnabled: Flow<String>
 
     suspend fun setExplicitContentEnabled(enabled: Boolean)

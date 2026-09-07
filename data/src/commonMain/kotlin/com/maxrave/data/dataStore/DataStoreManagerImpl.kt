@@ -2,6 +2,7 @@ package com.maxrave.data.dataStore
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -988,6 +989,45 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val showLyricsTranslation: Flow<Boolean> =
+        settingsDataStore.data.map { preferences ->
+            preferences[SHOW_LYRICS_TRANSLATION] ?: true
+        }
+
+    override suspend fun setShowLyricsTranslation(show: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[SHOW_LYRICS_TRANSLATION] = show
+            }
+        }
+    }
+
+    override val showLyricsRomanization: Flow<Boolean> =
+        settingsDataStore.data.map { preferences ->
+            preferences[SHOW_LYRICS_ROMANIZATION] ?: true
+        }
+
+    override suspend fun setShowLyricsRomanization(show: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[SHOW_LYRICS_ROMANIZATION] = show
+            }
+        }
+    }
+
+    override val showLyricsOriginal: Flow<Boolean> =
+        settingsDataStore.data.map { preferences ->
+            preferences[SHOW_LYRICS_ORIGINAL] ?: true
+        }
+
+    override suspend fun setShowLyricsOriginal(show: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[SHOW_LYRICS_ORIGINAL] = show
+            }
+        }
+    }
+
     override val usingProxy =
         settingsDataStore.data.map { preferences ->
             preferences[USING_PROXY] ?: FALSE
@@ -1818,6 +1858,9 @@ internal class DataStoreManagerImpl(
         val NOW_PLAYING_STYLE = stringPreferencesKey("now_playing_style")
         val LYRICS_STYLE = stringPreferencesKey("lyrics_style")
         val ROMANIZATION_LANGUAGES = stringPreferencesKey("romanization_languages")
+        val SHOW_LYRICS_TRANSLATION = booleanPreferencesKey("show_lyrics_translation")
+        val SHOW_LYRICS_ROMANIZATION = booleanPreferencesKey("show_lyrics_romanization")
+        val SHOW_LYRICS_ORIGINAL = booleanPreferencesKey("show_lyrics_original")
         val USING_PROXY = stringPreferencesKey("using_proxy")
         val PROXY_TYPE = stringPreferencesKey("proxy_type")
         val PROXY_HOST = stringPreferencesKey("proxy_host")

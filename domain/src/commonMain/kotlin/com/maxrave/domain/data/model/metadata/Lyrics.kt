@@ -8,6 +8,7 @@ data class Lyrics(
     val lines: List<Line>?,
     val syncType: String?,
     val simpMusicLyrics: SimpMusicLyrics? = null,
+    val songwriters: List<String>? = null,
 )
 
 @Serializable

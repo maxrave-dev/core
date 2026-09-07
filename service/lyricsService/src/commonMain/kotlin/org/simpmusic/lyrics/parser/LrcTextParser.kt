@@ -131,53 +131,220 @@ fun parseTtmlLyrics(data: String): Lyrics {
     val linesLyrics = ArrayList<Lyrics.LyricsX.Line>()
     var hasWordTiming = false
 
-    // Match each <p ...>...</p> element (use [\s\S] instead of . with DOT_MATCHES_ALL)
-    val pRegex = Regex("""<p\s[^>]*begin="([^"]+)"[^>]*end="([^"]+)"[^>]*>([\s\S]*?)</p>""")
-    // Match each <span ...>word</span> element
-    val spanRegex = Regex("""<span\s[^>]*begin="([^"]+)"[^>]*end="([^"]+)"[^>]*>(.*?)</span>""")
+    // Extract songwriters from metadata if present
+    val songwriterRegex = Regex("""<songwriter>([^<]+)</songwriter>""", RegexOption.IGNORE_CASE)
+    val songwriters = songwriterRegex.findAll(data)
+        .map { unescapeXml(it.groupValues[1].trim()) }
+        .filter { it.isNotEmpty() }
+        .distinct()
+        .toList()
+
+    // Match each <p ...>...</p> element regardless of attribute order
+    val pRegex = Regex("""<p\b([^>]*)>([\s\S]*?)</p>""", RegexOption.IGNORE_CASE)
+    // Match leaf <span ...>text</span> (no nested children) and capture trailing text
+    val spanRegex = Regex("""<span\b([^>]*)>([^<]*)</span>([^<]*)""", RegexOption.IGNORE_CASE)
+    val beginAttrRegex = Regex("""begin=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+    val endAttrRegex = Regex("""end=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 
     for (pMatch in pRegex.findAll(data)) {
-        val lineBegin = parseTtmlTime(pMatch.groupValues[1])
-        val lineEnd = parseTtmlTime(pMatch.groupValues[2])
-        val innerContent = pMatch.groupValues[3]
+        val pAttrs = pMatch.groupValues[1]
+        val innerContent = pMatch.groupValues[2]
 
-        val spans = spanRegex.findAll(innerContent).toList()
+        val lineBeginStr = beginAttrRegex.find(pAttrs)?.groupValues?.get(1) ?: continue
+        val lineEndStr = endAttrRegex.find(pAttrs)?.groupValues?.get(1)
+        val lineBegin = parseTtmlTime(lineBeginStr)
+        val lineEnd = lineEndStr?.let { parseTtmlTime(it) } ?: (lineBegin + 3000L)
 
-        if (spans.isNotEmpty()) {
+        val roleRegex = Regex("""(?:role|agent|class|voice)=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        val roleMatch = roleRegex.find(pAttrs)?.groupValues?.get(1)?.lowercase() ?: ""
+        val isPLineBg = roleMatch.contains("bg") || roleMatch.contains("background")
+        val isV2 = roleMatch.contains("v2") || roleMatch.contains("voice2") || roleMatch.contains("singer2") || roleMatch == "2"
+
+        // --- Extract inline background vocal wrappers: <span ttm:role="x-bg">...nested spans...</span> ---
+        // Use balanced tag depth scanner so we don't greedily swallow subsequent main vocal spans in the same <p>.
+        val bgWrappers = extractBgWrappers(innerContent)
+        var bgContent: String? = null
+        var mainContent = innerContent
+        if (bgWrappers.isNotEmpty()) {
+            val bgParts = StringBuilder()
+            for (wrapper in bgWrappers.reversed()) {
+                mainContent = mainContent.removeRange(wrapper.startIndex, wrapper.endIndex)
+            }
+            for (wrapper in bgWrappers) {
+                bgParts.append(wrapper.innerContent)
+            }
+            bgContent = bgParts.toString()
+        }
+
+        // --- Process main content (non-bg spans) ---
+        val mainSpans = spanRegex.findAll(mainContent).toList()
+        if (mainSpans.isNotEmpty()) {
             hasWordTiming = true
-            // Build word-by-word content with <MM:SS.mm> timing format for rich sync
             val wordParts = StringBuilder()
-            for (span in spans) {
-                val spanBegin = parseTtmlTime(span.groupValues[1])
-                val word = span.groupValues[3].trim()
-                if (word.isNotEmpty()) {
+            if (isPLineBg) wordParts.append("[bg]")
+            if (isV2) wordParts.append("[v2]")
+
+            for (i in mainSpans.indices) {
+                val span = mainSpans[i]
+                val spanAttrs = span.groupValues[1]
+                val innerText = unescapeXml(span.groupValues[2])
+                val trailingRaw = unescapeXml(span.groupValues[3])
+                val hasTrailingWhitespace = innerText.endsWith(" ") || trailingRaw.contains(" ") || trailingRaw.contains("\n")
+                val wordText = innerText.trimEnd()
+                val space = if (hasTrailingWhitespace && i < mainSpans.size - 1) " " else ""
+                val spanBeginStr = beginAttrRegex.find(spanAttrs)?.groupValues?.get(1)
+                val spanEndStr = endAttrRegex.find(spanAttrs)?.groupValues?.get(1)
+
+                if (spanBeginStr != null && (wordText.isNotEmpty() || space.isNotEmpty())) {
+                    val spanBegin = parseTtmlTime(spanBeginStr)
                     val beginFormatted = formatMsToLrc(spanBegin)
-                    wordParts.append("<$beginFormatted>$word ")
+                    val nextSpanBeginStr = mainSpans.getOrNull(i + 1)?.let { beginAttrRegex.find(it.groupValues[1])?.groupValues?.get(1) }
+                    val nextSpanBegin = nextSpanBeginStr?.let { parseTtmlTime(it) }
+                    val spanEnd = spanEndStr?.let { parseTtmlTime(it) }
+
+                    if (spanEnd != null && nextSpanBegin != null && spanEnd < nextSpanBegin) {
+                        val endFormatted = formatMsToLrc(spanEnd)
+                        wordParts.append("<$beginFormatted>$wordText<$endFormatted>$space")
+                    } else {
+                        wordParts.append("<$beginFormatted>$wordText$space")
+                    }
+                } else if (wordText.isNotEmpty() || space.isNotEmpty()) {
+                    wordParts.append(wordText + space)
                 }
             }
+
+            val mainFirstBeginRaw = mainSpans.firstNotNullOfOrNull {
+                beginAttrRegex.find(it.groupValues[1])?.groupValues?.get(1)
+            }?.let { parseTtmlTime(it) } ?: lineBegin
+            // If background vocals exist in the same <p>, line start should encompass them
+            val mainFirstBegin = if (bgContent != null) minOf(lineBegin, mainFirstBeginRaw) else mainFirstBeginRaw
+            val mainLastEnd = mainSpans.lastNotNullOfOrNull {
+                endAttrRegex.find(it.groupValues[1])?.groupValues?.get(1)
+            }?.let { parseTtmlTime(it) } ?: lineEnd
+
+            // Append trailing end timestamp so the last syllable has an explicit end in ELRC
+            val endFormatted = formatMsToLrc(mainLastEnd)
+            wordParts.append("<$endFormatted>")
+
             val words = wordParts.toString().trimEnd()
             if (words.isNotBlank()) {
                 linesLyrics.add(
                     Lyrics.LyricsX.Line(
-                        startTimeMs = lineBegin.toString(),
-                        endTimeMs = lineEnd.toString(),
+                        startTimeMs = mainFirstBegin.toString(),
+                        endTimeMs = mainLastEnd.toString(),
                         syllables = listOf(),
                         words = words,
                     ),
                 )
             }
-        } else {
-            // No spans — extract plain text (strip any remaining tags)
-            val plainText = innerContent.replace(Regex("<[^>]*>"), "").trim()
+        } else if (bgContent == null) {
+            // No spans at all — extract plain text (strip any remaining tags)
+            val plainText = unescapeXml(mainContent.replace(Regex("<[^>]*>"), "")).trim()
             if (plainText.isNotBlank()) {
+                val prefix = if (isPLineBg) "[bg]" else if (isV2) "[v2]" else ""
                 linesLyrics.add(
                     Lyrics.LyricsX.Line(
                         startTimeMs = lineBegin.toString(),
                         endTimeMs = lineEnd.toString(),
                         syllables = listOf(),
-                        words = plainText,
+                        words = "$prefix$plainText",
                     ),
                 )
+            }
+        }
+
+        // --- Process background vocal content as a separate [bg] line ---
+        if (bgContent != null) {
+            val bgSpans = spanRegex.findAll(bgContent).toList()
+            if (bgSpans.isNotEmpty()) {
+                hasWordTiming = true
+                val bgWordParts = StringBuilder()
+                bgWordParts.append("[bg]")
+                if (isV2) bgWordParts.append("[v2]")
+
+                for (i in bgSpans.indices) {
+                    val span = bgSpans[i]
+                    val spanAttrs = span.groupValues[1]
+                    val innerText = unescapeXml(span.groupValues[2])
+                    val trailingRaw = unescapeXml(span.groupValues[3])
+                    val hasTrailingWhitespace = innerText.endsWith(" ") || trailingRaw.contains(" ") || trailingRaw.contains("\n")
+                    val wordText = innerText.trimEnd()
+                    val space = if (hasTrailingWhitespace && i < bgSpans.size - 1) " " else ""
+                    val spanBeginStr = beginAttrRegex.find(spanAttrs)?.groupValues?.get(1)
+                    val spanEndStr = endAttrRegex.find(spanAttrs)?.groupValues?.get(1)
+
+                    if (spanBeginStr != null && (wordText.isNotEmpty() || space.isNotEmpty())) {
+                        val spanBegin = parseTtmlTime(spanBeginStr)
+                        val beginFormatted = formatMsToLrc(spanBegin)
+                        val nextSpanBeginStr = bgSpans.getOrNull(i + 1)?.let { beginAttrRegex.find(it.groupValues[1])?.groupValues?.get(1) }
+                        val nextSpanBegin = nextSpanBeginStr?.let { parseTtmlTime(it) }
+                        val spanEnd = spanEndStr?.let { parseTtmlTime(it) }
+
+                        if (spanEnd != null && nextSpanBegin != null && spanEnd < nextSpanBegin) {
+                            val endFormatted = formatMsToLrc(spanEnd)
+                            bgWordParts.append("<$beginFormatted>$wordText<$endFormatted>$space")
+                        } else {
+                            bgWordParts.append("<$beginFormatted>$wordText$space")
+                        }
+                    } else if (wordText.isNotEmpty() || space.isNotEmpty()) {
+                        bgWordParts.append(wordText + space)
+                    }
+                }
+
+                // Use the bg spans' own timing for the line start/end
+                val bgFirstBegin = bgSpans.firstNotNullOfOrNull {
+                    beginAttrRegex.find(it.groupValues[1])?.groupValues?.get(1)
+                }?.let { parseTtmlTime(it) } ?: lineBegin
+                val bgLastEnd = bgSpans.lastNotNullOfOrNull {
+                    endAttrRegex.find(it.groupValues[1])?.groupValues?.get(1)
+                }?.let { parseTtmlTime(it) } ?: lineEnd
+
+                // Append trailing end timestamp so the last bg syllable has an explicit end in ELRC
+                val bgEndFormatted = formatMsToLrc(bgLastEnd)
+                bgWordParts.append("<$bgEndFormatted>")
+
+                val bgWords = bgWordParts.toString().trimEnd()
+                if (bgWords.isNotBlank()) {
+                    linesLyrics.add(
+                        Lyrics.LyricsX.Line(
+                            startTimeMs = bgFirstBegin.toString(),
+                            endTimeMs = bgLastEnd.toString(),
+                            syllables = listOf(),
+                            words = bgWords,
+                        ),
+                    )
+                }
+            } else {
+                val singleSpanBeginStr = bgWrappers.firstNotNullOfOrNull { beginAttrRegex.find(it.attrs)?.groupValues?.get(1) }
+                val singleSpanEndStr = bgWrappers.firstNotNullOfOrNull { endAttrRegex.find(it.attrs)?.groupValues?.get(1) }
+                val plainText = unescapeXml(bgContent.replace(Regex("<[^>]*>"), "")).trim()
+                if (plainText.isNotBlank()) {
+                    val prefix = "[bg]" + if (isV2) "[v2]" else ""
+                    if (singleSpanBeginStr != null) {
+                        hasWordTiming = true
+                        val b = parseTtmlTime(singleSpanBeginStr)
+                        val e = singleSpanEndStr?.let { parseTtmlTime(it) } ?: lineEnd
+                        val bFormatted = formatMsToLrc(b)
+                        val eFormatted = formatMsToLrc(e)
+                        linesLyrics.add(
+                            Lyrics.LyricsX.Line(
+                                startTimeMs = b.toString(),
+                                endTimeMs = e.toString(),
+                                syllables = listOf(),
+                                words = "$prefix<$bFormatted>$plainText<$eFormatted>",
+                            ),
+                        )
+                    } else {
+                        linesLyrics.add(
+                            Lyrics.LyricsX.Line(
+                                startTimeMs = lineBegin.toString(),
+                                endTimeMs = lineEnd.toString(),
+                                syllables = listOf(),
+                                words = "$prefix$plainText",
+                            ),
+                        )
+                    }
+                }
             }
         }
     }
@@ -188,15 +355,73 @@ fun parseTtmlLyrics(data: String): Lyrics {
                 lines = linesLyrics,
                 syncType = if (hasWordTiming) "RICH_SYNCED" else "LINE_SYNCED",
             ),
+        songwriters = songwriters.ifEmpty { null },
     )
+}
+
+private data class BgWrapper(
+    val startIndex: Int,
+    val endIndex: Int,
+    val attrs: String,
+    val innerContent: String,
+)
+
+private fun extractBgWrappers(text: String): List<BgWrapper> {
+    val results = mutableListOf<BgWrapper>()
+    val startTagRegex = Regex("""<span\b([^>]*(?:ttm:)?role=["']x-bg["'][^>]*)>""", RegexOption.IGNORE_CASE)
+    val spanTagRegex = Regex("""</?span\b[^>]*>""", RegexOption.IGNORE_CASE)
+
+    var searchPos = 0
+    while (searchPos < text.length) {
+        val startMatch = startTagRegex.find(text, searchPos) ?: break
+        val startIdx = startMatch.range.first
+        val attrs = startMatch.groupValues[1]
+        val contentStart = startMatch.range.last + 1
+        var depth = 1
+        var pos = contentStart
+        var foundEnd = -1
+        var contentEnd = -1
+        while (depth > 0 && pos < text.length) {
+            val tagMatch = spanTagRegex.find(text, pos) ?: break
+            if (tagMatch.value.startsWith("</", ignoreCase = true)) {
+                depth--
+                if (depth == 0) {
+                    foundEnd = tagMatch.range.last + 1
+                    contentEnd = tagMatch.range.first
+                    break
+                }
+            } else {
+                depth++
+            }
+            pos = tagMatch.range.last + 1
+        }
+        if (foundEnd != -1) {
+            results.add(BgWrapper(startIdx, foundEnd, attrs, text.substring(contentStart, contentEnd)))
+            searchPos = foundEnd
+        } else {
+            searchPos = contentStart
+        }
+    }
+    return results
+}
+
+/**
+ * Kotlin equivalent of Iterable.lastNotNullOfOrNull (available from Kotlin 1.5).
+ */
+private inline fun <T, R : Any> List<T>.lastNotNullOfOrNull(transform: (T) -> R?): R? {
+    for (i in lastIndex downTo 0) {
+        transform(this[i])?.let { return it }
+    }
+    return null
 }
 
 /**
  * Parse TTML time format to milliseconds.
- * Supports: "M:SS.mmm", "MM:SS.mmm", "H:MM:SS.mmm", "SS.mmm"
+ * Supports: "M:SS.mmm", "MM:SS.mmm", "H:MM:SS.mmm", "SS.mmm", with or without trailing 's'
  */
 private fun parseTtmlTime(time: String): Long {
-    val parts = time.split(":")
+    val cleanTime = time.trim().removeSuffix("s")
+    val parts = cleanTime.split(":")
     return when (parts.size) {
         3 -> {
             val hours = parts[0].toLongOrNull() ?: 0L
@@ -214,7 +439,7 @@ private fun parseTtmlTime(time: String): Long {
             minutes * 60_000L + seconds * 1000L + millis
         }
         else -> {
-            val secParts = time.split(".")
+            val secParts = cleanTime.split(".")
             val seconds = secParts[0].toLongOrNull() ?: 0L
             val millis = parseMillisPart(secParts.getOrNull(1))
             seconds * 1000L + millis
@@ -224,13 +449,10 @@ private fun parseTtmlTime(time: String): Long {
 
 private fun parseMillisPart(part: String?): Long {
     if (part.isNullOrEmpty()) return 0L
-    val value = part.toLongOrNull() ?: return 0L
-    return when (part.length) {
-        1 -> value * 100
-        2 -> value * 10
-        3 -> value
-        else -> value
-    }
+    val clean = part.filter { it.isDigit() }
+    if (clean.isEmpty()) return 0L
+    val padded = clean.padEnd(3, '0').take(3)
+    return padded.toLongOrNull() ?: 0L
 }
 
 private fun formatMsToLrc(ms: Long): String {
@@ -241,6 +463,16 @@ private fun formatMsToLrc(ms: Long): String {
     val s = if (seconds < 10) "0$seconds" else "$seconds"
     val c = if (centis < 10) "0$centis" else "$centis"
     return "$m:$s.$c"
+}
+
+private fun unescapeXml(text: String): String {
+    return text
+        .replace("&amp;", "&")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
 }
 
 fun parseUnsyncedLyrics(data: String): Lyrics {

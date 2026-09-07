@@ -19,11 +19,13 @@ object LyricsRomanizer {
     fun romanize(
         line: String,
         enabled: Set<RomanizationLanguage>,
+        scriptHint: LineScript? = null,
     ): String? {
         if (line.isBlank() || enabled.isEmpty()) return null
 
+        val script = scriptHint ?: detectScript(line)
         val romanized =
-            when (detectScript(line)) {
+            when (script) {
                 LineScript.LATIN -> null
 
                 LineScript.JAPANESE ->

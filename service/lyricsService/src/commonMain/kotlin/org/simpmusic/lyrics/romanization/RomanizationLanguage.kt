@@ -7,7 +7,7 @@ import com.maxrave.domain.data.model.lyrics.RomanizationLanguage
  * routinely mixes an original line with an English one, and romanizing the English half produces
  * nonsense.
  */
-internal enum class LineScript {
+enum class LineScript {
     LATIN,
     JAPANESE,
     HANGUL,
@@ -55,7 +55,7 @@ internal fun Char.isCyrillic(): Boolean = this in CYRILLIC_START..CYRILLIC_END
  * kana particles, so counting characters would call it Chinese. One kana anywhere is proof the
  * line is Japanese, and Chinese never contains any.
  */
-internal fun detectScript(line: String): LineScript {
+fun detectScript(line: String): LineScript {
     if (line.any { it.isKana() }) return LineScript.JAPANESE
     if (line.any { it.isHangul() }) return LineScript.HANGUL
     if (line.any { it.isDevanagari() }) return LineScript.DEVANAGARI
