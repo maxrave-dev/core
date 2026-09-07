@@ -4,6 +4,7 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.TextureView
+import androidx.media3.common.FlagSet
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -70,19 +71,6 @@ internal class DelegatingForwardingPlayer(
          * default to [seekToPrevious] if the distinction is irrelevant.
          */
         fun seekToPreviousMediaItem() = seekToPrevious()
-
-        /**
-         * Transport intent must round-trip through the adapter, not the delegate:
-         * [ForwardingPlayer]'s own play/pause/setPlayWhenReady act on the raw
-         * ExoPlayer, which resumes audio while the adapter's internalPlayWhenReady
-         * stays stale — the next track change then captures shouldPlay=false and
-         * loads paused.
-         */
-        fun play()
-
-        fun pause()
-
-        fun setPlayWhenReady(playWhenReady: Boolean)
     }
 
     /**
@@ -90,6 +78,86 @@ internal class DelegatingForwardingPlayer(
      * When null, all navigation methods fall back to the underlying ExoPlayer (single-item behavior).
      */
     var playlistNavigationProvider: PlaylistNavigationProvider? = null
+
+    /**
+     * Routes MediaSession transport controls through [CrossfadeExoPlayerAdapter].
+     *
+     * The underlying ExoPlayers deliberately use `handleAudioFocus=false` because
+     * focus belongs to the adapter for the lifetime of the crossfade session. Calling
+     * the delegate directly would therefore start playback without requesting focus.
+     */
+    interface PlaybackControlProvider {
+        /**
+         * Synchronizes the adapter's playback intent and acquires audio focus before
+         * MediaSession changes the active ExoPlayer's playWhenReady value.
+         *
+         * @return false when a start request must be rejected (for example, focus denied).
+         */
+        fun setPlayWhenReady(playWhenReady: Boolean): Boolean
+    }
+
+    var playbackControlProvider: PlaybackControlProvider? = null
+
+    /**
+     * Decides whether controller-driven playlist replacement should reach the active
+     * single-item ExoPlayer. Android Auto selections are resolved by the session callback,
+     * which has already rebuilt the adapter-owned queue before Media3 applies its result.
+     */
+    interface MediaItemMutationProvider {
+        fun shouldDelegateSetMediaItems(mediaItems: List<MediaItem>): Boolean
+    }
+
+    var mediaItemMutationProvider: MediaItemMutationProvider? = null
+
+    override fun play() {
+        val provider = playbackControlProvider
+        if (provider == null || provider.setPlayWhenReady(true)) {
+            super.play()
+        }
+    }
+
+    override fun pause() {
+        playbackControlProvider?.setPlayWhenReady(false)
+        super.pause()
+    }
+
+    override fun setPlayWhenReady(playWhenReady: Boolean) {
+        val provider = playbackControlProvider
+        if (provider == null || provider.setPlayWhenReady(playWhenReady)) {
+            super.setPlayWhenReady(playWhenReady)
+        }
+    }
+
+    override fun setMediaItems(
+        mediaItems: MutableList<MediaItem>,
+        resetPosition: Boolean,
+    ) {
+        if (shouldDelegateSetMediaItems(mediaItems)) {
+            super.setMediaItems(mediaItems, resetPosition)
+        } else {
+            onAdapterOwnedMediaItemsPreserved(mediaItems)
+        }
+    }
+
+    override fun setMediaItems(
+        mediaItems: MutableList<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ) {
+        if (shouldDelegateSetMediaItems(mediaItems)) {
+            super.setMediaItems(mediaItems, startIndex, startPositionMs)
+        } else {
+            onAdapterOwnedMediaItemsPreserved(mediaItems)
+        }
+    }
+
+    private fun shouldDelegateSetMediaItems(mediaItems: List<MediaItem>): Boolean =
+        mediaItemMutationProvider?.shouldDelegateSetMediaItems(mediaItems) ?: true
+
+    private fun onAdapterOwnedMediaItemsPreserved(mediaItems: List<MediaItem>) {
+        Logger.d(TAG, "Preserving adapter-owned queue; ignored controller setMediaItems(size=${mediaItems.size})")
+        notifyAvailableCommandsChanged()
+    }
 
     // ========== Playback-Ended Suppression ==========
 
@@ -331,27 +399,6 @@ internal class DelegatingForwardingPlayer(
         }
     }
 
-    // ========== Transport Intent Overrides ==========
-    // MediaController surfaces (notification, Bluetooth, headset, Android Auto) land here.
-    // Without these overrides the calls fall through to the raw delegate ExoPlayer: audio
-    // resumes but the adapter's internalPlayWhenReady stays false, so the next track
-    // change captures shouldPlay=false and the incoming track loads paused.
-
-    override fun play() {
-        val nav = playlistNavigationProvider
-        if (nav != null) nav.play() else super.play()
-    }
-
-    override fun pause() {
-        val nav = playlistNavigationProvider
-        if (nav != null) nav.pause() else super.pause()
-    }
-
-    override fun setPlayWhenReady(playWhenReady: Boolean) {
-        val nav = playlistNavigationProvider
-        if (nav != null) nav.setPlayWhenReady(playWhenReady) else super.setPlayWhenReady(playWhenReady)
-    }
-
     // NOTE: Do NOT override getMediaItemCount() or getCurrentMediaItemIndex() here.
     // These must remain consistent with the underlying ExoPlayer's Timeline (1 item, index 0).
     // Media3's PlayerWrapper.createPositionInfo() validates that currentMediaItemIndex < timeline.windowCount.
@@ -431,6 +478,15 @@ internal class DelegatingForwardingPlayer(
         val mediaItem = player.currentMediaItem ?: MediaItem.EMPTY
         val metadata = player.mediaMetadata
         val commands = getAvailableCommands()
+        val events =
+            Player.Events(
+                FlagSet
+                    .Builder()
+                    .add(Player.EVENT_MEDIA_ITEM_TRANSITION)
+                    .add(Player.EVENT_MEDIA_METADATA_CHANGED)
+                    .add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
+                    .build(),
+            )
 
         Logger.d(TAG, "Manually notifying ${trackedListeners.size} listeners about media item change: ${metadata.title}")
 
@@ -439,8 +495,33 @@ internal class DelegatingForwardingPlayer(
                 listener.onMediaItemTransition(mediaItem, Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
                 listener.onMediaMetadataChanged(metadata)
                 listener.onAvailableCommandsChanged(commands)
+                listener.onEvents(this, events)
             } catch (e: Exception) {
                 Logger.w(TAG, "Error notifying listener about media item change: ${e.message}")
+            }
+        }
+    }
+
+    /** Notify MediaSession that adapter-level next/previous availability changed. */
+    fun notifyAvailableCommandsChanged() {
+        val commands = getAvailableCommands()
+        val events =
+            Player.Events(
+                FlagSet
+                    .Builder()
+                    .add(Player.EVENT_AVAILABLE_COMMANDS_CHANGED)
+                    .build(),
+            )
+        trackedListeners.toList().forEach { listener ->
+            try {
+                listener.onAvailableCommandsChanged(commands)
+                // ForwardingSimpleBasePlayer (used by Media3 CastPlayer) invalidates its
+                // cached state from the batched onEvents callback. Sending only the
+                // individual callback leaves Android Auto with stale next/previous actions
+                // until the next natural ExoPlayer event (often the track transition).
+                listener.onEvents(this, events)
+            } catch (e: Exception) {
+                Logger.w(TAG, "Error notifying listener about available commands: ${e.message}")
             }
         }
     }
