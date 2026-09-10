@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.launch
@@ -41,8 +42,29 @@ internal class DownloadUtils(
     // Audio / Video
     override val downloads: StateFlow<Map<String, Pair<DownloadHandler.Download?, DownloadHandler.Download?>>>
         get() = _downloads
+    /**
+     * Per-track download state, keyed by videoId.
+     *
+     * This is a SECOND state, separate from `SongEntity.downloadState`, and the only one the
+     * playlist-level UI reads: `LocalPlaylistViewModel.downloadFullPlaylistState` derives a
+     * playlist's state purely from this map. It used to be initialised here and never written
+     * again on Desktop, and because an empty map makes both `all { == DOWNLOADED }` and
+     * `any { == DOWNLOADING }` false, every playlist resolved to STATE_NOT_DOWNLOADED — the
+     * download button stayed on its idle icon for the whole transfer, with no error anywhere,
+     * while the songs really did download through the per-song state.
+     */
     private val _downloadTask = MutableStateFlow<Map<String, Int>>(emptyMap())
     override val downloadTask: StateFlow<Map<String, Int>> get() = _downloadTask
+
+    /** Publishes [state] for [videoId], or drops the entry when [state] is null. */
+    private fun publishDownloadTask(
+        videoId: String,
+        state: Int?,
+    ) {
+        _downloadTask.update { current ->
+            if (state == null) current - videoId else current + (videoId to state)
+        }
+    }
 
     val downloadingVideoIds = MutableStateFlow<MutableSet<String>>(mutableSetOf())
 
@@ -57,6 +79,7 @@ internal class DownloadUtils(
                 videoId,
                 DownloadState.STATE_DOWNLOADING,
             )
+            publishDownloadTask(videoId, DownloadState.STATE_DOWNLOADING)
             onDownloadStarted(videoId, title)
             if (!File(getDownloadPath()).exists()) {
                 File(getDownloadPath()).mkdirs()
@@ -73,12 +96,14 @@ internal class DownloadUtils(
                             videoId,
                             DownloadState.STATE_NOT_DOWNLOADED,
                         )
+                        publishDownloadTask(videoId, DownloadState.STATE_NOT_DOWNLOADED)
                         onDownloadFinished(videoId, title, succeeded = false)
                     } else if (state.isDone) {
                         songRepository.updateDownloadState(
                             videoId,
                             DownloadState.STATE_DOWNLOADED,
                         )
+                        publishDownloadTask(videoId, DownloadState.STATE_DOWNLOADED)
                         onDownloadFinished(videoId, title, succeeded = true)
                     }
                 }
@@ -160,6 +185,7 @@ internal class DownloadUtils(
                 it.name.contains(videoId)
             }.forEach {
                 it.delete()
+                publishDownloadTask(videoId, null)
                 coroutineScope.launch {
                     songRepository.updateDownloadState(
                         videoId,
@@ -170,6 +196,7 @@ internal class DownloadUtils(
     }
 
     override fun removeAllDownloads() {
+        _downloadTask.value = emptyMap()
         File(getDownloadPath()).listFiles().forEach {
             it.delete()
             coroutineScope.launch {
