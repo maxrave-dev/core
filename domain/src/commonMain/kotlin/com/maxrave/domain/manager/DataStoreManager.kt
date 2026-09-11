@@ -519,6 +519,23 @@ interface DataStoreManager {
 
     suspend fun setRomanizationLanguages(languages: String)
 
+    /**
+     * How far the audio a listener actually HEARS lags the player's own position, in milliseconds.
+     * Bluetooth is the reason this exists: the sink buffers, so at player position P the ear is
+     * hearing P - offset, and every lyric display was lighting its line that much too early.
+     *
+     * Applied at READ time — a display picks its line from `position - offset` — so nothing is
+     * written back into the cached [com.maxrave.domain.data.model.metadata.Line] rows, the
+     * community lyrics database never sees a local correction, and a change lands on the next
+     * frame instead of the next track.
+     *
+     * Signed and deliberately unbounded: positive pushes lyrics later (the Bluetooth case),
+     * negative pulls them earlier, and how far is the listener's call. 0 by default.
+     */
+    val lyricsOffsetMs: Flow<Int>
+
+    suspend fun setLyricsOffsetMs(offsetMs: Int)
+
     val explicitContentEnabled: Flow<String>
 
     suspend fun setExplicitContentEnabled(enabled: Boolean)

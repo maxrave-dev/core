@@ -883,11 +883,14 @@ internal class MediaServiceHandlerImpl(
                 // the beginning (#2152). The position is otherwise only saved on pause /
                 // track change / release, which misses uninterrupted background playback.
                 val positionPersistIntervalMs = 5_000L
+                // Named so the persist counter below cannot drift out of step with it, which is
+                // what a second hardcoded copy of the number did.
+                val tickIntervalMs = 50L
                 var sinceLastPositionSaveMs = 0L
                 while (true) {
-                    delay(100)
+                    delay(tickIntervalMs)
                     _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
-                    sinceLastPositionSaveMs += 100
+                    sinceLastPositionSaveMs += tickIntervalMs
                     if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
                         sinceLastPositionSaveMs = 0
                         mayBeSaveRecentPosition()

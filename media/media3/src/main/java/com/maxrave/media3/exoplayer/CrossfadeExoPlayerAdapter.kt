@@ -2830,7 +2830,7 @@ internal class CrossfadeExoPlayerAdapter(
                         // Ignore query errors - don't log to avoid spam
                     }
 
-                    delay(200) // Update every 200ms
+                    delay(50) // Update every 50ms
                 }
             }
     }

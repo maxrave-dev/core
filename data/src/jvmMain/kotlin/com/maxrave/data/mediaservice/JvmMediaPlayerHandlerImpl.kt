@@ -110,6 +110,15 @@ import kotlin.math.pow
 
 private val TAG = "JvmMediaPlayerHandler"
 
+// Ceiling on how far the published position may run ahead of the last real reading from mpv.
+// Sized just above the largest staircase step measured on this machine (~520 ms), so an ordinary
+// gap is bridged while a genuine stall stops the number rather than letting it drift.
+private const val SMOOTH_MAX_LEAD_MS = 600L
+
+// A jump wider than this is a seek or a track change, not the staircase — take the real value
+// immediately instead of easing towards it.
+private const val SMOOTH_SNAP_MS = 1_000L
+
 class JvmMediaPlayerHandlerImpl(
     private val dataStoreManager: DataStoreManager,
     private val songRepository: SongRepository,
@@ -120,6 +129,60 @@ class JvmMediaPlayerHandlerImpl(
 ) : MediaPlayerHandler,
     MediaPlayerListener {
     private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Smoothing state for the position this handler PUBLISHES. Measured on 2026-09-12: mpv moves
+    // `time-pos` only three to four times a second, in steps of 250-500 ms, so the raw number is a
+    // staircase and every progress bar and clock in the app inherits it. Upstream cannot do better
+    // — mpv#13695 asks for a finer property and is still open, and mpv#4195 shows property
+    // observation is coarser still — so the client has to fill the gaps in itself, which is exactly
+    // what mpv#15253 tells client authors to do.
+    //
+    // Only what is PUBLISHED is smoothed. Everything that reads the player to decide something —
+    // the crossfade trigger, the sleep timer, the position persist, the scrobbler — still sees
+    // mpv's own number.
+    private var smoothAnchorMs = -1L
+    private var smoothAnchorAtNanos = 0L
+    private var smoothLastPublishedMs = -1L
+
+    /**
+     * Drops the smoothing so the very next tick publishes mpv's own number.
+     *
+     * Called wherever the position is MOVED rather than allowed to advance. The numeric guard in
+     * [smoothedPosition] cannot stand in for this: the most the published value can ever run ahead
+     * is [SMOOTH_MAX_LEAD_MS], so a backwards seek shorter than that is arithmetically
+     * indistinguishable from having simply extrapolated too far — and treated as the latter, the
+     * bar would sit still instead of following the drag.
+     */
+    private fun resetPositionSmoothing() {
+        smoothAnchorMs = -1L
+        smoothLastPublishedMs = -1L
+    }
+
+    private fun smoothedPosition(rawMs: Long): Long {
+        val playing = _controlState.value.isPlaying
+        val nowNanos = System.nanoTime()
+        val resync =
+            !playing ||
+                smoothAnchorMs < 0L ||
+                rawMs < 0L ||
+                kotlin.math.abs(rawMs - smoothLastPublishedMs) > SMOOTH_SNAP_MS
+        if (resync) {
+            smoothAnchorMs = rawMs
+            smoothAnchorAtNanos = nowNanos
+            smoothLastPublishedMs = rawMs
+            return rawMs
+        }
+        if (rawMs != smoothAnchorMs) {
+            smoothAnchorMs = rawMs
+            smoothAnchorAtNanos = nowNanos
+        }
+        val speed = player.playbackParameters.speed.takeIf { it > 0f } ?: 1f
+        val elapsedMs = ((nowNanos - smoothAnchorAtNanos) / 1_000_000L * speed).toLong()
+        val predictedMs = smoothAnchorMs + elapsedMs.coerceAtMost(SMOOTH_MAX_LEAD_MS)
+        val publishedMs = maxOf(smoothLastPublishedMs, predictedMs)
+        smoothLastPublishedMs = publishedMs
+        return publishedMs
+    }
 
     // Linux (MPRIS) and Windows (SMTC) both go through NPYC/JMTC; macOS uses the
     // dedicated MacOSMediaIntegration below. runCatching keeps a failed native
@@ -906,6 +969,7 @@ class JvmMediaPlayerHandlerImpl(
     }
 
     private fun skipSegment(position: Long) {
+        resetPositionSmoothing()
         if (position in 0..player.duration) {
             player.seekTo(position)
         } else if (position > player.duration) {
@@ -958,12 +1022,23 @@ class JvmMediaPlayerHandlerImpl(
                 // position is otherwise only saved on pause / track change / release, which
                 // misses uninterrupted playback.
                 val positionPersistIntervalMs = 5_000L
+                // 50 ms, which is only safe BECAUSE the published position is smoothed below.
+                //
+                // _simpleMediaState is a StateFlow of a data class, so a tick carrying the same
+                // value as the previous one is swallowed and the UI gets nothing that round. While
+                // this loop published mpv's raw number — a staircase changing three or four times a
+                // second — most ticks were duplicates, and which ones survived depended on where
+                // the tick happened to land: the clock visibly sped up and slowed down, and ticking
+                // faster made it worse. The smoothed value is derived from the wall clock, so it
+                // differs on every tick and nothing is swallowed. Rate is now free to choose, and
+                // twice as many even steps reads better than half as many.
+                val tickIntervalMs = 50L
                 var sinceLastPositionSaveMs = 0L
                 while (true) {
-                    delay(100)
-                    _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
+                    delay(tickIntervalMs)
+                    _simpleMediaState.value = SimpleMediaState.Progress(smoothedPosition(player.currentPosition))
                     updateMacOSElapsedTime()
-                    sinceLastPositionSaveMs += 100
+                    sinceLastPositionSaveMs += tickIntervalMs
                     if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
                         sinceLastPositionSaveMs = 0
                         mayBeSaveRecentPosition()
@@ -1073,6 +1148,7 @@ class JvmMediaPlayerHandlerImpl(
             }
 
             is PlayerEvent.UpdateProgress -> {
+                resetPositionSmoothing()
                 player.seekTo((player.duration * playerEvent.newProgress / 100).toLong())
                 if (player.isPlaying) {
                     nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
@@ -2652,6 +2728,7 @@ class JvmMediaPlayerHandlerImpl(
         mediaItem: GenericMediaItem?,
         reason: Int,
     ) {
+        resetPositionSmoothing()
         Logger.w(TAG, "Checking current state before transition ${simpleMediaState.value}")
         val lastPlayed = nowPlayingState.value.songEntity
         val currentState = simpleMediaState.value

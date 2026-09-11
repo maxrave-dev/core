@@ -2618,7 +2618,7 @@ class MpvPlayerAdapter(
                         // Ignore query errors
                     }
 
-                    delay(200) // Update every 200ms
+                    delay(50) // Update every 50ms
                 }
             }
     }
