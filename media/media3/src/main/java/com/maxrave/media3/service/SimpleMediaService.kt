@@ -125,7 +125,11 @@ internal class SimpleMediaService :
         val controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
         controllerFuture.addListener({ controllerFuture.get() }, MoreExecutors.directExecutor())
 
-        if (runBlocking { dataStoreManager.keepServiceAlive.first() == DataStoreManager.TRUE }) {
+        // Read off the service-creation path. When a media button starts this service the
+        // system is already counting down to the foreground-start deadline, and a blocking
+        // DataStore read on the main thread spends part of that budget on disk I/O.
+        coroutineScope.launch {
+            if (dataStoreManager.keepServiceAlive.first() != DataStoreManager.TRUE) return@launch
             val notificationManager = getSystemService<NotificationManager>()
             notificationManager?.run {
                 createNotificationChannel(
@@ -142,7 +146,7 @@ internal class SimpleMediaService :
             }
             playerNotificationManager =
                 PlayerNotificationManager
-                    .Builder(this, 2026, "media_playback_channel")
+                    .Builder(this@SimpleMediaService, 2026, "media_playback_channel")
                     .setNotificationListener(
                         object : PlayerNotificationManager.NotificationListener {
                             override fun onNotificationPosted(

@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.annotation.DrawableRes
 import androidx.core.net.toUri
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -173,6 +174,80 @@ internal class SimpleMediaSessionCallback(
             }
         }
         return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+    }
+
+    /**
+     * Playback resumption: a `play` command that arrives with nothing loaded in the player.
+     *
+     * This is how a Samsung Routine (and any headset or Bluetooth `play` button, and the system
+     * resumption chip) reaches the app when it is not running: `MediaButtonReceiver` starts
+     * [com.maxrave.media3.service.SimpleMediaService] with `startForegroundService()`, Media3
+     * sees a play request against an empty player, and calls this.
+     *
+     * Leaving it unimplemented is what caused a background ANR. The default returns
+     * `Futures.immediateFailedFuture(UnsupportedOperationException())`; Media3 logs that and
+     * still calls `prepare() + play()`, but on an empty player that lands in ENDED rather than
+     * BUFFERING, so `MediaNotificationManager` never considers the session user-engaged and
+     * never calls `startForeground()`. Nothing is blocked - the main thread sits in
+     * `nativePollOnce`, which is exactly what the ANR trace shows - the service simply misses
+     * the foreground-start deadline and the system tears it down with "Context
+     * .startForegroundService() did not then call Service.startForeground()".
+     *
+     * The queue is loaded through [MediaPlayerHandler] instead of being handed back to Media3.
+     * The session player is a single-item delegate in front of `CrossfadeExoPlayerAdapter`,
+     * which owns the real playlist, so a playlist pushed in through `setMediaItems` here would
+     * desync the two. Returning an empty list with [C.INDEX_UNSET] leaves the player alone -
+     * the same contract [onSetMediaItems] already relies on for Android Auto.
+     *
+     * Ordering matters: Media3 runs its own success handling inline the moment this future
+     * completes, so the restore is deliberately started on a later main-thread message. Priming
+     * the player first would have it cleared right back out.
+     *
+     * `isForPlayback == false` is a different question - Android Auto asking for the recent item
+     * to show after a device boot - and is left answered the way the default answered it, with
+     * nothing. A raw song `MediaItem` would show up there as an entry [onSetMediaItems] cannot
+     * parse (it wants a `song/<id>` style media id), i.e. one that does nothing when tapped.
+     */
+    override fun onPlaybackResumption(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+        isForPlayback: Boolean,
+    ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+        Logger.w(TAG, "onPlaybackResumption: ${controller.packageName}, isForPlayback=$isForPlayback")
+        if (isForPlayback) resumeSavedQueue()
+        return Futures.immediateFuture(
+            MediaSession.MediaItemsWithStartPosition(emptyList(), C.INDEX_UNSET, C.TIME_UNSET),
+        )
+    }
+
+    private fun resumeSavedQueue() {
+        scope.launch {
+            if (mediaPlayerHandler.restoreQueueAndPlay()) return@launch
+            // Nothing was saved - a fresh install, or "save last played track" turned off. Play
+            // the most recent song instead: a service started by a media button that never
+            // reaches BUFFERING is killed for missing the foreground-start deadline, so
+            // resuming nothing at all is the one outcome to avoid here.
+            val recent =
+                songRepository
+                    .getRecentSong(1, 0)
+                    .firstOrNull()
+                    ?.toTrack()
+            if (recent == null) {
+                Logger.w(TAG, "onPlaybackResumption: nothing to resume")
+                return@launch
+            }
+            mediaPlayerHandler.setQueueData(
+                QueueData.Data(
+                    listTracks = arrayListOf(recent),
+                    firstPlayedTrack = recent,
+                    playlistId = "RDAMVM${recent.videoId}",
+                    playlistName = "\"${recent.title}\" Radio",
+                    playlistType = PlaylistType.RADIO,
+                    continuation = null,
+                ),
+            )
+            mediaPlayerHandler.loadMediaItem(recent, Config.SONG_CLICK, 0)
+        }
     }
 
     override fun onGetLibraryRoot(

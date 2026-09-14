@@ -151,6 +151,18 @@ interface MediaPlayerHandler {
 
     fun mayBeRestoreQueue()
 
+    /**
+     * Restores the persisted queue and starts playing it.
+     *
+     * This is the background playback resumption path: a `play` command that arrives with an
+     * empty player and no UI attached (a Bluetooth or headset button, a Samsung Routine, the
+     * system resumption chip). Unlike [mayBeRestoreQueue] it must end with the player actually
+     * playing, and it must get there quickly - see the implementation for why.
+     *
+     * Returns false when there is nothing to resume.
+     */
+    suspend fun restoreQueueAndPlay(): Boolean
+
     // Lifecycle
     fun shouldReleaseOnTaskRemoved(): Boolean
 
