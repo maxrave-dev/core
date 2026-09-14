@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.ActivityManager.RunningAppProcessInfo
 import android.content.Context
+import android.content.Intent
+import android.media.audiofx.AudioEffect
 import android.media.audiofx.LoudnessEnhancer
 import com.maxrave.common.ASC
 import com.maxrave.common.CUSTOM_ORDER
@@ -210,6 +212,10 @@ internal class MediaServiceHandlerImpl(
 
     private var normalizeVolume = false
 
+    /** Written by the equalizer-type collector; read on the player's thread by [shouldOpenOrCloseEqualizerIntent]. */
+    @Volatile
+    private var systemEqualizerSelected = false
+
     private var watchTimeList: ArrayList<Float> = arrayListOf()
 
     private var volumeNormalizationJob: Job? = null
@@ -312,11 +318,13 @@ internal class MediaServiceHandlerImpl(
         // while music is playing, and a curve that only takes effect after a restart is useless
         // for judging what you just changed.
         backgroundScope.launch {
+            // While the system equalizer is selected the built-in curve goes flat, the same as its own switch being off.
             combine(
+                dataStoreManager.equalizerType,
                 dataStoreManager.equalizerEnabled,
                 dataStoreManager.equalizerBands,
                 dataStoreManager.equalizerPreamp,
-            ) { enabled, bands, preamp -> Triple(enabled == TRUE, bands, preamp) }
+            ) { type, enabled, bands, preamp -> Triple(enabled == TRUE && type != DataStoreManager.EQUALIZER_TYPE_SYSTEM, bands, preamp) }
                 .distinctUntilChanged()
                 .collect { (enabled, bands, preamp) ->
                     // Switched off sends a flat curve rather than skipping the call: the filter
@@ -327,6 +335,25 @@ internal class MediaServiceHandlerImpl(
                             if (enabled) bands.split(",").mapNotNull { it.trim().toFloatOrNull() } else emptyList(),
                         preampDb = if (enabled) preamp else 0f,
                     )
+                }
+        }
+        // Switching while music plays must hand over at once, or both equalizers run together: the
+        // adapter only asks to open or close when the player's own state changes, not the setting.
+        backgroundScope.launch {
+            dataStoreManager.equalizerType
+                .map { it == DataStoreManager.EQUALIZER_TYPE_SYSTEM }
+                .distinctUntilChanged()
+                .collect { system ->
+                    if (system == systemEqualizerSelected) return@collect
+                    systemEqualizerSelected = system
+                    // Main, like the adapter's own calls: both read the player's audio session.
+                    withContext(Dispatchers.Main) {
+                        if (!system) {
+                            sendCloseEqualizerIntent()
+                        } else if (player.isPlaying) {
+                            sendOpenEqualizerIntent()
+                        }
+                    }
                 }
         }
         // A collector of its own rather than more legs on the equalizer's: `combine` takes at most
@@ -840,6 +867,32 @@ internal class MediaServiceHandlerImpl(
         } else if (position > player.duration) {
             player.seekToNext()
         }
+    }
+
+    private fun sendOpenEqualizerIntent() {
+        // No local audio session to expose to an equalizer while casting (or before one exists).
+        if (_castState.value.isRemote || player.audioSessionId == PlayerConstants.AUDIO_SESSION_ID_UNSET) return
+        context.sendBroadcast(
+            Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
+                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
+                putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+                putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
+            },
+        )
+    }
+
+    private fun sendCloseEqualizerIntent() {
+        if (_castState.value.isRemote || player.audioSessionId == PlayerConstants.AUDIO_SESSION_ID_UNSET) return
+        context.sendBroadcast(
+            Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
+                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
+                // Mandatory per AudioEffect's javadoc, and missing from the pre-2.0.0 code this was
+                // restored from. AOSP's MusicFX returns early on a null package and closes sessions
+                // by package, so without it every CLOSE was ignored — and switching from the system
+                // equalizer back to the built-in one left both running until the track ended.
+                putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+            },
+        )
     }
 
     @SuppressLint("PrivateResource")
@@ -2454,6 +2507,9 @@ internal class MediaServiceHandlerImpl(
                 Logger.e("ServiceHandler", "Error releasing audio effects ${e.message}")
             }
 
+            // Send close equalizer intent
+            sendCloseEqualizerIntent()
+
             // Cancel all jobs
             progressJob?.cancel()
             progressJob = null
@@ -2691,6 +2747,12 @@ internal class MediaServiceHandlerImpl(
                 player.pause()
             }
         }
+    }
+
+    override fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {
+        // Built-in selected: the session is never handed to a system equalizer, so the two cannot run together.
+        if (!systemEqualizerSelected) return
+        if (shouldOpen) sendOpenEqualizerIntent() else sendCloseEqualizerIntent()
     }
 
     override fun onShuffleModeEnabledChanged(

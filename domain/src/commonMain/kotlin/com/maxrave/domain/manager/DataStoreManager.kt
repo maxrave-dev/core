@@ -193,6 +193,14 @@ interface DataStoreManager {
     suspend fun setEqualizerPreamp(preampDb: Float)
 
     /**
+     * One of [EQUALIZER_TYPE_BUILT_IN], [EQUALIZER_TYPE_SYSTEM]. Android only — Desktop has no system
+     * equalizer and always runs the built-in one. The two never run together.
+     */
+    val equalizerType: Flow<String>
+
+    suspend fun setEqualizerType(type: String)
+
+    /**
      * The AutoEq profile last imported, as `"<label>\n<comma-separated gains>"`.
      *
      * Label and curve share one key on purpose. The label is only shown while the equalizer still
@@ -626,6 +634,9 @@ interface DataStoreManager {
 
         const val LYRICS_STYLE_CLASSIC = "CLASSIC"
         const val LYRICS_STYLE_APPLE_MUSIC = "APPLE_MUSIC"
+
+        const val EQUALIZER_TYPE_BUILT_IN = "BUILT_IN"
+        const val EQUALIZER_TYPE_SYSTEM = "SYSTEM"
 
         const val CROSSFADE_DURATION_AUTO = 0
 

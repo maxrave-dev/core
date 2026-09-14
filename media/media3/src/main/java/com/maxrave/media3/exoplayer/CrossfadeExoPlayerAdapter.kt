@@ -470,6 +470,7 @@ internal class CrossfadeExoPlayerAdapter(
                 currentPlayer?.pause()
                 stopPositionUpdates()
                 abandonAudioFocusInternal()
+                notifyEqualizerIntent(false)
             }
             listeners.forEach { it.onCastStateChanged(GenericCastState(isRemote = true, deviceName = deviceName)) }
         } else {
@@ -699,6 +700,7 @@ internal class CrossfadeExoPlayerAdapter(
                 transitionToState(InternalState.IDLE)
                 stopPositionUpdates()
                 abandonAudioFocusInternal()
+                notifyEqualizerIntent(false)
             }
         }
     }
@@ -1659,11 +1661,13 @@ internal class CrossfadeExoPlayerAdapter(
                     if (isPlaying) {
                         if (internalState != InternalState.PLAYING) {
                             transitionToState(InternalState.PLAYING)
+                            notifyEqualizerIntent(true)
                         }
                     } else {
                         if (internalState == InternalState.PLAYING) {
                             if (!player.playWhenReady) {
                                 transitionToState(InternalState.PAUSED)
+                                notifyEqualizerIntent(false)
                             }
                         }
                     }
@@ -1769,6 +1773,31 @@ internal class CrossfadeExoPlayerAdapter(
                     // raw ExoPlayer. seekTo() does no manual notification, so this is the single source.
                     if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) {
                         listeners.forEach { it.onSeeked(newPosition.positionMs) }
+                    }
+                }
+
+                override fun onEvents(
+                    player: Player,
+                    events: Player.Events,
+                ) {
+                    if (player != currentPlayer) {
+                        Logger.d(TAG, "Ignoring onPlaybackStateChanged from non-current player")
+                        return
+                    }
+                    val shouldBePlaying =
+                        !(player.playbackState == Player.STATE_ENDED || !player.playWhenReady)
+                    if (events.containsAny(
+                            Player.EVENT_PLAYBACK_STATE_CHANGED,
+                            Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                            Player.EVENT_IS_PLAYING_CHANGED,
+                            Player.EVENT_POSITION_DISCONTINUITY,
+                        )
+                    ) {
+                        if (shouldBePlaying) {
+                            listeners.forEach { it.shouldOpenOrCloseEqualizerIntent(true) }
+                        } else {
+                            listeners.forEach { it.shouldOpenOrCloseEqualizerIntent(false) }
+                        }
                     }
                 }
             }
@@ -1946,6 +1975,8 @@ internal class CrossfadeExoPlayerAdapter(
                 else -> {
                     if (localCurrentMediaItemIndex < playlist.size - 1) {
                         seekToNext()
+                    } else {
+                        notifyEqualizerIntent(false)
                     }
                 }
             }
@@ -2924,6 +2955,12 @@ internal class CrossfadeExoPlayerAdapter(
         Logger.d(TAG, "Clearing all precache")
         precachedPlayers.values.forEach { cleanupPlayerInternal(it.player) }
         precachedPlayers.clear()
+    }
+
+    // ========== Internal: Notifications ==========
+
+    private fun notifyEqualizerIntent(shouldOpen: Boolean) {
+        listeners.forEach { it.shouldOpenOrCloseEqualizerIntent(shouldOpen) }
     }
 
     // ========== Internal: Shuffle Management ==========

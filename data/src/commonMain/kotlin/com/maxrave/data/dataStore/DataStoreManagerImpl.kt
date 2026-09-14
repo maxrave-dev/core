@@ -607,6 +607,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val equalizerType =
+        settingsDataStore.data.map { preferences ->
+            preferences[EQUALIZER_TYPE] ?: DataStoreManager.EQUALIZER_TYPE_BUILT_IN
+        }
+
+    override suspend fun setEqualizerType(type: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[EQUALIZER_TYPE] = type
+            }
+        }
+    }
+
     override val equalizerAutoEqProfile: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[EQUALIZER_AUTOEQ_PROFILE] ?: ""
@@ -1806,6 +1819,7 @@ internal class DataStoreManagerImpl(
         val EQUALIZER_AUTOEQ_PROFILE = stringPreferencesKey("equalizer_autoeq_profile")
         val EQUALIZER_BANDS = stringPreferencesKey("equalizer_bands")
         val EQUALIZER_ENABLED = stringPreferencesKey("equalizer_enabled")
+        val EQUALIZER_TYPE = stringPreferencesKey("equalizer_type")
         val EQUALIZER_PREAMP = stringPreferencesKey("equalizer_preamp")
         val DELAY_ENABLED = stringPreferencesKey("delay_enabled")
         val DELAY_TIME_MS = stringPreferencesKey("delay_time_ms")
