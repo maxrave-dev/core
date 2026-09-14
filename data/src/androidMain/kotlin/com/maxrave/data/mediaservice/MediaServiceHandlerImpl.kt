@@ -256,6 +256,14 @@ internal class MediaServiceHandlerImpl(
     @Volatile
     private var playRequestedDuringRestore = false
 
+    // Set by restoreSavedQueue once the saved track is in the player - i.e. once a play request
+    // can be honoured without the rest of the queue. Written after the addMediaItem that reads
+    // [playRequestedDuringRestore] and re-read immediately afterwards, so the restore and a
+    // resumption request racing it can never both miss the other's write: whichever runs second
+    // sees the first, and exactly one of them starts playback.
+    @Volatile
+    private var restoreHasPrimedPlayer = false
+
     private var songEntityJob: Job? = null
 
     private var jobWatchtime: Job? = null
@@ -576,7 +584,7 @@ internal class MediaServiceHandlerImpl(
             }
         val track =
             queueData.value.data.listTracks
-                ?.find { it.videoId == videoId }
+                .find { it.videoId == videoId }
         _nowPlayingState.update {
             it.copy(
                 mediaItem = mediaItem,
@@ -2384,7 +2392,33 @@ internal class MediaServiceHandlerImpl(
 
     override suspend fun restoreQueueAndPlay(): Boolean {
         playRequestedDuringRestore = true
+        // A restore that is already past its addMediaItem has the saved track in the player, so
+        // the request is served right here instead of queueing behind restoreQueueMutex. That
+        // restore is sitting on loadJob.join(), and the load it joins paces itself in chunks and
+        // can reach for the network, so waiting for the lock would put the whole queue in front
+        // of the first note - and in front of the BUFFERING/READY that lets Media3 call
+        // startForeground() before the system's deadline. Falling through is still correct when
+        // the player has not been primed yet: the restore has not read the flag either, so it
+        // starts the track playing itself.
+        if (restoreHasPrimedPlayer && player.mediaItemCount > 0) {
+            requestPlayWhenReady()
+            return true
+        }
         return restoreSavedQueue(playWhenReady = true)
+    }
+
+    /**
+     * Asks the player to start, in a way that survives the track still being mid-load.
+     *
+     * [MediaPlayerInterface.play] alone does not. The adapter answers it out of its own state
+     * machine and drops it outright while the track is still being set up, and a load that was
+     * started with "do not play" ends by pausing whatever intent arrived during it. Writing
+     * `playWhenReady` records the intent synchronously instead, and both the load and the READY
+     * transition it ends on honour it - which is the whole point on the resumption path, where
+     * the request routinely lands on a track the restore only just handed to the player.
+     */
+    private fun requestPlayWhenReady() {
+        player.playWhenReady = true
     }
 
     /**
@@ -2409,14 +2443,18 @@ internal class MediaServiceHandlerImpl(
      * dispatches the media button event also creates this handler, whose init calls
      * [mayBeRestoreQueue] - and a second unguarded pass would load the queue twice. That is the
      * normal ordering rather than an edge case, which is why the play request is handed to the
-     * restore already in flight via [playRequestedDuringRestore]: waiting for the lock to come
-     * free would put the whole queue load in front of the first note.
+     * restore already in flight instead of queueing behind the lock, which would put the whole
+     * queue load in front of the first note. The handoff runs in both directions, because the
+     * request can arrive at any point of a restore that suspends repeatedly: before the track
+     * reaches the player it is read out of [playRequestedDuringRestore] here, and after that
+     * point [restoreHasPrimedPlayer] lets [restoreQueueAndPlay] start the track itself and
+     * return without touching the lock at all.
      */
     private suspend fun restoreSavedQueue(playWhenReady: Boolean): Boolean =
         restoreQueueMutex.withLock {
             if (player.mediaItemCount > 0) {
                 // Already restored, or the app was running all along.
-                if (playWhenReady || playRequestedDuringRestore) player.play()
+                if (playWhenReady || playRequestedDuringRestore) requestPlayWhenReady()
                 return@withLock true
             }
             if (dataStoreManager.saveRecentSongAndQueue.first() != TRUE) return@withLock false
@@ -2467,6 +2505,13 @@ internal class MediaServiceHandlerImpl(
                 currentPlayingTrack.toGenericMediaItem(),
                 playWhenReady = playWhenReady || playRequestedDuringRestore,
             )
+            // From here the track is in the player, so [restoreQueueAndPlay] can start it itself
+            // rather than waiting for the load below. Publishing that first and then re-reading
+            // the request is what closes the window between the two: a request that arrived
+            // while addMediaItem was running - too late for the line above - is picked up here,
+            // and one that arrives after this point finds the player primed and starts it there.
+            restoreHasPrimedPlayer = true
+            if (playWhenReady || playRequestedDuringRestore) requestPlayWhenReady()
             loadPlaylistOrAlbum(index = index)
             loadJob?.join()
             resetCrossfade()
@@ -2476,7 +2521,10 @@ internal class MediaServiceHandlerImpl(
             // isPlaying — so no state is ever published and the UI sits at 0:00 on a
             // queue the user left half-finished, until they press play.
             _simpleMediaState.value = SimpleMediaState.Progress(savedPosition)
-            if (playWhenReady || playRequestedDuringRestore) player.play()
+            // Backstop: playback has normally started well before this, above. It still matters
+            // for the startup restore, which reaches here with the request already set only when
+            // it lost the race described there.
+            if (playWhenReady || playRequestedDuringRestore) requestPlayWhenReady()
             true
         }
 
