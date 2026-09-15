@@ -502,6 +502,40 @@ internal class SimpleMediaSessionCallback(
             // Play from Android Auto
             val defaultResult =
                 MediaSession.MediaItemsWithStartPosition(emptyList(), startIndex, startPositionMs)
+
+            // Voice search from Android Auto / Assistant ("play <query>") arrives here as a single
+            // MediaItem with an empty mediaId and the query in requestMetadata.searchQuery. Resolve
+            // it through the same search repository the browse path uses, then drive playback via
+            // mediaPlayerHandler (the SONG/HOME branches below use the same pattern).
+            val requestedItem = mediaItems.firstOrNull()
+            val voiceQuery = requestedItem?.requestMetadata?.searchQuery
+            if (requestedItem?.mediaId.isNullOrBlank() && !voiceQuery.isNullOrBlank()) {
+                Logger.w(TAG, "onSetMediaItems voice search: $voiceQuery")
+                val tracks =
+                    searchRepository
+                        .getSearchDataSong(voiceQuery)
+                        .lastOrNull()
+                        ?.let { (it as? Resource.Success)?.data?.toListTrack() }
+                        .orEmpty()
+                val firstQueue = tracks.firstOrNull() ?: return@future defaultResult
+                mediaPlayerHandler.setQueueData(
+                    QueueData.Data(
+                        listTracks = ArrayList(tracks),
+                        firstPlayedTrack = firstQueue,
+                        playlistId = "RDAMVM${firstQueue.videoId}",
+                        playlistName = "\"$voiceQuery\"",
+                        playlistType = PlaylistType.RADIO,
+                        continuation = null,
+                    ),
+                )
+                mediaPlayerHandler.loadMediaItem(
+                    firstQueue,
+                    Config.SONG_CLICK,
+                    0,
+                )
+                return@future defaultResult
+            }
+
             val path =
                 mediaItems.firstOrNull()?.mediaId?.split("/")
                     ?: return@future defaultResult
