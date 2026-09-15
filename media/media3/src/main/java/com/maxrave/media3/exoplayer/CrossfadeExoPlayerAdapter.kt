@@ -1117,14 +1117,28 @@ internal class CrossfadeExoPlayerAdapter(
         when (internalRepeatMode) {
             PlayerConstants.REPEAT_MODE_ONE -> true
             PlayerConstants.REPEAT_MODE_ALL -> true
-            else -> localCurrentMediaItemIndex < playlist.size - 1
+            else ->
+                if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
+                    val currentShufflePos =
+                        shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: -1
+                    currentShufflePos >= 0 && currentShufflePos < shuffleOrder.lastIndex
+                } else {
+                    localCurrentMediaItemIndex < playlist.size - 1
+                }
         }
 
     override fun hasPreviousMediaItem(): Boolean =
         when (internalRepeatMode) {
             PlayerConstants.REPEAT_MODE_ONE -> true
             PlayerConstants.REPEAT_MODE_ALL -> true
-            else -> localCurrentMediaItemIndex > 0
+            else ->
+                if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
+                    val currentShufflePos =
+                        shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: -1
+                    currentShufflePos > 0
+                } else {
+                    localCurrentMediaItemIndex > 0
+                }
         }
 
     private fun getNextMediaItemIndex(): Int =
@@ -1973,7 +1987,7 @@ internal class CrossfadeExoPlayerAdapter(
                 }
 
                 else -> {
-                    if (localCurrentMediaItemIndex < playlist.size - 1) {
+                    if (hasNextMediaItem()) {
                         seekToNext()
                     } else {
                         notifyEqualizerIntent(false)
