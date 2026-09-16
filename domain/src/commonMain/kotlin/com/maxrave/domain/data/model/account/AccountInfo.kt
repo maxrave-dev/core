@@ -7,4 +7,5 @@ data class AccountInfo(
     val email: String,
     val pageId: String? = null,
     val thumbnails: List<Thumbnail>,
+    val authUser: Int = 0,
 )

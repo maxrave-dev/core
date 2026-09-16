@@ -99,6 +99,13 @@ internal class CommonRepositoryImpl(
                         }
                     }
                 }
+            val authUserJob =
+                launch {
+                    dataStoreManager.authUser.distinctUntilChanged().collectLatest { authUser ->
+                        youTube.authUser = authUser
+                        Logger.d("YouTube", "New authUser")
+                    }
+                }
             val usingProxy =
                 launch {
                     combine(
@@ -264,6 +271,7 @@ internal class CommonRepositoryImpl(
             localeJob.join()
             ytCookieJob.join()
             pageIdJob.join()
+            authUserJob.join()
             usingProxy.join()
             dataSyncIdJob.join()
             visitorDataJob.join()
