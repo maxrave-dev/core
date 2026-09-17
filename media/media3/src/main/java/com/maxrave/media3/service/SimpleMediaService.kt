@@ -150,18 +150,10 @@ internal class SimpleMediaService :
                                 notification: Notification,
                                 ongoing: Boolean,
                             ) {
-                                fun startFg() {
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                                        startForeground(notificationId, notification, FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
-                                    } else {
-                                        startForeground(notificationId, notification)
-                                    }
-                                }
-                                coroutineScope.launch {
-                                    while (coroutineScope.isActive) {
-                                        startFg()
-                                        delay(30.seconds)
-                                    }
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                    startForeground(notificationId, notification, FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                                } else {
+                                    startForeground(notificationId, notification)
                                 }
                             }
                         },
@@ -197,7 +189,11 @@ internal class SimpleMediaService :
         session: MediaSession,
         startInForegroundRequired: Boolean,
     ) {
-        super.onUpdateNotification(session, startInForegroundRequired)
+        val player = session.player
+        val isActivelyPlaying =
+            player.playWhenReady &&
+                (player.playbackState == Player.STATE_READY || player.playbackState == Player.STATE_BUFFERING)
+        super.onUpdateNotification(session, startInForegroundRequired || isActivelyPlaying)
     }
 
     @UnstableApi
