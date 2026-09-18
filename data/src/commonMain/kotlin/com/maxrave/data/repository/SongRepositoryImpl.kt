@@ -131,7 +131,7 @@ internal class SongRepositoryImpl(
      */
     override suspend fun clearHistoryAndOrphanedSongs(): Int =
         withContext(Dispatchers.IO) {
-            val pinnedQueue = persistLiveQueueBeforeSweep()
+            persistLiveQueueBeforeSweep()
             localDataSource.deleteAllPlaybackEvents()
             val artists = localDataSource.deleteUnfollowedArtists()
             val notifications = localDataSource.deleteNotificationsOfUnfollowedArtists()
@@ -160,7 +160,6 @@ internal class SongRepositoryImpl(
                 localDataSource.checkpoint()
                 localDataSource.vacuum()
             }.onFailure { Logger.e(TAG, "VACUUM after clearing history failed: ${it.message}") }
-            unpinLiveQueueAfterSweep(pinnedQueue)
             removed
         }
 
@@ -177,35 +176,12 @@ internal class SongRepositoryImpl(
      * "do not delete what is on screen". Writing nothing when the queue is empty matters too —
      * overwriting a previously saved queue with an empty one would strip the protection instead of
      * adding it.
-     *
-     * @return whether a row was actually written, which is what [unpinLiveQueueAfterSweep] needs in
-     * order to know the `queue` table is this function's doing and not the user's own saved queue.
      */
-    private suspend fun persistLiveQueueBeforeSweep(): Boolean {
+    private suspend fun persistLiveQueueBeforeSweep() {
         val liveQueue = mediaPlayerHandler.queueData.value?.data?.listTracks.orEmpty()
-        if (liveQueue.isEmpty()) return false
+        if (liveQueue.isEmpty()) return
         Logger.d(TAG, "Clear history: pinning ${liveQueue.size} queued tracks before the sweep")
         localDataSource.recoverQueue(QueueEntity(listTrack = liveQueue))
-        return true
-    }
-
-    /**
-     * Take the pin back out once the sweep no longer needs it.
-     *
-     * [persistLiveQueueBeforeSweep] writes the queue whether or not the user asked for their queue
-     * to be saved, so leaving it there does two unwanted things: a user who deliberately turned that
-     * setting off ends up with their queue on disk anyway, and the row goes on protecting those
-     * songs from every future sweep — the next one would find them still referenced and spare them
-     * again, however long ago they stopped playing.
-     *
-     * Only when the setting is off, and only when this run is what created the row: with the setting
-     * on, the row is the user's queue being saved as normal and is none of the sweep's business.
-     */
-    private suspend fun unpinLiveQueueAfterSweep(pinned: Boolean) {
-        if (!pinned) return
-        if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) return
-        Logger.d(TAG, "Clear history: removing the pinned queue, saving the queue is turned off")
-        localDataSource.deleteQueue()
     }
 
     override fun getCanvasSong(max: Int): Flow<List<SongEntity>> =

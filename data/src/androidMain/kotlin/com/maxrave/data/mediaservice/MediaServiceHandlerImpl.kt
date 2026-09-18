@@ -2241,31 +2241,29 @@ internal class MediaServiceHandlerImpl(
     override fun mayBeSaveRecentSong(runBlocking: Boolean) {
         val unit =
             suspend {
-                if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
-                    // Skip while the playing song is unknown or the queue is mid-rebuild:
-                    // updateCatalog clears listTracks and re-inserts the current track only at
-                    // the end, so saving in that window persists a queue missing the current
-                    // track (plus a blank media id), which desyncs the next restore.
-                    val videoId = nowPlayingState.value.songEntity?.videoId
-                    if (videoId != null && queueData.value.queueState == QueueData.StateSource.STATE_INITIALIZED) {
-                        dataStoreManager.saveRecentSong(
-                            videoId,
-                            player.contentPosition,
-                        )
-                        dataStoreManager.setPlaylistFromSaved(queueData.value.data.playlistName ?: "")
-                        Logger.d(
-                            "Check saved",
-                            player.currentMediaItem
-                                ?.metadata
-                                ?.title
-                                .toString(),
-                        )
-                        val temp: ArrayList<Track> = ArrayList()
-                        temp.clear()
-                        temp.addAll(_queueData.value.data.listTracks)
-                        Logger.w("Check recover queue", temp.toString())
-                        songRepository.recoverQueue(temp)
-                    }
+                // Skip while the playing song is unknown or the queue is mid-rebuild:
+                // updateCatalog clears listTracks and re-inserts the current track only at
+                // the end, so saving in that window persists a queue missing the current
+                // track (plus a blank media id), which desyncs the next restore.
+                val videoId = nowPlayingState.value.songEntity?.videoId
+                if (videoId != null && queueData.value.queueState == QueueData.StateSource.STATE_INITIALIZED) {
+                    dataStoreManager.saveRecentSong(
+                        videoId,
+                        player.contentPosition,
+                    )
+                    dataStoreManager.setPlaylistFromSaved(queueData.value.data.playlistName ?: "")
+                    Logger.d(
+                        "Check saved",
+                        player.currentMediaItem
+                            ?.metadata
+                            ?.title
+                            .toString(),
+                    )
+                    val temp: ArrayList<Track> = ArrayList()
+                    temp.clear()
+                    temp.addAll(_queueData.value.data.listTracks)
+                    Logger.w("Check recover queue", temp.toString())
+                    songRepository.recoverQueue(temp)
                 }
             }
         if (runBlocking) {
@@ -2283,10 +2281,8 @@ internal class MediaServiceHandlerImpl(
      */
     private fun mayBeSaveRecentPosition() {
         coroutineScope.launch {
-            if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
-                val videoId = nowPlayingState.value.songEntity?.videoId ?: return@launch
-                dataStoreManager.saveRecentSong(videoId, player.contentPosition)
-            }
+            val videoId = nowPlayingState.value.songEntity?.videoId ?: return@launch
+            dataStoreManager.saveRecentSong(videoId, player.contentPosition)
         }
     }
 
@@ -2435,9 +2431,7 @@ internal class MediaServiceHandlerImpl(
      *
      * That deadline is also why the resumption path starts the track loading before the rest of
      * the queue: [load] paces itself in 100-track chunks and can reach for the network to fill
-     * in missing artists, so holding playback until it finishes is not safe here. The cost is
-     * that resumption plays the first moment of the track before the seek below lands it on the
-     * saved position.
+     * in missing artists, so holding playback until it finishes is not safe here.
      *
      * Serialized because both callers can be in flight at once - the same service start that
      * dispatches the media button event also creates this handler, whose init calls
@@ -2457,7 +2451,6 @@ internal class MediaServiceHandlerImpl(
                 if (playWhenReady || playRequestedDuringRestore) requestPlayWhenReady()
                 return@withLock true
             }
-            if (dataStoreManager.saveRecentSongAndQueue.first() != TRUE) return@withLock false
             val currentPlayingTrack =
                 songRepository
                     .getSongById(dataStoreManager.recentMediaId.first())
@@ -2498,13 +2491,17 @@ internal class MediaServiceHandlerImpl(
                 ),
             )
             // Playing is the whole difference: the track starts loading (and so reaches
-            // BUFFERING) right here, before the queue behind it, and the seek below then lands
-            // it on the saved index and position. The flag is re-read at each use because a
-            // resumption request can arrive while the reads above are still running.
+            // BUFFERING) right here, before the queue behind it. The flag is re-read at each use
+            // because a resumption request can arrive while the reads above are still running.
             addMediaItem(
                 currentPlayingTrack.toGenericMediaItem(),
                 playWhenReady = playWhenReady || playRequestedDuringRestore,
             )
+            // Land on the saved position now, not after the load: the track may already be
+            // playing (or start the moment it is primed below), and the queue load can take
+            // seconds. load() moves this item to [index] with moveMediaItem, which keeps both the
+            // item and its position, so nothing has to seek again afterwards.
+            player.seekTo(0, savedPosition)
             // From here the track is in the player, so [restoreQueueAndPlay] can start it itself
             // rather than waiting for the load below. Publishing that first and then re-reading
             // the request is what closes the window between the two: a request that arrived
@@ -2515,7 +2512,9 @@ internal class MediaServiceHandlerImpl(
             loadPlaylistOrAlbum(index = index)
             loadJob?.join()
             resetCrossfade()
-            player.seekTo(index, savedPosition)
+            // Only a paused restore still needs this. While playing, the position set above has
+            // moved on during the load, and seeking back to savedPosition would rewind it.
+            if (!(playWhenReady || playRequestedDuringRestore)) player.seekTo(index, savedPosition)
             // Announce the restored position once. Nothing plays after a restore
             // (playWhenReady = false above), and startProgressUpdate only runs while
             // isPlaying — so no state is ever published and the UI sits at 0:00 on a

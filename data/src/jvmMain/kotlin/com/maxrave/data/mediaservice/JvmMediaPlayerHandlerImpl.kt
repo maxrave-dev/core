@@ -2397,31 +2397,29 @@ class JvmMediaPlayerHandlerImpl(
     override fun mayBeSaveRecentSong(runBlocking: Boolean) {
         val unit =
             suspend {
-                if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
-                    // Skip while the playing song is unknown or the queue is mid-rebuild:
-                    // updateCatalog clears listTracks and re-inserts the current track only at
-                    // the end, so saving in that window persists a queue missing the current
-                    // track (plus a blank media id), which desyncs the next restore.
-                    val videoId = nowPlayingState.value.songEntity?.videoId
-                    if (videoId != null && queueData.value.queueState == QueueData.StateSource.STATE_INITIALIZED) {
-                        dataStoreManager.saveRecentSong(
-                            videoId,
-                            player.contentPosition,
-                        )
-                        dataStoreManager.setPlaylistFromSaved(queueData.value.data.playlistName ?: "")
-                        Logger.d(
-                            "Check saved",
-                            player.currentMediaItem
-                                ?.metadata
-                                ?.title
-                                .toString(),
-                        )
-                        val temp: ArrayList<Track> = ArrayList()
-                        temp.clear()
-                        temp.addAll(_queueData.value.data.listTracks)
-                        Logger.w("Check recover queue", temp.toString())
-                        songRepository.recoverQueue(temp)
-                    }
+                // Skip while the playing song is unknown or the queue is mid-rebuild:
+                // updateCatalog clears listTracks and re-inserts the current track only at
+                // the end, so saving in that window persists a queue missing the current
+                // track (plus a blank media id), which desyncs the next restore.
+                val videoId = nowPlayingState.value.songEntity?.videoId
+                if (videoId != null && queueData.value.queueState == QueueData.StateSource.STATE_INITIALIZED) {
+                    dataStoreManager.saveRecentSong(
+                        videoId,
+                        player.contentPosition,
+                    )
+                    dataStoreManager.setPlaylistFromSaved(queueData.value.data.playlistName ?: "")
+                    Logger.d(
+                        "Check saved",
+                        player.currentMediaItem
+                            ?.metadata
+                            ?.title
+                            .toString(),
+                    )
+                    val temp: ArrayList<Track> = ArrayList()
+                    temp.clear()
+                    temp.addAll(_queueData.value.data.listTracks)
+                    Logger.w("Check recover queue", temp.toString())
+                    songRepository.recoverQueue(temp)
                 }
             }
         if (runBlocking) {
@@ -2439,10 +2437,8 @@ class JvmMediaPlayerHandlerImpl(
      */
     private fun mayBeSaveRecentPosition() {
         coroutineScope.launch {
-            if (dataStoreManager.saveRecentSongAndQueue.first() == TRUE) {
-                val videoId = nowPlayingState.value.songEntity?.videoId ?: return@launch
-                dataStoreManager.saveRecentSong(videoId, player.contentPosition)
-            }
+            val videoId = nowPlayingState.value.songEntity?.videoId ?: return@launch
+            dataStoreManager.saveRecentSong(videoId, player.contentPosition)
         }
     }
 
@@ -2552,7 +2548,6 @@ class JvmMediaPlayerHandlerImpl(
                 if (playWhenReady) player.play()
                 return@withLock true
             }
-            if (dataStoreManager.saveRecentSongAndQueue.first() != TRUE) return@withLock false
             val currentPlayingTrack =
                 songRepository
                     .getSongById(dataStoreManager.recentMediaId.first())

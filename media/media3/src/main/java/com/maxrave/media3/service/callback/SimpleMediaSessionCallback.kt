@@ -222,31 +222,9 @@ internal class SimpleMediaSessionCallback(
 
     private fun resumeSavedQueue() {
         scope.launch {
-            if (mediaPlayerHandler.restoreQueueAndPlay()) return@launch
-            // Nothing was saved - a fresh install, or "save last played track" turned off. Play
-            // the most recent song instead: a service started by a media button that never
-            // reaches BUFFERING is killed for missing the foreground-start deadline, so
-            // resuming nothing at all is the one outcome to avoid here.
-            val recent =
-                songRepository
-                    .getRecentSong(1, 0)
-                    .firstOrNull()
-                    ?.toTrack()
-            if (recent == null) {
+            if (!mediaPlayerHandler.restoreQueueAndPlay()) {
                 Logger.w(TAG, "onPlaybackResumption: nothing to resume")
-                return@launch
             }
-            mediaPlayerHandler.setQueueData(
-                QueueData.Data(
-                    listTracks = arrayListOf(recent),
-                    firstPlayedTrack = recent,
-                    playlistId = "RDAMVM${recent.videoId}",
-                    playlistName = "\"${recent.title}\" Radio",
-                    playlistType = PlaylistType.RADIO,
-                    continuation = null,
-                ),
-            )
-            mediaPlayerHandler.loadMediaItem(recent, Config.SONG_CLICK, 0)
         }
     }
 
