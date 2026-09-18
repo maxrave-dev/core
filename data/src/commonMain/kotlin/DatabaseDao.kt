@@ -846,6 +846,36 @@ interface DatabaseDao {
         to: Int,
     )
 
+    /**
+     * Move the song at [fromIndex] to [toIndex] (0-based, in position order) as ONE transaction.
+     *
+     * A move is a read, a range shift and a final placement. Run apart, the table sits between the
+     * shift and the placement with two songs on one position and a gap at the target: a process
+     * death there leaves it that way, and a second move reading it computes its range from
+     * positions that are about to change. As one transaction the three steps commit together or
+     * not at all, and a second move only reads once the first has committed.
+     *
+     * @return false when either index is outside the playlist.
+     */
+    @Transaction
+    suspend fun moveSongInPlaylist(
+        playlistId: Long,
+        fromIndex: Int,
+        toIndex: Int,
+    ): Boolean {
+        val pairs = getAllPlaylistPairSongByPosition(playlistId)
+        if (fromIndex !in pairs.indices || toIndex !in pairs.indices) return false
+        val moved = pairs[fromIndex]
+        val target = pairs[toIndex].position
+        if (fromIndex < toIndex) {
+            shiftPositionsBackward(playlistId, moved.position, target)
+        } else {
+            shiftPositionsForward(playlistId, target, moved.position)
+        }
+        editPositionOfSongInPlaylist(playlistId, moved.songId, target)
+        return true
+    }
+
     @Query(
         "SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId AND position >= :from AND position < :to ORDER BY position " +
             "LIMIT 50",

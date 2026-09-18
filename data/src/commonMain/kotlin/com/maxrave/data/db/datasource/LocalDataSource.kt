@@ -544,6 +544,12 @@ internal class LocalDataSource(
 
     suspend fun getNewestPlaylistPairSong(playlistId: Long) = databaseDao.getNewestPlaylistPairSong(playlistId)
 
+    suspend fun moveSongInPlaylist(
+        playlistId: Long,
+        fromIndex: Int,
+        toIndex: Int,
+    ) = databaseDao.moveSongInPlaylist(playlistId, fromIndex, toIndex)
+
     suspend fun editPositionOfSongInPlaylist(
         playlistId: Long,
         videoId: String,
