@@ -45,6 +45,7 @@ class SpotifyClient {
 
     var proxy: ProxyConfig? = null
         set(value) {
+            if (field == value) return
             field = value
             spotifyClient.close()
             spotifyClient = createSpotifyClient()
