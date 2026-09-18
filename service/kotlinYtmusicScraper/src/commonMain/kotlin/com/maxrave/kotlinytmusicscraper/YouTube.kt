@@ -1713,7 +1713,7 @@ class YouTube {
                 .jsonArray[0]
                 .jsonArray[2]
                 .jsonArray
-                .first { (it as? JsonPrimitive)?.content?.startsWith(VISITOR_DATA_PREFIX) == true }
+                .first { (it as? JsonPrimitive)?.content?.let(VISITOR_DATA_REGEX::containsMatchIn) == true }
                 .jsonPrimitive.content
         } catch (e: Exception) {
             e.printStackTrace()
@@ -2133,7 +2133,11 @@ class YouTube {
     companion object {
         const val MAX_GET_QUEUE_SIZE = 1000
 
-        private const val VISITOR_DATA_PREFIX = "Cgt"
+        // Visitor data is a base64 protobuf: bytes 0x0a 0x0b (field 1, length 11) then an 11-char
+        // id. "Cg" is fixed; the third char encodes the top 2 bits of the id's first byte, so it is
+        // "s" for a digit or "-" and "t" for a letter or "_" ("u"/"v" only for a non-ASCII byte).
+        // Matching "Cgt" alone missed every id starting with a digit.
+        private val VISITOR_DATA_REGEX = Regex("^Cg[stuv][A-Za-z0-9_-]{15,}")
 
         const val DEFAULT_VISITOR_DATA = "CgtsZG1ySnZiQWtSbyiMjuGSBg%3D%3D"
 
