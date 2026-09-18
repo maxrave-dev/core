@@ -12,6 +12,7 @@ import org.simpmusic.lyrics.am.parseAMHlsVariants
 import org.simpmusic.lyrics.am.pickAMRendition
 import org.simpmusic.lyrics.am.AMArtistResource
 import org.simpmusic.lyrics.am.AMSearchResponse
+import org.simpmusic.lyrics.am.AppleMusicArtworkResult
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.response.BaseResponse
@@ -194,7 +195,6 @@ class SimpMusicLyricsClient {
                 ?.artists
                 ?.get(id)
         }
-
     /**
      * Search the AM catalog for albums, ranked the way AM ranked them. Each result already carries
      * its animated artwork when it has one, so the caller needs no follow-up request.
@@ -283,6 +283,23 @@ class SimpMusicLyricsClient {
             parseAMHlsVariants(response.bodyAsText(), masterUrl)
                 .pickAMRendition(minWidth)
                 ?.uri
+        }
+
+    suspend fun getAppleMusicAlbumArtwork(
+        albumTitle: String,
+        artistName: String,
+    ): Result<AppleMusicArtworkResult?> =
+        runCatching {
+            lyricsService.getAppleMusicAlbumArtwork(albumTitle, artistName)
+        }
+
+    suspend fun getAppleMusicSongArtwork(
+        songTitle: String,
+        artistName: String,
+        albumTitle: String? = null,
+    ): Result<AppleMusicArtworkResult?> =
+        runCatching {
+            lyricsService.getAppleMusicSongArtwork(songTitle, artistName, albumTitle)
         }
 
     private suspend inline fun <reified T> HttpResponse.bodyOrThrow(): T {
