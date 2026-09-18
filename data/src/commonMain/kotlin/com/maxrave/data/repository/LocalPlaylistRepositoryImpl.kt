@@ -996,19 +996,12 @@ internal class LocalPlaylistRepositoryImpl(
                     return@flow
                 }
 
-            // Step 2: Update local DB positions
-            val movedPosition = movedPair.position
-            val targetPosition = allPairs[toIndex].position
-
-            if (fromIndex < toIndex) {
-                // Moving down: shift items between (from, to] backward by 1
-                localDataSource.shiftPositionsBackward(playlistId, movedPosition, targetPosition)
-            } else {
-                // Moving up: shift items between [to, from) forward by 1
-                localDataSource.shiftPositionsForward(playlistId, targetPosition, movedPosition)
+            // Step 2: Update local DB positions — read, shift and place as one transaction. The API
+            // call above stays outside it: a DB lock must never be held while waiting on the network.
+            if (!localDataSource.moveSongInPlaylist(playlistId, fromIndex, toIndex)) {
+                emit(LocalResource.Error("Index out of bounds"))
+                return@flow
             }
-            // Place the moved item at the target position
-            localDataSource.editPositionOfSongInPlaylist(playlistId, movedVideoId, targetPosition)
 
             emit(LocalResource.Success("Position updated"))
         }.flowOn(Dispatchers.IO)
@@ -1030,26 +1023,10 @@ internal class LocalPlaylistRepositoryImpl(
             }
             emit(LocalResource.Loading())
 
-            // Get all pairs ordered by position to resolve indexes
-            val allPairs = localDataSource.getAllPlaylistPairSongByPosition(playlistId)
-            if (fromIndex !in allPairs.indices || toIndex !in allPairs.indices) {
+            if (!localDataSource.moveSongInPlaylist(playlistId, fromIndex, toIndex)) {
                 emit(LocalResource.Error("Index out of bounds"))
                 return@flow
             }
-
-            val movedPair = allPairs[fromIndex]
-            val movedPosition = movedPair.position
-            val targetPosition = allPairs[toIndex].position
-
-            if (fromIndex < toIndex) {
-                // Moving down: shift items between (from, to] backward by 1
-                localDataSource.shiftPositionsBackward(playlistId, movedPosition, targetPosition)
-            } else {
-                // Moving up: shift items between [to, from) forward by 1
-                localDataSource.shiftPositionsForward(playlistId, targetPosition, movedPosition)
-            }
-            // Place the moved item at the target position
-            localDataSource.editPositionOfSongInPlaylist(playlistId, movedPair.songId, targetPosition)
 
             emit(LocalResource.Success("Position updated"))
         }.flowOn(Dispatchers.IO)
