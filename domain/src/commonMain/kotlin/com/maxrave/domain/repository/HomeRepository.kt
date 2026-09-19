@@ -1,5 +1,6 @@
 package com.maxrave.domain.repository
 
+import com.maxrave.domain.data.model.home.BrowsePage
 import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.data.model.home.chart.Chart
 import com.maxrave.domain.data.model.mood.Mood
@@ -45,4 +46,10 @@ interface HomeRepository {
     fun getGenreData(params: String): Flow<Resource<GenreObject>>
 
     fun getMoodData(params: String): Flow<Resource<MoodsMomentObject>>
+
+    /** The page a home section's "More" endpoint points to — see [BrowsePage]. */
+    fun getBrowsePage(
+        browseId: String,
+        params: String?,
+    ): Flow<Resource<BrowsePage>>
 }

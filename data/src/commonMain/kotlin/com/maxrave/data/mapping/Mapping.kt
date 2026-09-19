@@ -3,6 +3,7 @@ package com.maxrave.data.mapping
 import com.maxrave.data.parser.toListThumbnail
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.canvas.CanvasResult
+import com.maxrave.domain.data.model.home.Content
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
 import com.maxrave.domain.data.model.metadata.Line
 import com.maxrave.domain.data.model.metadata.Lyrics
@@ -23,6 +24,7 @@ import com.maxrave.kotlinytmusicscraper.models.SearchSuggestions
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.VideoItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
+import com.maxrave.kotlinytmusicscraper.models.YTItem
 import com.maxrave.kotlinytmusicscraper.models.response.PipedResponse
 import com.maxrave.kotlinytmusicscraper.models.sponsorblock.SkipSegments
 import com.maxrave.kotlinytmusicscraper.models.youtube.Transcript
@@ -505,3 +507,91 @@ internal fun AccountInfo.toDomainAccountInfo(): com.maxrave.domain.data.model.ac
         authUser = this.authUser,
         thumbnails = thumbnails.toListThumbnail(),
     )
+
+/**
+ * One item of a "More" page as the [Content] a home card is drawn from. The card works out what the
+ * item is from which id is set — a videoId plays it, a browseId opens an album or artist, a
+ * playlistId opens a playlist — and draws a wide thumbnail as a video card and a square one as a
+ * song card, so the sizes are set here to say which, not read off the response.
+ */
+internal fun YTItem.toHomeContent(): Content =
+    when (this) {
+        is SongItem -> {
+            Content(
+                album = album?.let { Album(id = it.id, name = it.name) },
+                artists = artists.map { Artist(id = it.id, name = it.name) },
+                description = null,
+                isExplicit = explicit,
+                playlistId = null,
+                browseId = null,
+                thumbnails = listOf(Thumbnail(height = 544, url = thumbnail, width = 544)),
+                title = title,
+                videoId = id,
+                views = null,
+                durationSeconds = duration,
+                videoType = musicVideoType,
+            )
+        }
+
+        is VideoItem -> {
+            Content(
+                album = album?.let { Album(id = it.id, name = it.name) },
+                artists = artists.map { Artist(id = it.id, name = it.name) },
+                description = null,
+                isExplicit = explicit,
+                playlistId = null,
+                browseId = null,
+                thumbnails = listOf(Thumbnail(height = 720, url = thumbnail, width = 1280)),
+                title = title,
+                videoId = id,
+                views = view,
+                durationSeconds = duration,
+                videoType = musicVideoType,
+            )
+        }
+
+        is AlbumItem -> {
+            Content(
+                album = null,
+                artists = artists?.map { Artist(id = it.id, name = it.name) },
+                description = null,
+                isExplicit = explicit,
+                playlistId = null,
+                browseId = browseId,
+                thumbnails = listOf(Thumbnail(height = 544, url = thumbnail, width = 544)),
+                title = title,
+                videoId = null,
+                views = null,
+            )
+        }
+
+        is PlaylistItem -> {
+            Content(
+                album = null,
+                artists = author?.let { listOf(Artist(id = it.id, name = it.name)) },
+                description = songCountText,
+                isExplicit = false,
+                playlistId = id,
+                browseId = null,
+                thumbnails = listOf(Thumbnail(height = 544, url = thumbnail, width = 544)),
+                title = title,
+                videoId = null,
+                views = null,
+            )
+        }
+
+        is ArtistItem -> {
+            Content(
+                album = null,
+                artists = null,
+                description = subscribers,
+                isExplicit = false,
+                playlistId = null,
+                browseId = id,
+                thumbnails = listOf(Thumbnail(height = 544, url = thumbnail, width = 544)),
+                title = title,
+                videoId = null,
+                views = null,
+            )
+        }
+    }

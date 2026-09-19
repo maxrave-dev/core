@@ -5,6 +5,7 @@ import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.kotlinytmusicscraper.models.ArtistItem
+import com.maxrave.kotlinytmusicscraper.models.BrowseEndpoint
 import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicTwoRowItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.PlaylistItem
@@ -104,6 +105,15 @@ internal fun parseMixedContent(
                         ?.navigationEndpoint
                         ?.browseEndpoint
                         ?.browseId
+                val moreEndpoint =
+                    results1
+                        ?.header
+                        ?.musicCarouselShelfBasicHeaderRenderer
+                        ?.moreContentButton
+                        ?.buttonRenderer
+                        ?.navigationEndpoint
+                        ?.browseEndpoint
+                        ?.toMoreEndpoint()
                 val listContent = mutableListOf<Content?>()
                 if (!contentList.isNullOrEmpty()) {
                     for (result1 in contentList) {
@@ -549,6 +559,7 @@ internal fun parseMixedContent(
                             subtitle = subtitle,
                             thumbnail = thumbnail,
                             channelId = if (artistChannelId?.contains("UC") == true) artistChannelId else null,
+                            moreEndpoint = moreEndpoint,
                         ),
                     )
                 }
@@ -773,6 +784,13 @@ internal fun parseNewRelease(
                         radio = null,
                     )
                 },
+            // YouTube still hangs FEmusic_new_releases_albums on this shelf, but that page has answered
+            // 4xx since at least 2026-05-29 (ArchiveTune added a fallback for it that day) and 404s for
+            // every client as of 2026-09-19, so a More there only opens an error. Any other target stays.
+            moreEndpoint =
+                explore.releasedMoreEndpoint
+                    ?.takeUnless { it.browseId == "FEmusic_new_releases_albums" }
+                    ?.toMoreEndpoint(),
         ),
     )
     result.add(
@@ -829,7 +847,18 @@ internal fun parseNewRelease(
                         radio = null,
                     )
                 },
+            moreEndpoint = explore.musicVideoMoreEndpoint?.toMoreEndpoint(),
         ),
     )
+    // Signed out, FEmusic_new_releases carries only its video shelf, so "New releases" comes back
+    // empty; a section with nothing in it only draws a bare title.
+    result.removeAll { it.contents.isEmpty() }
     return result
 }
+
+private fun BrowseEndpoint.toMoreEndpoint() =
+    HomeItem.MoreEndpoint(
+        browseId = browseId,
+        params = params,
+        pageType = browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType,
+    )

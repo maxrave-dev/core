@@ -9,5 +9,7 @@ data class BrowseResult(
     data class Item(
         val title: String?,
         val items: List<YTItem>,
+        /** Mood & genre buttons: not [YTItem]s, so they ride alongside. */
+        val moods: List<MoodAndGenres.Item> = emptyList(),
     )
 }
