@@ -1417,25 +1417,6 @@ internal class DataStoreManagerImpl(
         }
     }
 
-    override val keepServiceAlive: Flow<String> =
-        settingsDataStore.data.map { preferences ->
-            preferences[KEEP_SERVICE_ALIVE] ?: FALSE
-        }
-
-    override suspend fun setKeepServiceAlive(keep: Boolean) {
-        withContext(Dispatchers.IO) {
-            if (keep) {
-                settingsDataStore.edit { settings ->
-                    settings[KEEP_SERVICE_ALIVE] = TRUE
-                }
-            } else {
-                settingsDataStore.edit { settings ->
-                    settings[KEEP_SERVICE_ALIVE] = FALSE
-                }
-            }
-        }
-    }
-
     override val crossfadeEnabled: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[CROSSFADE_ENABLED] ?: FALSE
@@ -1804,7 +1785,6 @@ internal class DataStoreManagerImpl(
         val FROM_SAVED_PLAYLIST = stringPreferencesKey("from_saved_playlist")
 
         val KILL_SERVICE_ON_EXIT = stringPreferencesKey("kill_service_on_exit")
-        val KEEP_SERVICE_ALIVE = stringPreferencesKey("keep_service_alive")
         val CROSSFADE_ENABLED = stringPreferencesKey("crossfade_enabled")
         val CROSSFADE_DURATION = intPreferencesKey("crossfade_duration")
         val CROSSFADE_DJ_MODE = stringPreferencesKey("crossfade_dj_mode")

@@ -428,10 +428,6 @@ interface DataStoreManager {
 
     suspend fun setKillServiceOnExit(kill: Boolean)
 
-    val keepServiceAlive: Flow<String>
-
-    suspend fun setKeepServiceAlive(keep: Boolean)
-
     val crossfadeEnabled: Flow<String>
 
     suspend fun setCrossfadeEnabled(enabled: Boolean)
