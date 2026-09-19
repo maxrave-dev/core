@@ -82,6 +82,7 @@ import okio.Path.Companion.toPath
 import okio.SYSTEM
 import okio.buffer
 import okio.use
+import kotlin.concurrent.Volatile
 import kotlin.time.ExperimentalTime
 
 private const val TAG = "YouTubeScraperClient"
@@ -122,28 +123,41 @@ class Ytmusic {
     var visitorData: String? = null
     var dataSyncId: String? = null
     private var poTokenChallengeRequestKey = "O43z0dpjhgX20SCx4KAo"
-    var cookie: String? = null
-        set(value) {
-            field = value
-            cookieMap = if (value == null) emptyMap() else parseCookieString(value)
-            extractor.logIn(value)
-        }
+    // The three request-identity values are swapped as ONE immutable snapshot and read once
+    // per request (see ytClient / getAuthorizationHeader): a request must never see the
+    // pageId of one account with the authuser or cookie of another.
+    private data class Session(
+        val cookie: String?,
+        val pageId: String?,
+        val authUser: Int,
+    )
 
-    var pageId: String? = null
+    @Volatile
+    private var session = Session(cookie = null, pageId = null, authUser = 0)
+
+    val cookie: String? get() = session.cookie
+    val pageId: String? get() = session.pageId
 
     // Index of the Google account inside the browser session the cookie came from
     // (the `authuser` query param on youtube.com). A brand channel's pageId is only
     // valid together with the authuser that owns it; sending 0 for a channel of the
     // second signed-in account makes YouTube answer as if not logged in.
-    var authUser: Int = 0
+    val authUser: Int get() = session.authUser
+
+    fun setSession(
+        cookie: String?,
+        pageId: String?,
+        authUser: Int,
+    ) {
+        session = Session(cookie, pageId, authUser)
+        extractor.logIn(cookie)
+    }
 
     // TIDAL credentials. Empty until CommonRepositoryImpl pushes the values fetched from the
     // remote config (cached in DataStore). Deliberately NOT hard-coded in source — while
     // empty, TIDAL metadata lookups fail silently until the first successful fetch.
     var tidalClientId: String = ""
     var tidalClientSecret: String = ""
-
-    private var cookieMap = emptyMap<String, String>()
 
     var proxy: ProxyConfig? = null
         set(value) {
@@ -215,13 +229,14 @@ class Ytmusic {
         isUsingReferer: Boolean = true,
         customCookie: String? = null,
     ) {
+        val s = session
         contentType(ContentType.Application.Json)
         headers {
             append("X-Goog-Api-Format-Version", "1")
             append("X-YouTube-Client-Name", "${client.xClientName ?: 1}")
             append("X-YouTube-Client-Version", client.clientVersion)
-            append("X-Goog-Authuser", authUser.toString())
-            pageId?.let {
+            append("X-Goog-Authuser", s.authUser.toString())
+            s.pageId?.let {
                 append("X-Goog-Pageid", it)
             }
             append("x-origin", "https://music.youtube.com")
@@ -229,12 +244,13 @@ class Ytmusic {
                 append("Referer", client.referer)
             }
             if (setLogin) {
-                val cookie = customCookie ?: this@Ytmusic.cookie
+                val cookie = customCookie ?: s.cookie
                 cookie?.let { cookie ->
                     append("Cookie", cookie)
-                    if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) return@let
+                    val parsedCookies = parseCookieString(cookie)
+                    if ("SAPISID" !in parsedCookies || "__Secure-3PAPISID" !in parsedCookies) return@let
                     val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-                    val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+                    val sapisidCookie = parsedCookies["SAPISID"] ?: parsedCookies["__Secure-3PAPISID"]
                     val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
                     Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
                     append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
@@ -246,15 +262,18 @@ class Ytmusic {
     }
 
     @OptIn(ExperimentalTime::class)
-    internal fun getAuthorizationHeader(): String? =
-        cookie?.let { cookie ->
-            if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) null
+    internal fun getAuthorizationHeader(): String? {
+        val s = session
+        return s.cookie?.let { cookie ->
+            val parsedCookies = parseCookieString(cookie)
+            if ("SAPISID" !in parsedCookies || "__Secure-3PAPISID" !in parsedCookies) return@let null
             val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-            val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+            val sapisidCookie = parsedCookies["SAPISID"] ?: parsedCookies["__Secure-3PAPISID"]
             val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
             Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
             "SAPISIDHASH ${currentTime}_$sapisidHash"
         }
+    }
 
     fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
 

@@ -169,23 +169,17 @@ class YouTube {
     /**
      * Set cookie and authentication header for client (for log in option)
      */
-    var cookie: String?
-        get() = ytMusic.cookie
-        set(value) {
-            ytMusic.cookie = value
-        }
+    val cookie: String? get() = ytMusic.cookie
 
-    var pageId: String?
-        get() = ytMusic.pageId
-        set(value) {
-            ytMusic.pageId = value
-        }
+    val pageId: String? get() = ytMusic.pageId
 
-    var authUser: Int
-        get() = ytMusic.authUser
-        set(value) {
-            ytMusic.authUser = value
-        }
+    val authUser: Int get() = ytMusic.authUser
+
+    fun setSession(
+        cookie: String?,
+        pageId: String?,
+        authUser: Int,
+    ) = ytMusic.setSession(cookie, pageId, authUser)
 
     /**
      * TIDAL credentials, backed by [Ytmusic]. Set by the data layer from cached remote config.
