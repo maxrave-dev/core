@@ -53,6 +53,26 @@ interface MediaPlayerInterface {
 
     fun removeMediaItem(index: Int)
 
+    /**
+     * Removes `[fromIndex, toIndex)` as ONE operation: one timeline notification, one shuffle-order
+     * rebuild, one precache pass.
+     *
+     * Removing the same range one item at a time is what makes a queue trim as expensive as the
+     * batch append in #2504 — every single removal notifies listeners and, on the mpv adapter,
+     * tears down and recreates the precached handles.
+     *
+     * The default keeps older implementations working by falling back to [removeMediaItem]; both
+     * shipping adapters override it.
+     */
+    fun removeMediaItems(
+        fromIndex: Int,
+        toIndex: Int,
+    ) {
+        for (index in toIndex - 1 downTo fromIndex) {
+            removeMediaItem(index)
+        }
+    }
+
     fun moveMediaItem(
         fromIndex: Int,
         toIndex: Int,

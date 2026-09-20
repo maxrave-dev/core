@@ -966,6 +966,54 @@ internal class CrossfadeExoPlayerAdapter(
         }
     }
 
+    /**
+     * Drops `[fromIndex, toIndex)` in one pass: one shuffle rebuild, one precache pass, one timeline
+     * notification, instead of repeating all three per removed track (the cost shape of #2504).
+     *
+     * Indices count the UNSHUFFLED playlist, like [removeMediaItem] and [currentMediaItemIndex] —
+     * NOT the shuffled timeline the listeners see. A caller working from timeline positions must
+     * map them first, or skip this while shuffle is on.
+     *
+     * Only a range strictly BELOW the current track is supported — all the radio queue trim needs.
+     * An empty, inverted, or current-track-reaching range is refused rather than guessed at, since
+     * getting it wrong stops playback.
+     */
+    override fun removeMediaItems(
+        fromIndex: Int,
+        toIndex: Int,
+    ) {
+        coroutineScope.launch {
+            // Bounds and state are re-checked INSIDE the launch, on the same queue as the mutation:
+            // another queued op (clearMediaItems / setMediaItem) can shrink the playlist between a
+            // caller-thread check and this body, which is issue #2156's crash shape.
+            if (fromIndex < 0 || toIndex <= fromIndex) return@launch
+            if (toIndex > playlist.size || toIndex > localCurrentMediaItemIndex) return@launch
+            // crossfadeFromIndex is an index into this same playlist and is NOT shifted here; a
+            // cancelled fade would revert to a track ~toIndex positions away. Trims can wait.
+            if (isCrossfading) return@launch
+
+            val removed = playlist.subList(fromIndex, toIndex).toList()
+            playlist.subList(fromIndex, toIndex).clear()
+            removed.forEach { track ->
+                precachedPlayers.remove(track.mediaId)?.let { cached ->
+                    cleanupPlayerInternal(cached.player)
+                }
+            }
+            localCurrentMediaItemIndex -= removed.size
+
+            if (internalShuffleModeEnabled) {
+                createShuffleOrder()
+            }
+            // Everything removed sits behind the current track and precache is keyed by mediaId,
+            // so the window ahead needs no rebuild — clearing it here would throw away the handle
+            // the next crossfade is about to use. This only tops it back up, which also restores
+            // any handle an id repeated in the dropped history took with it.
+            triggerPrecachingInternal()
+
+            notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
+        }
+    }
+
     override fun moveMediaItem(
         fromIndex: Int,
         toIndex: Int,

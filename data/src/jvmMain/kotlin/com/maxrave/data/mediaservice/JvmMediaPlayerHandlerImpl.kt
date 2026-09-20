@@ -52,6 +52,7 @@ import com.maxrave.domain.mediaservice.handler.NowPlayingTrackState
 import com.maxrave.domain.mediaservice.handler.PlayerEvent
 import com.maxrave.domain.mediaservice.handler.PlaylistType
 import com.maxrave.domain.mediaservice.handler.QueueData
+import com.maxrave.domain.mediaservice.handler.RadioQueueTrim
 import com.maxrave.domain.mediaservice.handler.RepeatState
 import com.maxrave.domain.mediaservice.handler.SimpleMediaState
 import com.maxrave.domain.mediaservice.handler.SleepTimerState
@@ -1745,7 +1746,15 @@ class JvmMediaPlayerHandlerImpl(
             _queueData.update {
                 it.copy(
                     queueState = QueueData.StateSource.STATE_INITIALIZED,
-                    data = it.data.copy(playlistId = "RDAMVM${lastTrack.videoId}"),
+                    data =
+                        it.data.copy(
+                            playlistId = "RDAMVM${lastTrack.videoId}",
+                            // Past the end of what the user picked, this queue IS a radio: from here
+                            // on it is extended by the radio of its last track and grows without end.
+                            // Saying so keeps the type honest and lets the history trim apply, while
+                            // the album snapshot for the crossfade rule was already taken at load.
+                            playlistType = PlaylistType.RADIO,
+                        ),
                 )
             }
             reorderShuffledQueue(player.getCurrentMediaTimeLine())
@@ -1995,6 +2004,9 @@ class JvmMediaPlayerHandlerImpl(
                     queueState = QueueData.StateSource.STATE_INITIALIZED,
                 ).addTrackList(catalogMetadata)
         }
+        // Right after a batch is the only moment the queue grows, and the moment both lists are
+        // known to be aligned again.
+        trimRadioHistoryIfNeeded()
         reorderShuffledQueue(player.getCurrentMediaTimeLine())
     }
 
@@ -2910,6 +2922,7 @@ class JvmMediaPlayerHandlerImpl(
     ) {
         super.onTimelineChanged(list, reason)
         Logger.d(TAG, "onTimelineChanged: $reason, items: ${list.size}")
+        applyPendingRadioTrim(list)
         reorderShuffledQueue(list)
     }
 
@@ -2971,23 +2984,95 @@ class JvmMediaPlayerHandlerImpl(
 
     private fun reorderShuffledQueue(list: List<GenericMediaItem>) {
         val listTrack = queueData.value.data.listTracks
-        Logger.d(TAG, "Reordering shuffled queue: SIZE ${list.size}, TITLE ${list.map { it.mediaId }}")
-        list
-            .mapNotNull {
-                listTrack.firstOrNull { track -> track.videoId == it.mediaId }
-            }.let { sorted ->
-                Logger.d(TAG, "Reordered shuffled queue: SIZE ${sorted.size}, TITLE ${sorted.map { it.title }}")
-                Logger.d(TAG, "Original queue: SIZE ${listTrack.size}, TITLE ${listTrack.map { it.title }}")
-                if (sorted.size != listTrack.size) return
-                _queueData.update {
-                    it.copy(
-                        data =
-                            it.data.copy(
-                                listTracks = sorted,
-                            ),
-                    )
-                }
-            }
+        // Runs once per appended track — about 50 times per radio batch — so it is written to stay
+        // cheap as the queue grows (#2504): a map lookup instead of a nested search, and sizes in
+        // the log instead of every title. Building those three title strings cost more than the
+        // matching did, and the result is thrown away whenever the sizes disagree anyway.
+        val byId = HashMap<String, Track>(listTrack.size)
+        listTrack.forEach { track ->
+            if (!byId.containsKey(track.videoId)) byId[track.videoId] = track
+        }
+        val sorted = list.mapNotNull { byId[it.mediaId] }
+        Logger.d(TAG, "Reordering shuffled queue: player ${list.size}, queue ${listTrack.size}, matched ${sorted.size}")
+        if (sorted.size != listTrack.size) return
+        _queueData.update {
+            it.copy(
+                data =
+                    it.data.copy(
+                        listTracks = sorted,
+                    ),
+            )
+        }
+    }
+
+    /** Set by [trimRadioHistoryIfNeeded]: the queue size to expect once the player applies a trim. */
+    private var pendingRadioTrimTo: Int? = null
+
+    /**
+     * Asks the player to drop the oldest played tracks of a RADIO queue.
+     *
+     * A radio grows without end and everything that walks the queue gets more expensive with it
+     * (#2504). A playlist or album is only trimmed once endless queue has carried it past the list
+     * the user picked, at which point it is re-typed as radio.
+     *
+     * Nothing is cut here unless the player's list and [queueData] are already aligned and the ids
+     * at the front match: trimming lists that are out of step is exactly the bug this must never
+     * cause. [queueData] is then cut by [applyPendingRadioTrim], after the player proves it removed
+     * them.
+     */
+    private fun trimRadioHistoryIfNeeded() {
+        if (queueData.value.data.playlistType != PlaylistType.RADIO) return
+        // Shuffle splits the two index spaces: `currentMediaItemIndex` and the indices
+        // `removeMediaItems` takes both count the player's UNSHUFFLED playlist, while the timeline
+        // and `listTracks` are in shuffled order. The oldest-played tracks are then not a range in
+        // the playlist at all, so trimming by index there would delete upcoming tracks. Radio with
+        // shuffle on simply keeps its full history.
+        if (player.shuffleModeEnabled) return
+        val listTracks = queueData.value.data.listTracks
+        val playerItems = player.getCurrentMediaTimeLine()
+        if (playerItems.size != listTracks.size) return
+        val drop = RadioQueueTrim.countToDropFromFront(player.currentMediaItemIndex, listTracks.size)
+        if (drop <= 0) return
+        if (playerItems.take(drop).map { it.mediaId } != listTracks.take(drop).map { it.videoId }) return
+        // queueData FOLLOWS the player here, it does not lead it. The adapters apply the removal on
+        // their own thread and re-check their guards there, so they may refuse (a crossfade started,
+        // the playlist moved). Cutting queueData now would then leave the two lists permanently
+        // offset — the "tap a queue row, play the wrong song" bug this feature must not cause.
+        pendingRadioTrimTo = listTracks.size - drop
+        player.removeMediaItems(0, drop)
+        Logger.d(TAG, "Radio trim requested: dropping $drop, expecting queue ${listTracks.size - drop}")
+    }
+
+    /**
+     * Applies a requested radio trim to [queueData] once the player's own timeline proves it
+     * happened: same size, and the player's ids are exactly the tail of the tracks we hold.
+     *
+     * Anything else clears the request instead of cutting, so a refused or superseded trim leaves
+     * both lists untouched and aligned rather than silently offset.
+     */
+    private fun applyPendingRadioTrim(list: List<GenericMediaItem>) {
+        val expected = pendingRadioTrimTo ?: return
+        val listTracks = queueData.value.data.listTracks
+        if (list.size >= listTracks.size) {
+            pendingRadioTrimTo = null
+            return
+        }
+        if (list.size != expected) return
+        val drop = listTracks.size - list.size
+        if (list.map { it.mediaId } != listTracks.drop(drop).map { it.videoId }) {
+            pendingRadioTrimTo = null
+            return
+        }
+        _queueData.update {
+            it.copy(
+                data =
+                    it.data.copy(
+                        listTracks = listTracks.drop(drop),
+                    ),
+            )
+        }
+        pendingRadioTrimTo = null
+        Logger.d(TAG, "Trimmed radio history: dropped $drop, queue now ${list.size}")
     }
 
     /**
