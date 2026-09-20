@@ -23,6 +23,7 @@ import com.maxrave.logger.Logger
 import com.maxrave.media3.R
 import com.maxrave.media3.extension.toCommandButton
 import com.maxrave.media3.utils.CoilBitmapLoader
+import com.maxrave.media3.utils.sizeLimitedForSession
 import kotlinx.coroutines.runBlocking
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
@@ -193,7 +194,10 @@ internal class SimpleMediaService :
                 player,
                 callback,
             ).setId(this.javaClass.name)
-            .setBitmapLoader(coilBitmapLoader)
+            // Capped at the platform's own artwork limit so the framework never rescales the shared
+            // bitmap in setMetadata — see sizeLimitedForSession (#2500). Falls back to the plain
+            // loader if the limit cannot be read.
+            .setBitmapLoader(sizeLimitedForSession(service, coilBitmapLoader))
             .build()
 
     private fun isAppInForeground(): Boolean {

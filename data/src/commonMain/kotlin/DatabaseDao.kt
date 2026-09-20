@@ -1062,7 +1062,11 @@ interface DatabaseDao {
                 ),
             )
 
-        channelIds.forEach { channelId ->
+        // A track can credit the same channel twice (YouTube lists it in both the artist and the
+        // featured runs). `event_artist` is keyed on (eventId, channelId), so the second insert
+        // aborts the whole transaction and the exception surfaces as a crash mid-playback (#2521).
+        // One play counts once per artist anyway.
+        channelIds.distinct().forEach { channelId ->
             insertEventArtist(
                 EventArtistEntity(
                     eventId = eventId,
