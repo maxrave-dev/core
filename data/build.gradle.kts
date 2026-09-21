@@ -118,6 +118,8 @@ kotlin {
                 implementation(libs.koin.android)
                 implementation(projects.media3)
                 implementation(libs.room.ktx)
+                // Login sync: the phone sends sign-ins to the Desktop
+                implementation(projects.loginSync)
             }
         }
 
@@ -137,6 +139,8 @@ kotlin {
                 implementation(libs.nowplaying)
                 implementation(libs.jna)
                 implementation(libs.jna.platform)
+                // Login sync: the Desktop receives sign-ins from the phone
+                implementation(projects.loginSync)
             }
         }
     }
