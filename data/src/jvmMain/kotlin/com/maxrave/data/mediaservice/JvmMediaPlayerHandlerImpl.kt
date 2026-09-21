@@ -106,6 +106,7 @@ import org.koin.mp.KoinPlatform.getKoin
 import org.simpmusic.nowplayingcenter.NPYC
 import org.simpmusic.nowplayingcenter.domain.NowPlayingListener
 import org.simpmusic.nowplayingcenter.domain.Platform
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.PI
 import kotlin.math.cos
@@ -1376,16 +1377,19 @@ class JvmMediaPlayerHandlerImpl(
     }
 
     override fun removeMediaItem(position: Int) {
+        // A position handed in from the queue screen can be stale: a radio trims its played history
+        // off the front while that screen is open. Check it against the queue as it is now, and
+        // apply the removal to the current list rather than to a copy taken before.
+        if (position !in queueData.value.data.listTracks.indices) return
         player.removeMediaItem(position)
-        val temp =
-            _queueData.value.data.listTracks
-                .toMutableList()
-        temp.removeAt(position)
         _queueData.update {
+            val list = it.data.listTracks.toMutableList()
+            if (position !in list.indices) return@update it
+            list.removeAt(position)
             it.copy(
                 data =
                     it.data.copy(
-                        listTracks = temp,
+                        listTracks = list,
                     ),
             )
         }
@@ -1726,6 +1730,9 @@ class JvmMediaPlayerHandlerImpl(
                                             data =
                                                 it.data.copy(
                                                     playlistId = radioId,
+                                                    // Past the list the user picked: a radio from
+                                                    // here on, like the other Endless branch below.
+                                                    playlistType = PlaylistType.RADIO,
                                                 ),
                                             queueState = QueueData.StateSource.STATE_INITIALIZED,
                                         )
@@ -1819,31 +1826,35 @@ class JvmMediaPlayerHandlerImpl(
     override fun getCurrentMediaItem(): GenericMediaItem? = player.currentMediaItem
 
     override suspend fun moveItemUp(position: Int) {
+        // Checked against the queue as it is now, for the reason in removeMediaItem.
+        if (position !in 1 until queueData.value.data.listTracks.size) return
         moveMediaItem(position, position - 1)
-        queueData.value.data.listTracks.toMutableList().let { list ->
+        _queueData.update {
+            val list = it.data.listTracks.toMutableList()
+            if (position !in 1 until list.size) return@update it
             val temp = list[position]
             list[position] = list[position - 1]
             list[position - 1] = temp
-            _queueData.update {
-                it.copy(
-                    data = it.data.copy(listTracks = list),
-                )
-            }
+            it.copy(
+                data = it.data.copy(listTracks = list),
+            )
         }
         _currentSongIndex.value = player.currentMediaItemIndex
     }
 
     override suspend fun moveItemDown(position: Int) {
+        // Checked against the queue as it is now, for the reason in removeMediaItem.
+        if (position !in 0 until queueData.value.data.listTracks.size - 1) return
         moveMediaItem(position, position + 1)
-        queueData.value.data.listTracks.toMutableList().let { list ->
+        _queueData.update {
+            val list = it.data.listTracks.toMutableList()
+            if (position !in 0 until list.size - 1) return@update it
             val temp = list[position]
             list[position] = list[position + 1]
             list[position + 1] = temp
-            _queueData.update {
-                it.copy(
-                    data = it.data.copy(listTracks = list),
-                )
-            }
+            it.copy(
+                data = it.data.copy(listTracks = list),
+            )
         }
         _currentSongIndex.value = player.currentMediaItemIndex
     }
@@ -2253,9 +2264,10 @@ class JvmMediaPlayerHandlerImpl(
                 queueState = QueueData.StateSource.STATE_INITIALIZING,
             )
         }
-        val catalogMetadata: ArrayList<Track> =
-            queueData.value.data.listTracks
-                .toCollection(arrayListOf())
+        // Only the insertion is recorded, never a copy of the whole queue: getSongInfo below can
+        // suspend, and a radio may trim its played history meanwhile. Writing an older copy back
+        // would undo that trim in queueData but not in the player, leaving the two offset for good.
+        var inserted: Pair<Int, Track>? = null
         var thumbUrl =
             track.thumbnails?.lastOrNull()?.url
                 ?: "http://i.ytimg.com/vi/${track.videoId}/maxresdefault.jpg"
@@ -2278,8 +2290,7 @@ class JvmMediaPlayerHandlerImpl(
             if (track.artists.isNullOrEmpty()) {
                 songRepository.getSongInfo(track.videoId).cancellable().lastOrNull().let { songInfo ->
                     if (songInfo != null) {
-                        catalogMetadata.add(
-                            player.currentMediaItemIndex + 1,
+                        val withArtist =
                             track.copy(
                                 artists =
                                     listOf(
@@ -2288,8 +2299,8 @@ class JvmMediaPlayerHandlerImpl(
                                             songInfo.author ?: "",
                                         ),
                                     ),
-                            ),
-                        )
+                            )
+                        inserted = (player.currentMediaItemIndex + 1) to withArtist
                         addMediaItemNotSet(
                             GenericMediaItem(
                                 mediaId = track.videoId,
@@ -2322,12 +2333,8 @@ class JvmMediaPlayerHandlerImpl(
                                 customCacheKey = track.videoId,
                             )
                         addMediaItemNotSet(mediaItem, player.currentMediaItemIndex + 1)
-                        catalogMetadata.add(
-                            player.currentMediaItemIndex + 1,
-                            track.copy(
-                                artists = listOf(Artist("", "Various Artists")),
-                            ),
-                        )
+                        val withArtist = track.copy(artists = listOf(Artist("", "Various Artists")))
+                        inserted = (player.currentMediaItemIndex + 1) to withArtist
                     }
                 }
             } else {
@@ -2347,20 +2354,24 @@ class JvmMediaPlayerHandlerImpl(
                     ),
                     player.currentMediaItemIndex + 1,
                 )
-                catalogMetadata.add(player.currentMediaItemIndex + 1, track)
+                inserted = (player.currentMediaItemIndex + 1) to track
             }
             Logger.d(
                 "MusicSource",
-                "updateCatalog: ${track.title}, ${catalogMetadata.size}",
+                "updateCatalog: ${track.title}, at ${inserted?.first}",
             )
             Logger.d("MusicSource", "updateCatalog: ${track.title}")
         }
         _queueData.update {
+            val tracks = it.data.listTracks
             it
                 .copy(
                     data =
                         it.data.copy(
-                            listTracks = catalogMetadata,
+                            listTracks =
+                                inserted?.let { (at, next) ->
+                                    tracks.toMutableList().apply { add(at.coerceIn(0, size), next) }
+                                } ?: tracks,
                         ),
                     queueState = QueueData.StateSource.STATE_INITIALIZED,
                 )
@@ -2918,7 +2929,12 @@ class JvmMediaPlayerHandlerImpl(
         // is mid-fade, and the adapters refuse to trim while fading (the fade remembers the track it
         // may revert to as a playlist POSITION). Retry the moment the fade ends, or users with
         // crossfade on would never have their radio history trimmed at all.
-        if (!isCrossfading) trimRadioHistoryIfNeeded()
+        //
+        // Posted, never run inline, so the removal always queues BEHIND whatever the adapter posts
+        // in the same step — e.g. a seek to an index Next has just computed. The mpv adapter already
+        // delivers this through a queue; Android's calls it directly, and running the trim inline
+        // there made that seek land ~47 tracks later. Same shape on both so neither depends on it.
+        if (!isCrossfading) coroutineScope.launch { trimRadioHistoryIfNeeded() }
     }
 
     override fun onTimelineChanged(
@@ -2927,7 +2943,6 @@ class JvmMediaPlayerHandlerImpl(
     ) {
         super.onTimelineChanged(list, reason)
         Logger.d(TAG, "onTimelineChanged: $reason, items: ${list.size}")
-        applyPendingRadioTrim(list)
         reorderShuffledQueue(list)
     }
 
@@ -3010,74 +3025,73 @@ class JvmMediaPlayerHandlerImpl(
         }
     }
 
-    /** Set by [trimRadioHistoryIfNeeded]: the queue size to expect once the player applies a trim. */
-    private var pendingRadioTrimTo: Int? = null
+    /**
+     * True from the moment a radio trim is asked for until the player answers it. Two requests in
+     * flight would both be computed from the same untrimmed queue, and the second would pass every
+     * guard in the adapter and cut again. An atomic, because Add to queue reaches
+     * [trimRadioHistoryIfNeeded] from a view model on the UI thread while the player thread reaches
+     * it too.
+     */
+    private val radioTrimInFlight = AtomicBoolean(false)
 
     /**
-     * Asks the player to drop the oldest played tracks of a RADIO queue.
+     * Asks the player to drop the oldest played tracks of a radio queue.
      *
      * A radio grows without end and everything that walks the queue gets more expensive with it
      * (#2504). A playlist or album is only trimmed once endless queue has carried it past the list
-     * the user picked, at which point it is re-typed as radio.
+     * the user picked, at which point it is re-typed as radio; see [RadioQueueTrim.appliesTo] for
+     * why the type alone does not decide it.
      *
-     * Nothing is cut here unless the player's list and [queueData] are already aligned and the ids
-     * at the front match: trimming lists that are out of step is exactly the bug this must never
-     * cause. [queueData] is then cut by [applyPendingRadioTrim], after the player proves it removed
-     * them.
+     * Nothing is asked unless the player's list and [queueData] are aligned and the ids at the
+     * front match. [queueData] is not touched here at all: the adapter applies the removal later on
+     * the player thread, may refuse it there, and reports what it actually did to
+     * [onRadioHistoryRemoved] from inside the removal. Waiting for the timeline event instead does
+     * not work here — the adapter queues its listener calls, so the batch's own add events, carrying
+     * snapshots from before the cut, arrive first.
      */
     private fun trimRadioHistoryIfNeeded() {
-        if (queueData.value.data.playlistType != PlaylistType.RADIO) return
+        if (radioTrimInFlight.get()) return
+        val data = queueData.value.data
+        if (!RadioQueueTrim.appliesTo(data.playlistType, data.playlistId)) return
         // Shuffle splits the two index spaces: `currentMediaItemIndex` and the indices
         // `removeMediaItems` takes both count the player's UNSHUFFLED playlist, while the timeline
         // and `listTracks` are in shuffled order. The oldest-played tracks are then not a range in
         // the playlist at all, so trimming by index there would delete upcoming tracks. Radio with
         // shuffle on simply keeps its full history.
         if (player.shuffleModeEnabled) return
-        val listTracks = queueData.value.data.listTracks
+        val listTracks = data.listTracks
         val playerItems = player.getCurrentMediaTimeLine()
         if (playerItems.size != listTracks.size) return
         val drop = RadioQueueTrim.countToDropFromFront(player.currentMediaItemIndex, listTracks.size)
         if (drop <= 0) return
         if (playerItems.take(drop).map { it.mediaId } != listTracks.take(drop).map { it.videoId }) return
-        // queueData FOLLOWS the player here, it does not lead it. The adapters apply the removal on
-        // their own thread and re-check their guards there, so they may refuse (a crossfade started,
-        // the playlist moved). Cutting queueData now would then leave the two lists permanently
-        // offset — the "tap a queue row, play the wrong song" bug this feature must not cause.
-        pendingRadioTrimTo = listTracks.size - drop
-        player.removeMediaItems(0, drop)
-        Logger.d(TAG, "Radio trim requested: dropping $drop, expecting queue ${listTracks.size - drop}")
+        if (!radioTrimInFlight.compareAndSet(false, true)) return
+        Logger.d(TAG, "Radio trim requested: dropping $drop of ${listTracks.size}")
+        player.removeMediaItems(0, drop) { removedIds -> onRadioHistoryRemoved(removedIds) }
     }
 
     /**
-     * Applies a requested radio trim to [queueData] once the player's own timeline proves it
-     * happened: same size, and the player's ids are exactly the tail of the tracks we hold.
-     *
-     * Anything else clears the request instead of cutting, so a refused or superseded trim leaves
-     * both lists untouched and aligned rather than silently offset.
+     * The player's answer to [trimRadioHistoryIfNeeded], called on the player thread from inside
+     * the removal — so [queueData] is cut in the same step as the player's list, and never on a
+     * guess made from a later timeline event.
      */
-    private fun applyPendingRadioTrim(list: List<GenericMediaItem>) {
-        val expected = pendingRadioTrimTo ?: return
-        val listTracks = queueData.value.data.listTracks
-        if (list.size >= listTracks.size) {
-            pendingRadioTrimTo = null
-            return
+    private fun onRadioHistoryRemoved(removedIds: List<String>) {
+        radioTrimInFlight.set(false)
+        if (removedIds.isEmpty()) return
+        var cut = false
+        _queueData.update { state ->
+            val remaining = RadioQueueTrim.afterFrontRemoved(state.data.listTracks, removedIds) { it.videoId }
+            cut = remaining != null
+            if (remaining == null) state else state.copy(data = state.data.copy(listTracks = remaining))
         }
-        if (list.size != expected) return
-        val drop = listTracks.size - list.size
-        if (list.map { it.mediaId } != listTracks.drop(drop).map { it.videoId }) {
-            pendingRadioTrimTo = null
-            return
+        if (cut) {
+            Logger.d(TAG, "Trimmed radio history: dropped ${removedIds.size}")
+        } else {
+            // ponytail: only a queue edited in the few ms between the request and the removal lands
+            // here, and it is left alone — rebuilding it from the player could clobber a queue the
+            // user has just started. If this log shows up in practice, reconcile by id once it settles.
+            Logger.e(TAG, "Radio trim: the ${removedIds.size} tracks the player dropped no longer lead the queue")
         }
-        _queueData.update {
-            it.copy(
-                data =
-                    it.data.copy(
-                        listTracks = listTracks.drop(drop),
-                    ),
-            )
-        }
-        pendingRadioTrimTo = null
-        Logger.d(TAG, "Trimmed radio history: dropped $drop, queue now ${list.size}")
     }
 
     /**

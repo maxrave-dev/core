@@ -640,41 +640,51 @@ class MpvPlayerAdapter(
     }
 
     /**
-     * Drops `[fromIndex, toIndex)` in one pass: one shuffle rebuild, one precache pass, one timeline
-     * notification — the per-item versions of those are what the queue trim must not repeat 50 times.
+     * Drops `[fromIndex, toIndex)` of already-played tracks in one pass: one precache pass, one
+     * timeline notification — the per-item versions of those are what the queue trim must not
+     * repeat 50 times.
      *
-     * Indices count the UNSHUFFLED playlist, like [removeMediaItem] and [currentMediaItemIndex] —
-     * NOT the shuffled timeline the listeners see. A caller working from timeline positions must
-     * map them first, or skip this while shuffle is on.
-     *
-     * Only the range strictly BELOW the current track is supported, which is all the trim needs.
-     * Anything else (an empty or inverted range, a range reaching the playing track) is refused
-     * outright rather than guessed at, because getting it wrong would stop playback.
+     * Indices count the UNSHUFFLED playlist, like [removeMediaItem] and [currentMediaItemIndex].
+     * Only a range strictly BELOW the current track is accepted; anything else is refused rather
+     * than guessed at, because getting it wrong would stop playback. [onRemoved] hears back exactly
+     * once either way, from inside this block — the listeners here are called through a queue
+     * ([notifyListeners]), so a caller that waited for the timeline event would see snapshots taken
+     * before the removal.
      */
     override fun removeMediaItems(
         fromIndex: Int,
         toIndex: Int,
+        onRemoved: (removedIds: List<String>) -> Unit,
     ) {
         coroutineScope.launch {
-            // Bounds re-checked inside the launch, on the player thread, for the reason in
-            // removeMediaItem above (issue #2156).
-            if (fromIndex < 0 || toIndex <= fromIndex) return@launch
-            if (toIndex > playlist.size || toIndex > localCurrentMediaItemIndex) return@launch
-            // crossfadeFromIndex is an index into this same playlist and is NOT shifted here; a
-            // cancelled fade would revert to a track ~toIndex positions away. Trims can wait.
-            if (isCrossfading) return@launch
+            // Re-checked inside the launch, on the player thread, for the reason in removeMediaItem
+            // above (issue #2156).
+            val refused =
+                fromIndex < 0 ||
+                    toIndex <= fromIndex ||
+                    toIndex > playlist.size ||
+                    toIndex > localCurrentMediaItemIndex ||
+                    // crossfadeFromIndex is a position in this same playlist and is NOT shifted here;
+                    // a cancelled fade would revert to a track ~toIndex positions away.
+                    isCrossfading ||
+                    // With shuffle on, the tracks before the current one in this unshuffled list are
+                    // not the played ones — they are part of what is still to come.
+                    internalShuffleModeEnabled
+            if (refused) {
+                onRemoved(emptyList())
+                return@launch
+            }
 
             val removed = playlist.subList(fromIndex, toIndex).toList()
             playlist.subList(fromIndex, toIndex).clear()
+            localCurrentMediaItemIndex -= removed.size
+            // Before anything else can run, so the caller cuts its copy of the queue in this same step.
+            onRemoved(removed.map { it.mediaId })
+
             removed.forEach { track ->
                 precachedPlayers.remove(track.mediaId)?.let { cached ->
                     cleanupPlayerInternal(cached.player)
                 }
-            }
-            localCurrentMediaItemIndex -= removed.size
-
-            if (internalShuffleModeEnabled) {
-                createShuffleOrder()
             }
             // The removed tracks are all behind the current one and precache is keyed by mediaId,
             // so the window ahead needs no rebuild — clearing it here would throw away the handle
@@ -739,9 +749,10 @@ class MpvPlayerAdapter(
         index: Int,
         mediaItem: GenericMediaItem,
     ) {
-        if (index !in playlist.indices) return
-
         coroutineScope.launch {
+            // Same reason as removeMediaItem (issue #2156): a queued removal — a radio trimming its
+            // history — can shrink the playlist between an outside check and this body.
+            if (index !in playlist.indices) return@launch
             playlist[index] = mediaItem
 
             precachedPlayers.remove(mediaItem.mediaId)?.let { cached ->
