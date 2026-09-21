@@ -2993,20 +2993,29 @@ internal class MediaServiceHandlerImpl(
         if (sorted.size != listTrack.size) return
         Logger.d(TAG, "Reordering shuffled queue: player ${list.size}, queue ${listTrack.size}")
         _queueData.update {
-            it.copy(
-                data =
-                    it.data.copy(
-                        listTracks = sorted,
-                    ),
-            )
+            // Only over the list this was computed from. On Desktop this can run on the UI thread (Add
+            // to queue) while a radio trim cuts the queue on the player thread, and writing `sorted`
+            // over the cut list would put the trimmed tracks back — for good, since the player no
+            // longer has them. Whatever changed the list fires a timeline event that reorders again.
+            if (it.data.listTracks !== listTrack) {
+                it
+            } else {
+                it.copy(
+                    data =
+                        it.data.copy(
+                            listTracks = sorted,
+                        ),
+                )
+            }
         }
     }
 
     /**
      * True from the moment a radio trim is asked for until the player answers it. Two requests in
      * flight would both be computed from the same untrimmed queue, and the second would pass every
-     * guard in the adapter and cut again. An atomic, because Add to queue can reach
-     * [trimRadioHistoryIfNeeded] from a view model while the player's own thread reaches it too.
+     * guard in the adapter and cut again. An atomic rather than a plain flag so this mirrors the
+     * Desktop handler, where Add to queue calls in from the UI thread while the player thread does
+     * too; here both run on the main thread.
      */
     private val radioTrimInFlight = AtomicBoolean(false)
 

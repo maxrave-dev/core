@@ -3016,12 +3016,20 @@ class JvmMediaPlayerHandlerImpl(
         Logger.d(TAG, "Reordering shuffled queue: player ${list.size}, queue ${listTrack.size}, matched ${sorted.size}")
         if (sorted.size != listTrack.size) return
         _queueData.update {
-            it.copy(
-                data =
-                    it.data.copy(
-                        listTracks = sorted,
-                    ),
-            )
+            // Only over the list this was computed from. On Desktop this can run on the UI thread (Add
+            // to queue) while a radio trim cuts the queue on the player thread, and writing `sorted`
+            // over the cut list would put the trimmed tracks back — for good, since the player no
+            // longer has them. Whatever changed the list fires a timeline event that reorders again.
+            if (it.data.listTracks !== listTrack) {
+                it
+            } else {
+                it.copy(
+                    data =
+                        it.data.copy(
+                            listTracks = sorted,
+                        ),
+                )
+            }
         }
     }
 
