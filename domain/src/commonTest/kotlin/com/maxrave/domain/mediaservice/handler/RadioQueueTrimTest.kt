@@ -29,8 +29,8 @@ class RadioQueueTrimTest {
 
     @Test
     fun `trims down to the kept history once above the threshold`() {
-        assertEquals(51, RadioQueueTrim.countToDropFromFront(currentIndex = 151, queueSize = 200))
-        assertEquals(60, RadioQueueTrim.countToDropFromFront(currentIndex = 160, queueSize = 210))
+        assertEquals(21, RadioQueueTrim.countToDropFromFront(currentIndex = 121, queueSize = 200))
+        assertEquals(47, RadioQueueTrim.countToDropFromFront(currentIndex = 147, queueSize = 200))
         assertEquals(99, RadioQueueTrim.countToDropFromFront(currentIndex = 199, queueSize = 200))
     }
 
@@ -47,7 +47,7 @@ class RadioQueueTrimTest {
 
     @Test
     fun `keeps the playing track and exactly the kept history behind it`() {
-        for (currentIndex in 151..400) {
+        for (currentIndex in 121..400) {
             val queueSize = currentIndex + 50
             val dropped = RadioQueueTrim.countToDropFromFront(currentIndex, queueSize)
             assertTrue(dropped > 0, "should trim at index $currentIndex")

@@ -2938,6 +2938,11 @@ internal class MediaServiceHandlerImpl(
         _controlState.update {
             it.copy(isCrossfading = isCrossfading)
         }
+        // A radio batch lands 1–3 s after the transition that asked for it, which with crossfade on
+        // is mid-fade, and the adapters refuse to trim while fading (the fade remembers the track it
+        // may revert to as a playlist POSITION). Retry the moment the fade ends, or users with
+        // crossfade on would never have their radio history trimmed at all.
+        if (!isCrossfading) trimRadioHistoryIfNeeded()
     }
 
     override fun onTimelineChanged(

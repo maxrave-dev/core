@@ -20,11 +20,12 @@ object RadioQueueTrim {
      * Trim only once the history passes this. The gap to [KEEP_HISTORY] is what keeps the trim from
      * running on every single track change, which would put back the per-item storm it avoids.
      *
-     * It is a floor, not a ceiling: the check runs right after a batch append, which happens at
-     * roughly every 50th track, so in practice the history grows to ~197 before the first cut and
-     * then swings between 100 and ~197.
+     * 120, not the 150 the history is meant to stay under: the check runs right after a batch
+     * append and a radio appends roughly every 50th track, so a threshold is only ever crossed at
+     * ~47, ~97, ~147, ~197… A 150 here would skip the 147 pass and let the history reach ~197
+     * before the first cut. At 120 the cut lands at ~147 and the history then swings 100…~147.
      */
-    const val TRIM_ABOVE_HISTORY = 150
+    const val TRIM_ABOVE_HISTORY = 120
 
     /**
      * How many tracks to drop from the FRONT of a radio queue, or 0 when it should be left alone.
