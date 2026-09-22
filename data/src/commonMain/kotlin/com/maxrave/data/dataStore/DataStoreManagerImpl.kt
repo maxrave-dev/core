@@ -911,25 +911,6 @@ internal class DataStoreManagerImpl(
         }
     }
 
-    override val translucentBottomBar =
-        settingsDataStore.data.map { preferences ->
-            preferences[TRANSLUCENT_BOTTOM_BAR] ?: TRUE
-        }
-
-    override suspend fun setTranslucentBottomBar(translucent: Boolean) {
-        withContext(Dispatchers.IO) {
-            if (translucent) {
-                settingsDataStore.edit { settings ->
-                    settings[TRANSLUCENT_BOTTOM_BAR] = TRUE
-                }
-            } else {
-                settingsDataStore.edit { settings ->
-                    settings[TRANSLUCENT_BOTTOM_BAR] = FALSE
-                }
-            }
-        }
-    }
-
     override val themeMode =
         settingsDataStore.data.map { preferences ->
             preferences[THEME_MODE] ?: DataStoreManager.THEME_MODE_DARK
@@ -1826,7 +1807,6 @@ internal class DataStoreManagerImpl(
         val TIDAL_CLIENT_SECRET = stringPreferencesKey("tidal_client_secret")
         val HOME_LIMIT = intPreferencesKey("home_limit")
         val CHART_KEY = stringPreferencesKey("chart_key")
-        val TRANSLUCENT_BOTTOM_BAR = stringPreferencesKey("translucent_bottom_bar")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_COLOR_SOURCE = stringPreferencesKey("theme_color_source")
         val CUSTOM_THEME_COLOR = stringPreferencesKey("custom_theme_color")

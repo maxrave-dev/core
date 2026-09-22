@@ -326,10 +326,6 @@ interface DataStoreManager {
 
     suspend fun setChartKey(key: String)
 
-    val translucentBottomBar: Flow<String>
-
-    suspend fun setTranslucentBottomBar(translucent: Boolean)
-
     val usingProxy: Flow<String>
 
     suspend fun setUsingProxy(usingProxy: Boolean)
