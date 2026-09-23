@@ -156,6 +156,8 @@ internal class LocalDataSource(
         offset,
     )
 
+    fun getLikedSongsByArtist(channelId: String) = databaseDao.getLikedSongsByArtist(channelId)
+
     suspend fun getSong(videoId: String) = databaseDao.getSong(videoId)
 
     fun getSongAsFlow(videoId: String) = databaseDao.getSongAsFlow(videoId)

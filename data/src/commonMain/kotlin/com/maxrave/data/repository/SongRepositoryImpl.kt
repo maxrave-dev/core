@@ -196,6 +196,8 @@ internal class SongRepositoryImpl(
 
     override fun getSongAsFlow(id: String) = localDataSource.getSongAsFlow(id)
 
+    override fun getLikedSongsByArtist(channelId: String): Flow<List<SongEntity>> = localDataSource.getLikedSongsByArtist(channelId)
+
     override fun insertSong(songEntity: SongEntity): Flow<Long> = flow<Long> { emit(localDataSource.insertSong(songEntity)) }.flowOn(Dispatchers.IO)
 
     override fun updateThumbnailsSongEntity(

@@ -30,6 +30,9 @@ interface SongRepository {
 
     fun getLikedSongs(): Flow<List<SongEntity>>
 
+    /** Liked songs crediting [channelId] anywhere in their artist list; re-emits on every change. */
+    fun getLikedSongsByArtist(channelId: String): Flow<List<SongEntity>>
+
     /**
      * Queue every liked song that is not already offline, and return how many were queued.
      *
