@@ -5,6 +5,8 @@ import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
+import com.maxrave.kotlinytmusicscraper.extractor.contentLengthOf
+import com.maxrave.kotlinytmusicscraper.extractor.orderByAudioTrack
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
 import com.maxrave.kotlinytmusicscraper.models.AlbumItem
 import com.maxrave.kotlinytmusicscraper.models.Artist
@@ -1305,6 +1307,7 @@ class YouTube {
     suspend fun newPipePlayer(
         videoId: String,
         tempRes: PlayerResponse,
+        preferredAudioLanguage: String? = null,
     ): PlayerResponse? {
         val listUrlSig = mutableListOf<String>()
         var decodedSigResponse: PlayerResponse?
@@ -1315,7 +1318,7 @@ class YouTube {
         } else {
             sigResponse = tempRes
         }
-        val streamsList = ytMusic.getNewPipePlayer(videoId)
+        val streamsList = ytMusic.getNewPipePlayer(videoId).orderByAudioTrack(preferredAudioLanguage)
         if (streamsList.isEmpty()) return null
 
         decodedSigResponse =
@@ -1324,14 +1327,18 @@ class YouTube {
                     sigResponse.streamingData?.copy(
                         formats =
                             sigResponse.streamingData.formats?.map { format ->
+                                val url = streamsList.find { it.first == format.itag }?.second
                                 format.copy(
-                                    url = streamsList.find { it.first == format.itag }?.second,
+                                    url = url,
+                                    contentLength = url?.let(::contentLengthOf) ?: format.contentLength,
                                 )
                             },
                         adaptiveFormats =
                             sigResponse.streamingData.adaptiveFormats.map { adaptiveFormats ->
+                                val url = streamsList.find { it.first == adaptiveFormats.itag }?.second
                                 adaptiveFormats.copy(
-                                    url = streamsList.find { it.first == adaptiveFormats.itag }?.second,
+                                    url = url,
+                                    contentLength = url?.let(::contentLengthOf) ?: adaptiveFormats.contentLength,
                                 )
                             },
                         hlsManifestUrl = streamsList.firstOrNull { it.first == 96 }?.second,
@@ -1411,6 +1418,7 @@ class YouTube {
         videoId: String,
         playlistId: String? = null,
         noLogIn: Boolean = false,
+        preferredAudioLanguage: String? = null,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
             val cpn =
@@ -1496,7 +1504,7 @@ class YouTube {
                         )
                     }
 
-            val response = newPipePlayer(videoId, tempRes)
+            val response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
             if (response != null) {
                 decodedSigResponse = response
                 Logger.d(TAG, "YouTube Player found URL")

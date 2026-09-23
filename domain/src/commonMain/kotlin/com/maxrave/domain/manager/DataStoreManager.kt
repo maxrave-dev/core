@@ -461,6 +461,16 @@ interface DataStoreManager {
 
     suspend fun setYoutubeSubtitleLanguage(language: String)
 
+    /**
+     * Language code (e.g. "vi") of the audio track to prefer on videos that ship several — dubbed
+     * podcasts, mostly. Empty means the original track. Deliberately NOT defaulted to the app
+     * language the way [youtubeSubtitleLanguage] is: that would swap the speaker's own voice for an
+     * AI dub for every user whose app language has one.
+     */
+    val preferredAudioLanguage: Flow<String>
+
+    suspend fun setPreferredAudioLanguage(language: String)
+
     val helpBuildLyricsDatabase: Flow<String>
 
     suspend fun setHelpBuildLyricsDatabase(help: Boolean)
