@@ -11,8 +11,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.Player.COMMAND_GET_TIMELINE
-import androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT
-import androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.LibraryResult
@@ -107,27 +105,6 @@ internal class SimpleMediaSessionCallback(
                     .remove(COMMAND_GET_TIMELINE)
                     .build(),
             ).build()
-    }
-
-    override fun onPlayerCommandRequest(
-        session: MediaSession,
-        controller: MediaSession.ControllerInfo,
-        playerCommand: Int,
-    ): Int {
-        Logger.w(TAG, "Player Command $playerCommand")
-        scope.launch {
-            when (playerCommand) {
-                COMMAND_SEEK_TO_NEXT -> {
-                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Next)
-                }
-                COMMAND_SEEK_TO_PREVIOUS -> {
-                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Previous)
-                }
-                COMMAND_GET_TIMELINE -> {
-                }
-            }
-        }
-        return super.onPlayerCommandRequest(session, controller, playerCommand)
     }
 
     @UnstableApi
@@ -543,6 +520,45 @@ internal class SimpleMediaSessionCallback(
             } ?: LibraryResult.ofError(SessionError.ERROR_UNKNOWN)
         }
 
+    /**
+     * Media3 invokes this when a controller sends Play while the player's timeline is
+     * empty. Android Auto does exactly that after selecting some browse/search items:
+     * onSetMediaItems rebuilds the app-owned queue asynchronously, then Play arrives
+     * before the adapter has published its new timeline.
+     */
+    override fun onPlaybackResumption(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+    ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> =
+        scope.future {
+            val queue = mediaPlayerHandler.queueData.value?.data
+            val track =
+                queue?.listTracks?.getOrNull(mediaPlayerHandler.currentSongIndex.value)
+                    ?: queue?.firstPlayedTrack
+
+            if (track == null) {
+                Logger.w(TAG, "onPlaybackResumption: no recoverable media item")
+                MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0L)
+            } else {
+                val currentItem = mediaPlayerHandler.getCurrentMediaItem()
+                val resumePositionMs =
+                    if (currentItem?.mediaId == track.videoId) {
+                        mediaPlayerHandler.getProgress().coerceAtLeast(0L)
+                    } else {
+                        0L
+                    }
+                Logger.d(
+                    TAG,
+                    "onPlaybackResumption: ${track.videoId} at $resumePositionMs ms for ${controller.packageName}",
+                )
+                MediaSession.MediaItemsWithStartPosition(
+                    listOf(track.toMediaItem()),
+                    0,
+                    resumePositionMs,
+                )
+            }
+        }
+
     @UnstableApi
     override fun onSetMediaItems(
         mediaSession: MediaSession,
@@ -553,15 +569,32 @@ internal class SimpleMediaSessionCallback(
     ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> =
         scope.future {
             // Play from Android Auto
+            val currentItem = mediaSession.player.currentMediaItem
             val defaultResult =
-                MediaSession.MediaItemsWithStartPosition(emptyList(), startIndex, startPositionMs)
+                MediaSession.MediaItemsWithStartPosition(
+                    listOfNotNull(currentItem),
+                    0,
+                    if (currentItem != null) mediaSession.player.currentPosition.coerceAtLeast(0L) else 0L,
+                )
+            fun selectedItemResult(track: Track) =
+                MediaSession.MediaItemsWithStartPosition(
+                    listOf(track.toMediaItem()),
+                    0,
+                    startPositionMs.coerceAtLeast(0L),
+                )
             val path =
                 mediaItems.firstOrNull()?.mediaId?.split("/")
                     ?: return@future defaultResult
+            Logger.d(TAG, "onSetMediaItems: ${mediaItems.firstOrNull()?.mediaId} from ${controller.packageName}")
             when (path.firstOrNull()) {
                 SONG -> {
                     val songId = path.getOrNull(1) ?: return@future defaultResult
-                    val firstQueue = songRepository.getSongById(songId).first()?.toTrack() ?: return@future defaultResult
+                    // Browse items normally already exist in the local repository, but
+                    // Android Auto search results live in searchTempList until selected.
+                    val firstQueue =
+                        songRepository.getSongById(songId).first()?.toTrack()
+                            ?: searchTempList.firstOrNull { it.videoId == songId }
+                            ?: return@future defaultResult
                     mediaPlayerHandler.setQueueData(
                         QueueData.Data(
                             listTracks = arrayListOf(firstQueue),
@@ -577,7 +610,7 @@ internal class SimpleMediaSessionCallback(
                         Config.SONG_CLICK,
                         0,
                     )
-                    defaultResult
+                    selectedItemResult(firstQueue)
                 }
 
                 FAVORITE -> {
@@ -608,7 +641,7 @@ internal class SimpleMediaSessionCallback(
                             Config.PLAYLIST_CLICK,
                             index,
                         )
-                        defaultResult
+                        selectedItemResult(clickedSong)
                     }
                 }
 
@@ -640,7 +673,7 @@ internal class SimpleMediaSessionCallback(
                             Config.PLAYLIST_CLICK,
                             index,
                         )
-                        defaultResult
+                        selectedItemResult(clickedSong)
                     }
                 }
 
@@ -690,7 +723,7 @@ internal class SimpleMediaSessionCallback(
                             Config.PLAYLIST_CLICK,
                             index,
                         )
-                        defaultResult
+                        selectedItemResult(clickedSong)
                     }
                 }
 
@@ -725,7 +758,7 @@ internal class SimpleMediaSessionCallback(
                                 Config.SONG_CLICK,
                                 0,
                             )
-                            defaultResult
+                            selectedItemResult(firstQueue)
                         }
                     } else if (type == PLAYLIST) {
                         val songId = path.getOrNull(4) ?: return@future defaultResult
@@ -775,7 +808,7 @@ internal class SimpleMediaSessionCallback(
                                 Config.PLAYLIST_CLICK,
                                 index,
                             )
-                            defaultResult
+                            selectedItemResult(clickedSong)
                         } else {
                             defaultResult
                         }
