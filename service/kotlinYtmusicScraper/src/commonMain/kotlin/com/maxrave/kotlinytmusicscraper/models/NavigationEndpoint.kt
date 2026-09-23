@@ -8,6 +8,7 @@ data class NavigationEndpoint(
     val watchPlaylistEndpoint: WatchEndpoint? = null,
     val browseEndpoint: BrowseEndpoint? = null,
     val searchEndpoint: SearchEndpoint? = null,
+    val urlEndpoint: UrlEndpoint? = null,
     val queueAddEndpoint: QueueAddEndpoint? = null,
     val shareEntityEndpoint: ShareEntityEndpoint? = null,
     val playlistEditEndpoint: PlaylistEditEndpoint? = null,

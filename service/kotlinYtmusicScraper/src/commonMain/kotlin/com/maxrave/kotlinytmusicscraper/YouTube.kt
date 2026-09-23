@@ -448,7 +448,7 @@ class YouTube {
                         emptyList()
                     },
                 description =
-                    getDescriptionAlbum(
+                    getDescription(
                         response.contents.twoColumnBrowseResultsRenderer.tabs
                             .firstOrNull()
                             ?.tabRenderer
@@ -504,11 +504,16 @@ class YouTube {
             )
         }
 
-    private fun getDescriptionAlbum(runs: List<Run>?): String {
+    /**
+     * Joins every run of a description. A link run contributes its `urlEndpoint` URL rather than
+     * its text, which YouTube shortens for display (`…/wiki/Ariana_...`) — the description view
+     * makes URLs clickable, and the shortened form would open the wrong page.
+     */
+    private fun getDescription(runs: List<Run>?): String {
         var description = ""
         if (!runs.isNullOrEmpty()) {
             for (run in runs) {
-                description += run.text
+                description += run.navigationEndpoint?.urlEndpoint?.url ?: run.text
             }
         }
         Logger.d("description", description)
@@ -614,13 +619,14 @@ class YouTube {
                         ?.sectionListRenderer
                         ?.contents
                         ?.mapNotNull(ArtistPage::fromSectionListRendererContent)!!,
+                // Every run, not just the first: YouTube splits the text at each link, so the first
+                // run alone stops at "From Wikipedia (".
                 description =
                     response.header
                         ?.musicImmersiveHeaderRenderer
                         ?.description
                         ?.runs
-                        ?.firstOrNull()
-                        ?.text,
+                        ?.let(::getDescription),
                 subscribers =
                     response.header
                         ?.musicImmersiveHeaderRenderer
