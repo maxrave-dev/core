@@ -198,6 +198,18 @@ internal class SimpleMediaService :
             // bitmap in setMetadata — see sizeLimitedForSession (#2500). Falls back to the plain
             // loader if the limit cannot be read.
             .setBitmapLoader(sizeLimitedForSession(service, coilBitmapLoader))
+            // Tapping the media notification opens whatever the session activity points at, and the
+            // only other place that sets it is MainActivity's bind. A service started without that
+            // bind — a headset/Bluetooth play, Android Auto, a widget, a restart after the process
+            // was killed — would otherwise post a notification that opens nothing. The launcher
+            // activity is resolved at runtime, so this module never has to name MainActivity.
+            .apply {
+                service.packageManager.getLaunchIntentForPackage(service.packageName)?.let { launch ->
+                    setSessionActivity(
+                        PendingIntent.getActivity(service, 0, launch, PendingIntent.FLAG_IMMUTABLE),
+                    )
+                }
+            }
             .build()
 
     private fun isAppInForeground(): Boolean {
