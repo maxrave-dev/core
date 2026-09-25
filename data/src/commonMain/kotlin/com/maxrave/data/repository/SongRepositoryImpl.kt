@@ -318,25 +318,37 @@ internal class SongRepositoryImpl(
         }.flowOn(Dispatchers.IO)
 
     /**
-     * Drops the video entries YouTube mixes into a radio queue, when the user asked radios to stay
-     * audio-only. [isRadio] gates it because the setting is deliberately radio-scoped: a playlist
-     * or album the user picked themselves must still play exactly what it contains.
+     * With "Play audio version instead of MV in radio" on, a radio plays each recording as a song:
+     * a video row YouTube also shipped as a song ([SongItem.counterpart], sent to a logged-in
+     * client only) is swapped for that song, and a video with no song version — a fan remix or
+     * mashup — is skipped. [isRadio] gates it because the setting is deliberately radio-scoped: a
+     * playlist or album the user picked themselves must still play exactly what it contains.
      *
-     * Only entries YouTube *named* as a video are dropped. A null `musicVideoType` means the
+     * Only entries YouTube *named* as a video count as one. A null `musicVideoType` means the
      * response never said, which is not a claim of "audio" — those are kept rather than guessed at
      * (see [MusicVideoType]).
      *
-     * Dropping is the only option here; substituting the audio version is not available. Measured
-     * against a live logged-in radio (197 entries over four pages), every video that reached the
-     * queue was `MUSIC_VIDEO_TYPE_UGC` — a fan remix or mashup that exists only as a video and
-     * ships no `counterpart` to swap in. Official music videos never arrive as the primary
-     * rendition at all: YouTube already demotes those to the counterpart of the audio track, which
-     * is what [com.maxrave.kotlinytmusicscraper.models.PlaylistPanelRenderer.Content.track] reads.
+     * This used to drop every video, which was harmless in a radio started from a song — measured
+     * logged in (197 entries over four pages), the only videos in one were UGC. A radio started
+     * from a VIDEO is nothing but videos (measured on a UGC seed: 38 OMV, 11 UGC, 1 podcast
+     * episode, no song), so dropping emptied the queue outright. A page that still ends up empty —
+     * no counterparts, as for a client that is not logged in — is kept as it came: a radio that
+     * plays videos beats one that plays nothing.
      */
-    private suspend fun List<SongItem>.dropVideosWhenRadioAudioOnly(isRadio: Boolean): List<SongItem> {
+    private suspend fun List<SongItem>.preferAudioWhenRadioAudioOnly(isRadio: Boolean): List<SongItem> {
         if (!isRadio) return this
         if (dataStoreManager.radioAudioOnly.first() != TRUE) return this
-        return filterNot { MusicVideoType.isVideoSong(it.musicVideoType) }
+        val songs =
+            mapNotNull { item ->
+                if (MusicVideoType.isVideoSong(item.musicVideoType)) {
+                    item.counterpart?.takeIf { MusicVideoType.isAudio(it.musicVideoType) }
+                } else {
+                    item
+                }
+            }.distinctBy { it.id }
+        val swapped = count { MusicVideoType.isVideoSong(it.musicVideoType) && MusicVideoType.isAudio(it.counterpart?.musicVideoType) }
+        Logger.d(TAG, "Radio audio version: $size rows, $swapped swapped to the song, ${songs.size} kept")
+        return songs.ifEmpty { this }
     }
 
     override fun getContinueTrack(
@@ -367,7 +379,7 @@ internal class SongRepositoryImpl(
                             // own playlistId.
                             val isRadio =
                                 playlistId.startsWith("RRDAMVM") || playlistId.isRadioQueueId()
-                            data.addAll(next.items.dropVideosWhenRadioAudioOnly(isRadio))
+                            data.addAll(next.items.preferAudioWhenRadioAudioOnly(isRadio))
                             newContinuation = next.continuation
                             emit(Pair(data.toListTrack(), newContinuation))
                         }.onFailure { exception ->
@@ -536,7 +548,7 @@ internal class SongRepositoryImpl(
                                 .filter { it.id != videoId }
                                 .toSet()
                                 .toList()
-                                .dropVideosWhenRadioAudioOnly(isRadio = true),
+                                .preferAudioWhenRadioAudioOnly(isRadio = true),
                         )
                         val nextContinuation = next.continuation
                         emit(Resource.Success<Pair<List<Track>, String?>>(Pair(data.toListTrack().toList(), nextContinuation)))
@@ -554,7 +566,7 @@ internal class SongRepositoryImpl(
                     .next(endpoint.toWatchEndpoint())
                     .onSuccess { next ->
                         val items =
-                            next.items.dropVideosWhenRadioAudioOnly(
+                            next.items.preferAudioWhenRadioAudioOnly(
                                 isRadio = endpoint.playlistId?.isRadioQueueId() == true,
                             )
                         emit(Resource.Success(Pair(items.toListTrack(), next.continuation)))

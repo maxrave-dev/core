@@ -390,6 +390,7 @@ class MpvPlayer private constructor(
         observe("duration", MpvFormat.DOUBLE)
         observe("pause", MpvFormat.FLAG)
         observe("cache-buffering-state", MpvFormat.INT64)
+        if (videoFrames != null) observe("video-params/aspect", MpvFormat.DOUBLE)
 
         pumpThread =
             Thread({ pumpLoop() }, "Mpv-Event-Pump").apply {
@@ -506,6 +507,12 @@ class MpvPlayer private constructor(
                 val dataPtr = event.data ?: return
                 val prop = MpvEventProperty(dataPtr).apply { read() }
                 val name = prop.name?.getString(0) ?: return
+                if (name == "video-params/aspect") {
+                    // Unlike the properties below, "unavailable" carries meaning here: it arrives when
+                    // the next file starts or has no video, and must clear the previous video's shape.
+                    videoFrames?.setAspectRatio(prop.data?.takeIf { prop.format == MpvFormat.DOUBLE }?.getDouble(0))
+                    return
+                }
                 // format == MPV_FORMAT_NONE (and data == null) means the value was unavailable.
                 val valuePtr = prop.data ?: return
                 when (name) {

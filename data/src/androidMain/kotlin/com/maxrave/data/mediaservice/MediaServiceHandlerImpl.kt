@@ -484,6 +484,7 @@ internal class MediaServiceHandlerImpl(
                                                     skipSegment(
                                                         (secondPart * player.duration).toLong() / 100 + SPONSOR_BLOCK_SKIP_MARGIN_MS,
                                                     )
+                                                    showToast(ToastType.SponsorBlockSkip(skip.category))
                                                 }
                                             }
                                         }

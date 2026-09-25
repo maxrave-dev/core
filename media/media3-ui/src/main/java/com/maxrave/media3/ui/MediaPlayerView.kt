@@ -22,7 +22,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -218,6 +217,20 @@ fun MediaPlayerView(
     }
 }
 
+/**
+ * Aspect ratio (width / height) of the video [playerName] is showing, or null while it has no
+ * video size. From [rememberPresentationState], which reads the player's current size before it
+ * listens, so a frame composed mid-video gets the right shape at once — the same reason the
+ * surface below takes its own ratio from there.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+fun rememberVideoAspectRatio(playerName: String): Float? {
+    val player: Player = koinInject(named(playerName))
+    val size = rememberPresentationState(player).videoSizeDp ?: return null
+    return size.width / size.height
+}
+
 @Composable
 @androidx.annotation.OptIn(UnstableApi::class)
 fun MediaPlayerViewWithSubtitle(
@@ -245,10 +258,6 @@ fun MediaPlayerViewWithSubtitle(
 
     var shouldEnterPipMode by rememberSaveable {
         mutableStateOf(false)
-    }
-
-    var videoRatio by rememberSaveable {
-        mutableFloatStateOf(16f / 9)
     }
 
     var showArtwork by rememberSaveable {
@@ -356,16 +365,6 @@ fun MediaPlayerViewWithSubtitle(
                     }
                 }
 
-                override fun onVideoSizeChanged(videoSize: VideoSize) {
-                    super.onVideoSizeChanged(videoSize)
-                    videoRatio =
-                        if (videoSize.width != 0 && videoSize.height != 0) {
-                            videoSize.width.toFloat() / videoSize.height
-                        } else {
-                            16f / 9 // Default ratio if video size is not available
-                        }
-                }
-
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     super.onIsPlayingChanged(isPlaying)
                     shouldEnterPipMode = isPlaying && shouldPip
@@ -389,6 +388,10 @@ fun MediaPlayerViewWithSubtitle(
         }
     }
     LaunchedEffect(player) {
+        // Same reason as the aspect ratio below: a view composed mid-song (Now Playing reopened,
+        // fullscreen) hears no track or item change, so start from what the player already has.
+        playerListener.onTracksChanged(player.currentTracks)
+        artworkUri = player.currentMediaItem?.mediaMetadata?.artworkUri?.toString()
         player.addListener(playerListener)
         (player as? ExoPlayer)?.videoScalingMode = C.VIDEO_SCALING_MODE_DEFAULT
     }
@@ -465,7 +468,11 @@ fun MediaPlayerViewWithSubtitle(
                     modifier =
                         Modifier
                             .wrapContentSize()
-                            .aspectRatio(if (videoRatio > 0f) videoRatio else 16f / 9)
+                            // The size the player already has, not a listener waiting for a change:
+                            // the Full build's session player is a CastPlayer, which only reports a
+                            // size that differs from its last one, so a view composed mid-video
+                            // (Now Playing reopened after fullscreen) never heard it and sat at 16:9.
+                            .aspectRatio(presentationState.videoSizeDp?.let { it.width / it.height } ?: 16f / 9)
                             .align(Alignment.Center),
                 )
 

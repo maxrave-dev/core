@@ -1677,11 +1677,8 @@ class YouTube {
                             result.copy(
                                 title = playlistPanelRenderer.title,
                                 items =
-                                    playlistPanelRenderer.contents.mapNotNull {
-                                        it.track?.let { renderer ->
-                                            NextPage.fromPlaylistPanelVideoRenderer(renderer)
-                                        }
-                                    } + result.items,
+                                    playlistPanelRenderer.contents.mapNotNull(NextPage::fromPlaylistPanelContent) +
+                                        result.items,
                                 lyricsEndpoint =
                                     response.contents.singleColumnMusicWatchNextResultsRenderer
                                         ?.tabbedRenderer
@@ -1719,10 +1716,7 @@ class YouTube {
 //        }
                 return@runCatching NextResult(
                     title = playlistPanelRenderer.title,
-                    items =
-                        playlistPanelRenderer.contents.mapNotNull {
-                            it.track?.let(NextPage::fromPlaylistPanelVideoRenderer)
-                        },
+                    items = playlistPanelRenderer.contents.mapNotNull(NextPage::fromPlaylistPanelContent),
                     currentIndex = playlistPanelRenderer.currentIndex,
                     lyricsEndpoint =
                         response.contents.singleColumnMusicWatchNextResultsRenderer

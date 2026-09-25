@@ -103,6 +103,21 @@ class MpvVideoFrameSource {
      */
     val frames: StateFlow<BufferedImage?> = _frames.asStateFlow()
 
+    private val _aspectRatio = MutableStateFlow<Float?>(null)
+
+    /**
+     * Display aspect ratio of the video (mpv's `video-params/aspect`, non-square pixels already
+     * accounted for), or null while mpv has no video params. The frames cannot tell you this: mpv
+     * letterboxes them to whatever [setTargetSize] last asked for, so the UI reads the shape here
+     * to size the box around the video instead of assuming 16:9.
+     */
+    val aspectRatio: StateFlow<Float?> = _aspectRatio.asStateFlow()
+
+    /** Fed by [MpvPlayer]'s event pump; null clears it when the video params go away. */
+    internal fun setAspectRatio(value: Double?) {
+        _aspectRatio.value = value?.takeIf { it > 0.0 && it.isFinite() }?.toFloat()
+    }
+
     /**
      * Signalled by [updateCallback] (a foreign thread) and awaited by the render thread.
      *
@@ -269,6 +284,7 @@ class MpvVideoFrameSource {
         // Clear the last frame so collectors fall back to the artwork instead of holding a
         // stale image from a player that no longer exists.
         _frames.value = null
+        _aspectRatio.value = null
     }
 
     // ================= render thread =================

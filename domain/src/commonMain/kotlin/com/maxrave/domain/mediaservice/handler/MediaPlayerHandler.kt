@@ -376,4 +376,8 @@ sealed class ToastType(
     data class PlayerError(
         val error: String,
     ) : ToastType(error)
+
+    data class SponsorBlockSkip(
+        val category: String,
+    ) : ToastType(category)
 }

@@ -39,6 +39,11 @@ data class SongItem(
      * music config. Null is "not stated", not "audio" — see `MusicVideoType` in core/domain.
      */
     val musicVideoType: String? = null,
+    /**
+     * The other rendition of this recording — the song for a music video, or the reverse — when
+     * YouTube shipped one alongside it in a queue. Only a logged-in client is sent these.
+     */
+    val counterpart: SongItem? = null,
 ) : YTItem() {
     override val shareLink: String
         get() = "https://simpmusic.org/app/watch?v=$id"

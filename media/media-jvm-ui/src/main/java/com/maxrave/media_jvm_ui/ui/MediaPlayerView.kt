@@ -158,6 +158,17 @@ private fun MpvVideoFrames(
 
 private val RICH_SYNC_TIMESTAMP_REGEX = Regex("""<\d{2}:\d{2}\.\d{2,3}>\s*""")
 
+/**
+ * Display aspect ratio of the video the main player is showing, or null while it has none.
+ * Follows the adapter's current handle, so a track change or crossfade re-points it by itself.
+ */
+@Composable
+fun rememberVideoAspectRatioJvm(): Float? {
+    val player: MpvPlayerAdapter = koinInject<MpvPlayerAdapter>()
+    val source = player.currentVideoFrames.collectAsState().value ?: return null
+    return source.aspectRatio.collectAsState().value
+}
+
 @Composable
 fun MediaPlayerViewWithSubtitleJvm(
     modifier: Modifier,

@@ -4,6 +4,7 @@ import com.maxrave.kotlinytmusicscraper.models.Album
 import com.maxrave.kotlinytmusicscraper.models.Artist
 import com.maxrave.kotlinytmusicscraper.models.BrowseEndpoint
 import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
+import com.maxrave.kotlinytmusicscraper.models.PlaylistPanelRenderer
 import com.maxrave.kotlinytmusicscraper.models.PlaylistPanelVideoRenderer
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
@@ -98,6 +99,12 @@ object NextPage {
             musicVideoType = renderer.musicVideoType,
         )
     }
+
+    /** A queue row, carrying its other rendition as [SongItem.counterpart] when YouTube sent one. */
+    fun fromPlaylistPanelContent(content: PlaylistPanelRenderer.Content): SongItem? =
+        content.track?.let(::fromPlaylistPanelVideoRenderer)?.copy(
+            counterpart = content.counterpartTrack?.let(::fromPlaylistPanelVideoRenderer),
+        )
 
     fun fromPlaylistPanelVideoRenderer(renderer: PlaylistPanelVideoRenderer): SongItem? {
         val longByLineRuns = renderer.longBylineText?.runs?.splitBySeparator() ?: return null
