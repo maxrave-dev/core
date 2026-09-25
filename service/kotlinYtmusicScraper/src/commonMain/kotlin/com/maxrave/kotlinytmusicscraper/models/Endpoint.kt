@@ -72,6 +72,15 @@ data class SearchEndpoint(
     val query: String,
 ) : Endpoint()
 
+/**
+ * An external link inside a text run — an artist description's "From Wikipedia (…)". The run's own
+ * text is a display form YouTube shortens (`…/wiki/Ariana_...`), so [url] is the only full address.
+ */
+@Serializable
+data class UrlEndpoint(
+    val url: String,
+) : Endpoint()
+
 @Serializable
 data class QueueAddEndpoint(
     val queueInsertPosition: String,

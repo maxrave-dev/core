@@ -232,6 +232,22 @@ interface DatabaseDao {
         offset: Int,
     ): List<SongEntity>
 
+    /**
+     * Liked songs crediting [channelId] anywhere in their artist list — the "Liked songs" row on an
+     * artist's page and the list it opens (issue #2524).
+     *
+     * `artistId` is a converted `List<String>` stored as a JSON array, so the id is matched as a
+     * quoted token with the same `replace()` + ESCAPE '\' treatment as [deleteUnfollowedArtists]:
+     * channel ids contain `_`, which LIKE would otherwise read as a wildcard.
+     *
+     * A Flow, unlike [getLikedSongs], so liking or unliking a song updates the row straight away.
+     */
+    @Query(
+        "SELECT * FROM song WHERE liked = 1 AND artistId LIKE " +
+            "'%\"' || replace(replace(replace(:channelId, '\\', '\\\\'), '_', '\\_'), '%', '\\%') || '\"%' ESCAPE '\\'",
+    )
+    fun getLikedSongsByArtist(channelId: String): Flow<List<SongEntity>>
+
     @Query("SELECT * FROM song WHERE videoId = :videoId")
     suspend fun getSong(videoId: String): SongEntity?
 

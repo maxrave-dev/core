@@ -911,25 +911,6 @@ internal class DataStoreManagerImpl(
         }
     }
 
-    override val translucentBottomBar =
-        settingsDataStore.data.map { preferences ->
-            preferences[TRANSLUCENT_BOTTOM_BAR] ?: TRUE
-        }
-
-    override suspend fun setTranslucentBottomBar(translucent: Boolean) {
-        withContext(Dispatchers.IO) {
-            if (translucent) {
-                settingsDataStore.edit { settings ->
-                    settings[TRANSLUCENT_BOTTOM_BAR] = TRUE
-                }
-            } else {
-                settingsDataStore.edit { settings ->
-                    settings[TRANSLUCENT_BOTTOM_BAR] = FALSE
-                }
-            }
-        }
-    }
-
     override val themeMode =
         settingsDataStore.data.map { preferences ->
             preferences[THEME_MODE] ?: DataStoreManager.THEME_MODE_DARK
@@ -1510,6 +1491,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val preferredAudioLanguage =
+        settingsDataStore.data.map { preferences ->
+            preferences[PREFERRED_AUDIO_LANGUAGE] ?: ""
+        }
+
+    override suspend fun setPreferredAudioLanguage(language: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[PREFERRED_AUDIO_LANGUAGE] = language.trim()
+            }
+        }
+    }
+
     override val helpBuildLyricsDatabase: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[HELP_BUILD_LYRICS_DATABASE] ?: FALSE
@@ -1826,7 +1820,6 @@ internal class DataStoreManagerImpl(
         val TIDAL_CLIENT_SECRET = stringPreferencesKey("tidal_client_secret")
         val HOME_LIMIT = intPreferencesKey("home_limit")
         val CHART_KEY = stringPreferencesKey("chart_key")
-        val TRANSLUCENT_BOTTOM_BAR = stringPreferencesKey("translucent_bottom_bar")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val THEME_COLOR_SOURCE = stringPreferencesKey("theme_color_source")
         val CUSTOM_THEME_COLOR = stringPreferencesKey("custom_theme_color")
@@ -1862,6 +1855,7 @@ internal class DataStoreManagerImpl(
 
         val LOCAL_PLAYLIST_FILTER = stringPreferencesKey("local_playlist_filter")
         val YOUTUBE_SUBTITLE_LANGUAGE = stringPreferencesKey("youtube_subtitle_language")
+        val PREFERRED_AUDIO_LANGUAGE = stringPreferencesKey("preferred_audio_language")
         val HELP_BUILD_LYRICS_DATABASE = stringPreferencesKey("help_build_lyrics_database")
         val CONTRIBUTOR_NAME = stringPreferencesKey("contributor_name")
         val CONTRIBUTOR_EMAIL = stringPreferencesKey("contributor_email")

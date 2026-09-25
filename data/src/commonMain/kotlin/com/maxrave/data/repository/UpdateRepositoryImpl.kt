@@ -54,4 +54,12 @@ internal class UpdateRepositoryImpl(
                     emit(Resource.Error<UpdateData>(it.localizedMessage ?: "Unknown error"))
                 }
         }.flowOn(Dispatchers.IO)
+
+    override fun getFdroidSigningKeys(): Flow<Resource<List<String>>> =
+        flow {
+            youTube
+                .getFdroidSigningKeys()
+                .onSuccess { emit(Resource.Success(it)) }
+                .onFailure { emit(Resource.Error<List<String>>(it.localizedMessage ?: "Unknown error")) }
+        }.flowOn(Dispatchers.IO)
 }
