@@ -1,9 +1,11 @@
 package com.maxrave.media3.service.callback
 
+import android.app.SearchManager
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.provider.MediaStore
 import androidx.annotation.DrawableRes
 import androidx.core.net.toUri
 import androidx.media3.common.C
@@ -223,7 +225,26 @@ internal class SimpleMediaSessionCallback(
     private fun resumeSavedQueue() {
         scope.launch {
             if (!mediaPlayerHandler.restoreQueueAndPlay()) {
-                Logger.w(TAG, "onPlaybackResumption: nothing to resume")
+                Logger.w(TAG, "onPlaybackResumption: nothing to resume, fallback to liked songs")
+                val likedSongs = songRepository.getLikedSongs().first()
+                if (likedSongs.isNotEmpty()) {
+                    val firstTrack = likedSongs.first().toTrack()
+                    mediaPlayerHandler.setQueueData(
+                        QueueData.Data(
+                            listTracks = likedSongs.toArrayListTrack(),
+                            firstPlayedTrack = firstTrack,
+                            playlistId = null,
+                            playlistName = context.getString(R.string.favorites),
+                            playlistType = PlaylistType.LOCAL_PLAYLIST,
+                            continuation = null,
+                        ),
+                    )
+                    mediaPlayerHandler.loadMediaItem(
+                        firstTrack,
+                        Config.PLAYLIST_CLICK,
+                        0,
+                    )
+                }
             }
         }
     }
@@ -555,13 +576,34 @@ internal class SimpleMediaSessionCallback(
             // Play from Android Auto
             val defaultResult =
                 MediaSession.MediaItemsWithStartPosition(emptyList(), startIndex, startPositionMs)
-            val path =
-                mediaItems.firstOrNull()?.mediaId?.split("/")
-                    ?: return@future defaultResult
+            val firstItem = mediaItems.firstOrNull() ?: return@future defaultResult
+            Logger.w(TAG, "onSetMediaItems: ${controller.packageName}, mediaId=${firstItem.mediaId}, query=${firstItem.requestMetadata.searchQuery}")
+
+            // Check for voice search request via requestMetadata or extras
+            val searchQuery = firstItem.requestMetadata.searchQuery
+                ?: firstItem.requestMetadata.extras?.getString(SearchManager.QUERY)
+                ?: firstItem.requestMetadata.extras?.getString(MediaStore.EXTRA_MEDIA_TITLE)
+                ?: firstItem.requestMetadata.extras?.getString(MediaStore.EXTRA_MEDIA_ARTIST)
+
+            val mediaId = firstItem.mediaId
+            val path = mediaId.split("/")
+            val isKnownPrefix = path.firstOrNull() in listOf(SONG, FAVORITE, DOWNLOADED, PLAYLIST, HOME)
+
+            if (!searchQuery.isNullOrBlank() || (!isKnownPrefix && mediaId.isNotBlank() && !mediaId.contains("/"))) {
+                val query = if (!searchQuery.isNullOrBlank()) searchQuery else mediaId
+                handleVoicePlaySearch(query)
+                return@future defaultResult
+            }
+
             when (path.firstOrNull()) {
                 SONG -> {
                     val songId = path.getOrNull(1) ?: return@future defaultResult
-                    val firstQueue = songRepository.getSongById(songId).first()?.toTrack() ?: return@future defaultResult
+                    val firstQueue =
+                        songRepository.getSongById(songId).first()?.toTrack()
+                            ?: searchTempList.find { it.videoId == songId }
+                            ?: streamRepository.getFullMetadata(songId).lastOrNull()?.data
+                            ?: return@future defaultResult
+                    songRepository.insertSong(firstQueue.toSongEntity()).first()
                     mediaPlayerHandler.setQueueData(
                         QueueData.Data(
                             listTracks = arrayListOf(firstQueue),
@@ -789,6 +831,91 @@ internal class SimpleMediaSessionCallback(
                 }
             }
         }
+
+    @UnstableApi
+    override fun onAddMediaItems(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+        mediaItems: MutableList<MediaItem>,
+    ): ListenableFuture<MutableList<MediaItem>> =
+        scope.future {
+            Logger.w(TAG, "onAddMediaItems: ${controller.packageName}, items=${mediaItems.map { it.mediaId }}")
+            if (mediaSession.player.mediaItemCount == 0) {
+                onSetMediaItems(mediaSession, controller, mediaItems, 0, C.TIME_UNSET)
+                return@future mediaItems
+            }
+            val firstItem = mediaItems.firstOrNull()
+            val searchQuery =
+                firstItem?.requestMetadata?.searchQuery
+                    ?: firstItem?.requestMetadata?.extras?.getString(SearchManager.QUERY)
+                    ?: firstItem?.requestMetadata?.extras?.getString(MediaStore.EXTRA_MEDIA_TITLE)
+                    ?: firstItem?.requestMetadata?.extras?.getString(MediaStore.EXTRA_MEDIA_ARTIST)
+
+            if (!searchQuery.isNullOrBlank()) {
+                val searchResult = searchRepository.getSearchDataSong(searchQuery).lastOrNull()?.data?.toListTrack()
+                val track = searchResult?.firstOrNull()
+                if (track != null) {
+                    songRepository.insertSong(track.toSongEntity()).first()
+                    mediaPlayerHandler.playNext(track)
+                }
+            } else {
+                val path = firstItem?.mediaId?.split("/").orEmpty()
+                if (path.firstOrNull() == SONG) {
+                    val songId = path.getOrNull(1)
+                    if (songId != null) {
+                        val track =
+                            songRepository.getSongById(songId).first()?.toTrack()
+                                ?: searchTempList.find { it.videoId == songId }
+                                ?: streamRepository.getFullMetadata(songId).lastOrNull()?.data
+                        if (track != null) {
+                            songRepository.insertSong(track.toSongEntity()).first()
+                            mediaPlayerHandler.playNext(track)
+                        }
+                    }
+                }
+            }
+            mediaItems
+        }
+
+    private suspend fun handleVoicePlaySearch(query: String) {
+        Logger.w(TAG, "handleVoicePlaySearch query='$query'")
+        val searchResult =
+            searchRepository.getSearchDataSong(query).lastOrNull()?.let { resource ->
+                when (resource) {
+                    is Resource.Success -> resource.data?.toListTrack()
+                    else -> null
+                }
+            } ?: searchRepository.getSearchDataVideo(query).lastOrNull()?.let { resource ->
+                when (resource) {
+                    is Resource.Success -> resource.data?.toListTrack()
+                    else -> null
+                }
+            }
+
+        if (!searchResult.isNullOrEmpty()) {
+            searchTempList.clear()
+            searchTempList.addAll(searchResult)
+            val firstQueue = searchResult.first()
+            songRepository.insertSong(firstQueue.toSongEntity()).first()
+            mediaPlayerHandler.setQueueData(
+                QueueData.Data(
+                    listTracks = ArrayList(searchResult),
+                    firstPlayedTrack = firstQueue,
+                    playlistId = "RDAMVM${firstQueue.videoId}",
+                    playlistName = "\"${firstQueue.title}\" Radio",
+                    playlistType = PlaylistType.RADIO,
+                    continuation = null,
+                ),
+            )
+            mediaPlayerHandler.loadMediaItem(
+                firstQueue,
+                Config.SONG_CLICK,
+                0,
+            )
+        } else {
+            Logger.w(TAG, "handleVoicePlaySearch: no tracks found for query '$query'")
+        }
+    }
 
     private fun drawableUri(
         @DrawableRes id: Int,
