@@ -11,10 +11,15 @@ import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import android.content.Intent
+import android.os.Build
+import android.view.KeyEvent
 import androidx.media3.common.Player
 import androidx.media3.common.Player.COMMAND_GET_TIMELINE
+import androidx.media3.common.Player.COMMAND_PLAY_PAUSE
 import androidx.media3.common.Player.COMMAND_SEEK_TO_NEXT
 import androidx.media3.common.Player.COMMAND_SEEK_TO_PREVIOUS
+import androidx.media3.common.Player.COMMAND_STOP
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.LibraryResult
@@ -116,9 +121,15 @@ internal class SimpleMediaSessionCallback(
         controller: MediaSession.ControllerInfo,
         playerCommand: Int,
     ): Int {
-        Logger.w(TAG, "Player Command $playerCommand")
+        Logger.w(TAG, "Player Command $playerCommand from ${controller.packageName}")
         scope.launch {
             when (playerCommand) {
+                COMMAND_PLAY_PAUSE -> {
+                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause)
+                }
+                COMMAND_STOP -> {
+                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Stop)
+                }
                 COMMAND_SEEK_TO_NEXT -> {
                     mediaPlayerHandler.onPlayerEvent(PlayerEvent.Next)
                 }
@@ -130,6 +141,46 @@ internal class SimpleMediaSessionCallback(
             }
         }
         return super.onPlayerCommandRequest(session, controller, playerCommand)
+    }
+
+    @UnstableApi
+    override fun onMediaButtonEvent(
+        session: MediaSession,
+        controllerInfo: MediaSession.ControllerInfo,
+        intent: Intent,
+    ): Boolean {
+        Logger.w(TAG, "onMediaButtonEvent: ${controllerInfo.packageName}, action=${intent.action}")
+        val keyEvent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+        }
+        if (keyEvent != null && keyEvent.action == KeyEvent.ACTION_DOWN) {
+            Logger.w(TAG, "onMediaButtonEvent keyCode: ${keyEvent.keyCode}")
+            when (keyEvent.keyCode) {
+                KeyEvent.KEYCODE_MEDIA_PAUSE,
+                KeyEvent.KEYCODE_MEDIA_PLAY,
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                KeyEvent.KEYCODE_HEADSETHOOK -> {
+                    scope.launch { mediaPlayerHandler.onPlayerEvent(PlayerEvent.PlayPause) }
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_STOP -> {
+                    scope.launch { mediaPlayerHandler.onPlayerEvent(PlayerEvent.Stop) }
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                    scope.launch { mediaPlayerHandler.onPlayerEvent(PlayerEvent.Next) }
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                    scope.launch { mediaPlayerHandler.onPlayerEvent(PlayerEvent.Previous) }
+                    return true
+                }
+            }
+        }
+        return super.onMediaButtonEvent(session, controllerInfo, intent)
     }
 
     @UnstableApi
