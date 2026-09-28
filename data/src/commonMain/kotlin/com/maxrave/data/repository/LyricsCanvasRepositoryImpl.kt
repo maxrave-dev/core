@@ -9,6 +9,7 @@ import com.maxrave.domain.data.entities.LyricsEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.artist.ArtistLogo
+import com.maxrave.domain.data.model.canvas.AppleMusicArtwork
 import com.maxrave.domain.data.model.canvas.CanvasResult
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.metadata.SimpMusicLyrics
@@ -41,6 +42,7 @@ import org.simpmusic.lyrics.am.AMAlbumResource
 import org.simpmusic.lyrics.am.AMEditorialVideo
 import org.simpmusic.lyrics.am.AMMotionVideo
 import org.simpmusic.lyrics.am.AMSongWithAlbum
+import org.simpmusic.lyrics.am.AppleMusicArtworkResult
 import org.simpmusic.lyrics.am.toImageUrl
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
@@ -837,6 +839,60 @@ internal class LyricsCanvasRepositoryImpl(
                     emit(Resource.Error<String>(it.message ?: "Failed to insert translated lyrics"))
                 }
         }.flowOn(Dispatchers.IO)
+
+    override fun getAppleMusicAlbumArtwork(
+        albumTitle: String,
+        artistName: String,
+    ): Flow<Resource<AppleMusicArtwork>> =
+        flow {
+            simpMusicLyrics
+                .getAppleMusicAlbumArtwork(albumTitle, artistName)
+                .onSuccess { result ->
+                    if (result != null && result.found) {
+                        emit(Resource.Success(result.toAppleMusicArtwork()))
+                    } else {
+                        emit(Resource.Error("Album artwork not found"))
+                    }
+                }.onFailure { e ->
+                    emit(Resource.Error(e.message ?: "Failed to fetch album artwork"))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun getAppleMusicSongArtwork(
+        songTitle: String,
+        artistName: String,
+        albumTitle: String?,
+    ): Flow<Resource<AppleMusicArtwork>> =
+        flow {
+            simpMusicLyrics
+                .getAppleMusicSongArtwork(songTitle, artistName, albumTitle)
+                .onSuccess { result ->
+                    if (result != null && result.found) {
+                        emit(Resource.Success(result.toAppleMusicArtwork()))
+                    } else {
+                        emit(Resource.Error("Song artwork not found"))
+                    }
+                }.onFailure { e ->
+                    emit(Resource.Error(e.message ?: "Failed to fetch song artwork"))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    private fun AppleMusicArtworkResult.toAppleMusicArtwork(): AppleMusicArtwork =
+        AppleMusicArtwork(
+            found = found,
+            hasMotion = hasMotion,
+            trackId = trackId,
+            albumId = albumId,
+            trackName = trackName,
+            artistName = artistName,
+            albumName = albumName,
+            staticArtworkUrl = staticArtworkUrl,
+            squareMotionUrl = squareMotionUrl,
+            tallMotionUrl = tallMotionUrl,
+            directMp4Url = directMp4Url,
+            bestMotionUrl = bestMotionUrl,
+            appleMusicUrl = appleMusicUrl,
+        )
 }
 
 private const val AM_ARTWORK_TAG = "AMArtwork"

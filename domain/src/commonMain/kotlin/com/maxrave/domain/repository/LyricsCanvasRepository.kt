@@ -4,6 +4,7 @@ import com.maxrave.domain.data.entities.LyricsEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.artist.ArtistLogo
+import com.maxrave.domain.data.model.canvas.AppleMusicArtwork
 import com.maxrave.domain.data.model.canvas.CanvasResult
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.manager.DataStoreManager
@@ -110,4 +111,15 @@ interface LyricsCanvasRepository {
         translatedLyrics: Lyrics,
         language: String,
     ): Flow<Resource<String>>
+
+    fun getAppleMusicAlbumArtwork(
+        albumTitle: String,
+        artistName: String,
+    ): Flow<Resource<AppleMusicArtwork>>
+
+    fun getAppleMusicSongArtwork(
+        songTitle: String,
+        artistName: String,
+        albumTitle: String? = null,
+    ): Flow<Resource<AppleMusicArtwork>>
 }

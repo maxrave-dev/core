@@ -54,6 +54,7 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.compose.PlayerSurface
 import androidx.media3.ui.compose.SURFACE_TYPE_SURFACE_VIEW
 import androidx.media3.ui.compose.modifiers.resizeWithContentScale
@@ -112,6 +113,11 @@ fun MediaPlayerView(
                     super.onIsPlayingChanged(isPlaying)
                     keepScreenOn = isPlaying
                 }
+
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    super.onPlayerError(error)
+                    Logger.e("MediaPlayerView", "Playback error: ${error.message}", error)
+                }
             }
         }
 
@@ -132,8 +138,16 @@ fun MediaPlayerView(
                     .setCacheReadDataSourceFactory(downStreamFactory)
                     .setUpstreamDataSourceFactory(upstreamFactory)
                     .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+            val trackSelector =
+                DefaultTrackSelector(context).apply {
+                    parameters =
+                        buildUponParameters()
+                            .setMaxVideoSize(1920, 1920)
+                            .build()
+                }
             ExoPlayer
                 .Builder(context)
+                .setTrackSelector(trackSelector)
                 .setLoadControl(
                     DefaultLoadControl
                         .Builder()
