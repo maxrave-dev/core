@@ -1,5 +1,6 @@
 package com.maxrave.domain.manager
 
+import com.maxrave.domain.data.model.cookie.YouTubeSession
 import com.maxrave.domain.data.model.network.ProxyConfiguration
 import com.maxrave.domain.data.player.ReverbPreset
 import kotlinx.coroutines.flow.Flow
@@ -64,6 +65,7 @@ interface DataStoreManager {
     val cookie: Flow<String>
     val pageId: Flow<String>
     val authUser: Flow<Int>
+    val youTubeSession: Flow<YouTubeSession>
 
     suspend fun setCookie(
         cookie: String,

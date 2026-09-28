@@ -70,40 +70,33 @@ internal class CommonRepositoryImpl(
                             )
                     }
                 }
-            val ytCookieJob =
+            // cookie, pageId and authUser are written by DataStoreManager.setCookie in one
+            // DataStore edit; youTubeSession is one flow over that snapshot, so the scraper
+            // never gets a new pageId with a stale authUser or cookie.
+            val sessionJob =
                 launch {
-                    dataStoreManager.cookie.distinctUntilChanged().collectLatest { cookie ->
-                        if (cookie.isNotEmpty()) {
-                            youTube.cookie = cookie
+                    var lastCookie: String? = null
+                    dataStoreManager.youTubeSession.collectLatest { s ->
+                        youTube.setSession(
+                            cookie = s.cookie.ifEmpty { null },
+                            pageId = s.pageId.ifEmpty { null },
+                            authUser = s.authUser,
+                        )
+                        // Same trigger as the old cookie-only collector: a channel switch on the
+                        // same cookie must not refetch visitorData.
+                        if (s.cookie.isNotEmpty() && s.cookie != lastCookie) {
                             youTube.visitorData()?.let {
                                 youTube.visitorData = it
+                                lastCookie = s.cookie
                             }
                         } else {
-                            youTube.cookie = null
+                            lastCookie = s.cookie
                         }
-                        Logger.d("YouTube", "New cookie")
+                        Logger.d("YouTube", "New session")
                         localDataSource.getUsedGoogleAccount()?.netscapeCookie?.let {
                             writeTextToFile(it, cookiePath)
                             Logger.w("YouTube", "Wrote cookie to file")
                         }
-                    }
-                }
-            val pageIdJob =
-                launch {
-                    dataStoreManager.pageId.distinctUntilChanged().collectLatest { pageId ->
-                        youTube.pageId = pageId.ifEmpty { null }
-                        Logger.d("YouTube", "New pageId")
-                        localDataSource.getUsedGoogleAccount()?.netscapeCookie?.let {
-                            writeTextToFile(it, cookiePath)
-                            Logger.w("YouTube", "Wrote cookie to file")
-                        }
-                    }
-                }
-            val authUserJob =
-                launch {
-                    dataStoreManager.authUser.distinctUntilChanged().collectLatest { authUser ->
-                        youTube.authUser = authUser
-                        Logger.d("YouTube", "New authUser")
                     }
                 }
             val usingProxy =
@@ -269,9 +262,7 @@ internal class CommonRepositoryImpl(
                 }
 
             localeJob.join()
-            ytCookieJob.join()
-            pageIdJob.join()
-            authUserJob.join()
+            sessionJob.join()
             usingProxy.join()
             dataSyncIdJob.join()
             visitorDataJob.join()

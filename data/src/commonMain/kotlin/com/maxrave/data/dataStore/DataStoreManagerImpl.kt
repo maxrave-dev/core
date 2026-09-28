@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.maxrave.common.SELECTED_LANGUAGE
 import com.maxrave.common.SUPPORTED_LANGUAGE
 import com.maxrave.common.SponsorBlockType
+import com.maxrave.domain.data.model.cookie.YouTubeSession
 import com.maxrave.domain.data.model.network.ProxyConfiguration
 import com.maxrave.domain.data.player.ReverbPreset
 import com.maxrave.domain.manager.DataStoreManager
@@ -28,6 +29,7 @@ import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
@@ -195,6 +197,16 @@ internal class DataStoreManagerImpl(
         settingsDataStore.data.map { preferences ->
             preferences[AUTH_USER] ?: 0
         }
+
+    override val youTubeSession: Flow<YouTubeSession> =
+        settingsDataStore.data
+            .map { preferences ->
+                YouTubeSession(
+                    cookie = preferences[COOKIE] ?: "",
+                    pageId = preferences[PAGE_ID] ?: "",
+                    authUser = preferences[AUTH_USER] ?: 0,
+                )
+            }.distinctUntilChanged()
 
     override suspend fun setCookie(
         cookie: String,
