@@ -8,7 +8,9 @@ import com.maxrave.data.mapping.toLyrics
 import com.maxrave.domain.data.entities.LyricsEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.model.browse.album.Track
+import com.maxrave.domain.data.model.browse.artist.ArtistEditorial
 import com.maxrave.domain.data.model.browse.artist.ArtistLogo
+import com.maxrave.domain.data.model.browse.artist.ArtistMotion
 import com.maxrave.domain.data.model.canvas.CanvasResult
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.metadata.SimpMusicLyrics
@@ -38,6 +40,7 @@ import kotlinx.coroutines.withContext
 import org.simpmusic.aiservice.AiClient
 import org.simpmusic.lyrics.SimpMusicLyricsClient
 import org.simpmusic.lyrics.am.AMAlbumResource
+import org.simpmusic.lyrics.am.AMArtwork
 import org.simpmusic.lyrics.am.AMEditorialVideo
 import org.simpmusic.lyrics.am.AMMotionVideo
 import org.simpmusic.lyrics.am.AMSongWithAlbum
@@ -593,47 +596,81 @@ internal class LyricsCanvasRepositoryImpl(
                 }
         }.flowOn(Dispatchers.IO)
 
-    override fun getArtistLogo(artistName: String): Flow<Resource<ArtistLogo>> =
+    override fun getArtistEditorial(artistName: String): Flow<Resource<ArtistEditorial>> =
         flow {
             simpMusicLyrics
                 .searchAMArtist(artistName, limit = 1)
                 .onSuccess { artists ->
                     val id = artists.firstOrNull()?.id
                     if (id == null) {
-                        emit(Resource.Error<ArtistLogo>("Artist not found"))
+                        // A definitive answer, not a failure: the catalog was reached and holds no
+                        // such artist. Handed back as an empty Success so the caller can remember
+                        // it and stop asking — an Error here is indistinguishable from a dead
+                        // connection, which must NOT be cached.
+                        emit(Resource.Success(ArtistEditorial(logo = null, motion = null)))
                         return@onSuccess
                     }
                     simpMusicLyrics
                         .getAMArtist(id)
                         .onSuccess { artist ->
-                            val logo = artist?.attributes?.editorialArtwork?.musicContentColorLogoTrimmed
+                            val attributes = artist?.attributes
+                            val logo = attributes?.editorialArtwork?.musicContentColorLogoTrimmed
                             val srcW = logo?.width ?: 0
                             val srcH = logo?.height ?: 0
                             // Scale down to ~1000px wide, keeping the logo aspect ratio.
-                            val targetW = 1000
+                            val targetW = AM_LOGO_TARGET_WIDTH
                             val targetH = if (srcW > 0) (srcH.toLong() * targetW / srcW).toInt() else srcH
-                            val url = logo?.toImageUrl(targetW, targetH)
-                            if (logo == null || url == null) {
-                                emit(Resource.Error<ArtistLogo>("No artist logo"))
-                                return@onSuccess
-                            }
-                            emit(
-                                Resource.Success(
+                            val artistLogo =
+                                logo?.toImageUrl(targetW, targetH)?.let { url ->
                                     ArtistLogo(
                                         logoUrl = url,
                                         bgColorHex = logo.bgColor,
                                         width = srcW,
                                         height = srcH,
-                                    ),
-                                ),
-                            )
+                                    )
+                                }
+                            val motion = attributes?.editorialVideo?.toArtistMotion()
+                            // Both halves are optional and are reported as they came. They are
+                            // independently present — Billie Eilish ships motion and no name logo,
+                            // Taylor Swift the reverse — so failing on a missing logo would throw
+                            // the video away for exactly the artists that have one. Neither present
+                            // is still a Success, for the same reason as above: this artist
+                            // genuinely has nothing, and that is worth remembering.
+                            emit(Resource.Success(ArtistEditorial(logo = artistLogo, motion = motion)))
                         }.onFailure {
-                            emit(Resource.Error<ArtistLogo>(it.message ?: "Failed to fetch artist"))
+                            emit(Resource.Error<ArtistEditorial>(it.message ?: "Failed to fetch artist"))
                         }
                 }.onFailure {
-                    emit(Resource.Error<ArtistLogo>(it.message ?: "Artist search failed"))
+                    emit(Resource.Error<ArtistEditorial>(it.message ?: "Artist search failed"))
                 }
         }.flowOn(Dispatchers.IO)
+
+    /**
+     * Resolve the artist's animated artwork down to the two cuts the header can actually use.
+     *
+     * `motionArtistFullscreen16x9` is the same master as `motionArtistWide16x9` and is read only
+     * as a fallback. Each master is collapsed to a single rendition here rather than at play time,
+     * for the same reason the album path does it: left to themselves mpv takes the top of the
+     * ladder and ExoPlayer picks by bandwidth estimate, so the two platforms would show different
+     * files for the same artist.
+     */
+    private suspend fun AMEditorialVideo.toArtistMotion(): ArtistMotion? {
+        val square = motionArtistSquare1x1
+        val wide = motionArtistWide16x9 ?: motionArtistFullscreen16x9
+        if (square?.video == null && wide?.video == null) return null
+        return ArtistMotion(
+            squareVideoUrl = square?.video?.let { resolveAMRendition(it) },
+            squareThumbUrl = square?.previewFrame?.toPreviewFrameUrl(),
+            wideVideoUrl = wide?.video?.let { resolveAMRendition(it) },
+            wideThumbUrl = wide?.previewFrame?.toPreviewFrameUrl(),
+        )
+    }
+
+    /** Falls back to the master, which still plays — just not as cheaply. */
+    private suspend fun resolveAMRendition(master: String): String =
+        simpMusicLyrics
+            .selectAMRendition(master, AM_MIN_RENDITION_WIDTH)
+            .getOrNull() ?: master
 
     override fun getAITranslationLyrics(
         lyrics: Lyrics,
@@ -857,6 +894,19 @@ private const val EXACT_NAME_TIER = 0
 private const val AM_DURATION_TOLERANCE_SECONDS = 3
 // Only used when AM omits the preview frame's own dimensions, which it normally supplies.
 private const val AM_PREVIEW_FRAME_SIZE = 1080
+
+/** The name-logo is served far larger than any header needs; ~1000px wide is plenty. */
+private const val AM_LOGO_TARGET_WIDTH = 1000
+
+/**
+ * The url is a `{w}x{h}` template and the frame carries its own dimensions — an artist's wide cut
+ * is 3840x2160, not square — so asking for a square crop of it would squash the image.
+ */
+private fun AMArtwork.toPreviewFrameUrl(): String? =
+    toImageUrl(
+        width = width ?: AM_PREVIEW_FRAME_SIZE,
+        height = height ?: AM_PREVIEW_FRAME_SIZE,
+    )
 
 // The album name YouTube Music rows fall back to when the real one is unknown. Declared here for
 // the same reason the DAO and the local data source each declare their own: it is a value this

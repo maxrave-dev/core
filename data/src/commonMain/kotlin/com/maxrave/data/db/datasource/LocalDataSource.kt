@@ -4,6 +4,7 @@ import DatabaseDao
 import com.maxrave.data.db.MusicDatabase
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
+import com.maxrave.domain.data.entities.ArtistMotionEntity
 import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
@@ -101,6 +102,8 @@ internal class LocalDataSource(
     suspend fun deleteAllPlaybackEvents() = databaseDao.deleteAllPlaybackEvents()
 
     suspend fun deleteUnfollowedArtists() = databaseDao.deleteUnfollowedArtists()
+
+    suspend fun deleteOrphanedArtistMotion() = databaseDao.deleteOrphanedArtistMotion()
 
     suspend fun deleteNotificationsOfUnfollowedArtists() = databaseDao.deleteNotificationsOfUnfollowedArtists()
 
@@ -271,6 +274,10 @@ internal class LocalDataSource(
         nameLogoUrl: String?,
         nameLogoColor: String?,
     ) = databaseDao.updateArtistNameLogo(channelId, nameLogoUrl, nameLogoColor)
+
+    suspend fun getArtistMotion(channelId: String) = databaseDao.getArtistMotion(channelId)
+
+    suspend fun upsertArtistMotion(motion: ArtistMotionEntity) = databaseDao.upsertArtistMotion(motion)
 
     suspend fun updateFollowed(
         followed: Int,

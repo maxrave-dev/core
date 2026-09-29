@@ -136,6 +136,7 @@ internal class SongRepositoryImpl(
             val artists = localDataSource.deleteUnfollowedArtists()
             val notifications = localDataSource.deleteNotificationsOfUnfollowedArtists()
             val artistReleases = localDataSource.deleteFollowedArtistReleasesOfUnfollowedArtists()
+            val artistMotion = localDataSource.deleteOrphanedArtistMotion()
             val podcasts = localDataSource.deleteUnfavoritedPodcasts()
             val albums = localDataSource.deleteUnreferencedAlbums()
             val playlists = localDataSource.deleteUnreferencedPlaylists()
@@ -146,6 +147,7 @@ internal class SongRepositoryImpl(
                 TAG,
                 "Clear history: removed $removed of ${orphans.size} candidate songs, " +
                     "$artists artists, $notifications notifications, $artistReleases artist releases, " +
+                    "$artistMotion artist motion rows, " +
                     "$podcasts podcasts, $albums albums, $playlists playlists, $satellites stale rows",
             )
             // Last, and outside every statement above: SQLite refuses VACUUM inside a transaction.

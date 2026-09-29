@@ -9,6 +9,7 @@ import androidx.room.execSQL
 import androidx.room.useWriterConnection
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
+import com.maxrave.domain.data.entities.ArtistMotionEntity
 import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
@@ -39,9 +40,10 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         SetVideoIdEntity::class, PairSongLocalPlaylist::class, GoogleAccountEntity::class, FollowedArtistSingleAndAlbum::class,
         NotificationEntity::class, TranslatedLyricsEntity::class, PodcastsEntity::class, EpisodeEntity::class,
         YourYouTubePlaylistList::class, PlaybackEventEntity::class, EventArtistEntity::class,
-        AutoEqEntryEntity::class, AutoEqIndexMetaEntity::class, AutoEqCurveEntity::class
+        AutoEqEntryEntity::class, AutoEqIndexMetaEntity::class, AutoEqCurveEntity::class,
+        ArtistMotionEntity::class
     ],
-    version = 26,
+    version = 27,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3), AutoMigration(
@@ -91,6 +93,11 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         AutoMigration(25, 26),
         AutoMigration(24, 26),
         AutoMigration(23, 26),
+        // 27 adds artist_motion. One new table and nothing else, so Room generates the migration
+        // itself — no spec, and no path by which an existing row can be touched.
+        AutoMigration(26, 27),
+        AutoMigration(25, 27),
+        AutoMigration(24, 27),
     ],
 )
 @TypeConverters(Converters::class)

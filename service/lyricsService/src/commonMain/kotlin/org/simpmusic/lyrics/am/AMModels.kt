@@ -51,6 +51,9 @@ data class AMArtistAttributes(
     val artwork: AMArtwork? = null,
     // Present on the artist-detail endpoint (extend=editorialArtwork); null on plain search.
     val editorialArtwork: AMEditorialArtwork? = null,
+    // The animated artist artwork. Present ONLY when the request names `editorialVideo` in its
+    // `extend` — asking for editorialArtwork alone leaves the field out entirely, with no error.
+    val editorialVideo: AMEditorialVideo? = null,
 )
 
 /**
@@ -128,6 +131,12 @@ data class AMEditorialVideo(
     val motionDetailTall: AMMotionVideo? = null,
     val motionSquareVideo1x1: AMMotionVideo? = null,
     val motionTallVideo3x4: AMMotionVideo? = null,
+    // Artist renditions. The same wrapper carries both because the shape is identical; an artist
+    // response never fills the album keys and vice versa. There is no tall cut for an artist, and
+    // `motionArtistFullscreen16x9` is the same master as `motionArtistWide16x9`.
+    val motionArtistSquare1x1: AMMotionVideo? = null,
+    val motionArtistWide16x9: AMMotionVideo? = null,
+    val motionArtistFullscreen16x9: AMMotionVideo? = null,
 )
 
 /**

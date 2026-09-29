@@ -246,7 +246,9 @@ class SimpMusicLyrics {
         token: String,
     ) = httpClient.get("https://amp-api.music.apple.com/v1/catalog/us/artists/$id") {
         parameter("art[url]", "c,f")
-        parameter("extend", "editorialArtwork,hero,keyColor")
+        // editorialVideo is what brings the animated artist artwork back. Without it named here
+        // the field is simply absent from the response — the request still succeeds.
+        parameter("extend", "editorialArtwork,editorialVideo,hero,keyColor")
         parameter("format[resources]", "map")
         parameter("l", "en-US")
         parameter("platform", "web")
