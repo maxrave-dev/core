@@ -2,6 +2,8 @@ package com.simpmusic.media_jvm.mpv
 
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.player.AudioEffects
+import com.maxrave.domain.data.player.AudioOutput
+import com.maxrave.domain.data.player.AudioOutputKind
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import com.maxrave.domain.data.player.PlayerConstants
@@ -26,6 +28,11 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.lastOrNull
@@ -1090,6 +1097,9 @@ class MpvPlayerAdapter(
         if (effects != AudioEffects.NONE) {
             setAudioEffects(effects, ensureReverbIr(effects))
         }
+        // And the output: a fresh handle opens the system default, so without this the next track
+        // would quietly leave the device the user picked.
+        preferredAudioDevice?.let { setAudioDevice(it) }
     }
 
     /**
@@ -1201,6 +1211,36 @@ class MpvPlayerAdapter(
         val before = previous.reverb ?: return false
         val after = next.reverb ?: return false
         return previous.delay == next.delay && before.preset == after.preset
+    }
+
+    // ========== Audio Output ==========
+
+    private val _audioOutputs = MutableStateFlow<List<AudioOutput>>(emptyList())
+    override val audioOutputs: StateFlow<List<AudioOutput>> = _audioOutputs.asStateFlow()
+
+    /** The mpv device the user picked, or null for mpv's `auto` (the system default). */
+    @Volatile
+    private var preferredAudioDevice: String? = null
+
+    override fun selectAudioOutput(id: String?) {
+        preferredAudioDevice = id?.takeIf { it != MPV_AUTO_DEVICE }
+        // Same hop as setEqualizer: mpv properties are written on the player thread, and every live
+        // handle has to move together or the two halves of a crossfade play out of different speakers.
+        coroutineScope.launch {
+            forEachLiveHandle { it.setAudioDevice(preferredAudioDevice ?: MPV_AUTO_DEVICE) }
+            readAudioOutputs()
+        }
+    }
+
+    override fun refreshAudioOutputs() {
+        coroutineScope.launch { readAudioOutputs() }
+    }
+
+    // mpv only answers for a handle, so with nothing loaded yet the list stays as it was.
+    private fun readAudioOutputs() {
+        val handle = currentPlayer ?: return
+        val driver = handle.currentAudioOutputDriver() ?: MpvPlayer.pinnedAudioOutputDriver
+        _audioOutputs.value = parseAudioOutputs(handle.audioDeviceListJson(), driver, handle.audioDevice())
     }
 
     // ========== Listener Management ==========
@@ -3009,4 +3049,46 @@ class MpvPlayerAdapter(
 
         return null
     }
+}
+
+private const val MPV_AUTO_DEVICE = "auto"
+
+/**
+ * The outputs [driver] can route to, read off mpv's `audio-device-list`, with [activeDevice] marked.
+ *
+ * mpv lists every driver's devices in one array (`coreaudio/…` and `avfoundation/…` both, on a Mac),
+ * and naming another driver's device switches the handle to that driver — on macOS, back to the
+ * coreaudio one the whole player is pinned away from. Only [driver]'s own entries are offered, and
+ * nothing at all while the driver is unknown, rather than guessing. `auto` comes first as the system
+ * default, with an empty name for the UI to label in the user's language.
+ */
+internal fun parseAudioOutputs(
+    json: String?,
+    driver: String?,
+    activeDevice: String?,
+): List<AudioOutput> {
+    if (json == null || driver == null) return emptyList()
+    val entries = runCatching { Json.parseToJsonElement(json).jsonArray }.getOrNull() ?: return emptyList()
+    val active = activeDevice ?: MPV_AUTO_DEVICE
+    val devices =
+        entries.mapNotNull { entry ->
+            val fields = runCatching { entry.jsonObject }.getOrNull() ?: return@mapNotNull null
+            val name = fields["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            if (!name.startsWith("$driver/")) return@mapNotNull null
+            AudioOutput(
+                id = name,
+                name = fields["description"]?.jsonPrimitive?.contentOrNull ?: name.substringAfter('/'),
+                // mpv says nothing about what a device is, so the type is left open.
+                kind = AudioOutputKind.OTHER,
+                isActive = name == active,
+            )
+        }
+    val systemDefault =
+        AudioOutput(
+            id = MPV_AUTO_DEVICE,
+            name = "",
+            kind = AudioOutputKind.DEVICE_SPEAKER,
+            isActive = active == MPV_AUTO_DEVICE || devices.none { it.isActive },
+        )
+    return listOf(systemDefault) + devices
 }

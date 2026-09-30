@@ -2,6 +2,7 @@ package com.maxrave.media3.exoplayer
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import androidx.media3.common.AudioAttributes
@@ -20,6 +21,7 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
 import com.maxrave.domain.data.player.AudioEffects
+import com.maxrave.domain.data.player.AudioOutput
 import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
@@ -45,6 +47,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -304,6 +307,31 @@ internal class CrossfadeExoPlayerAdapter(
 
     // VideoId -> PrecachedPlayer
     private val precachedPlayers = ConcurrentHashMap<String, PrecachedPlayer>()
+
+    // ========== Audio Output ==========
+
+    /**
+     * Where the sound leaves by — see [MediaPlayerInterface.audioOutputs]. The picked device goes to
+     * every player this adapter runs, and [createExoPlayerInstance] gives it to each new one, so the
+     * next track, a crossfade partner or a precached handle cannot slip back to the old output.
+     * Declared ahead of the first player built below, which reads it.
+     */
+    private val outputRouter = AudioOutputRouter(context) { device -> applyPreferredAudioDevice(device) }
+
+    override val audioOutputs: StateFlow<List<AudioOutput>>
+        get() = outputRouter.outputs
+
+    override fun selectAudioOutput(id: String?) = outputRouter.select(id)
+
+    override fun refreshAudioOutputs() = outputRouter.refresh()
+
+    private fun applyPreferredAudioDevice(device: AudioDeviceInfo?) {
+        coroutineScope.launch {
+            currentPlayer?.setPreferredAudioDevice(device)
+            secondaryPlayer?.setPreferredAudioDevice(device)
+            precachedPlayers.values.forEach { it.player.setPreferredAudioDevice(device) }
+        }
+    }
     private var precacheEnabled = true
     private val maxPrecacheCount = 2
     private var precacheJob: Job? = null
@@ -584,6 +612,10 @@ internal class CrossfadeExoPlayerAdapter(
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(perPlayerRenderers)
                 .build()
+
+        // The output the user picked, if any: a player built for the next track, a crossfade or a
+        // precache starts where the others are playing rather than back on the system's choice.
+        outputRouter.preferredDevice?.let { player.setPreferredAudioDevice(it) }
 
         return PlayerWithFilter(player, crossfadeFilter)
     }
@@ -1433,6 +1465,7 @@ internal class CrossfadeExoPlayerAdapter(
         coroutineScope.cancel()
         cleanupCurrentPlayerInternal()
         clearAllPrecacheInternal()
+        outputRouter.release()
         listeners.clear()
     }
 

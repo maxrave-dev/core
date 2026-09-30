@@ -1,8 +1,11 @@
 package com.maxrave.domain.mediaservice.player
 
 import com.maxrave.domain.data.player.AudioEffects
+import com.maxrave.domain.data.player.AudioOutput
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Abstract interface for media player implementations
@@ -188,6 +191,36 @@ interface MediaPlayerInterface {
      */
     fun setAudioEffects(effects: AudioEffects) = Unit
 
+    /**
+     * The outputs this player can render into right now, with the one the sound is leaving by
+     * marked [AudioOutput.isActive].
+     *
+     * Empty on a backend that cannot list its outputs, which hides the list rather than showing one
+     * meaningless entry.
+     */
+    val audioOutputs: StateFlow<List<AudioOutput>>
+        get() = NO_AUDIO_OUTPUTS
+
+    /**
+     * Route playback to the output with [id], or back to the system's own choice when [id] is null.
+     *
+     * This routes THIS player, not the whole device: a call keeps ringing on the speaker and other
+     * apps stay where they were, which is what separates it from the system output switcher. It
+     * applies to every player the backend runs — both halves of a crossfade and every precached
+     * handle — so a track change cannot slip back to the previous output. An id that is no longer
+     * present is ignored.
+     *
+     * Default no-op, matching [setEqualizer].
+     */
+    fun selectAudioOutput(id: String?) = Unit
+
+    /**
+     * Re-read [audioOutputs] now. Devices coming and going are picked up on their own; this is for
+     * the rest — the system's own route changing while every device stays connected, or a backend
+     * that can only ask a live player what it sees. Called when the output list is opened.
+     */
+    fun refreshAudioOutputs() = Unit
+
     // Listener management
     fun addListener(listener: MediaPlayerListener)
 
@@ -196,3 +229,6 @@ interface MediaPlayerInterface {
     // Release resources
     fun release()
 }
+
+// What a backend that cannot list its outputs reports: nothing, and never anything else.
+private val NO_AUDIO_OUTPUTS: StateFlow<List<AudioOutput>> = MutableStateFlow(emptyList())

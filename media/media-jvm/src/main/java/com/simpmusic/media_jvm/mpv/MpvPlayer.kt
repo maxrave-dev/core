@@ -95,6 +95,16 @@ class MpvPlayer private constructor(
     val videoFrames: MpvVideoFrameSource? = null,
 ) {
     companion object {
+        /**
+         * The audio output driver every handle is pinned to, or null where mpv picks one itself.
+         *
+         * macOS is pinned to avfoundation (see the `ao` option below for why coreaudio crashes the
+         * process). mpv lists every driver's devices together in `audio-device-list`, and picking a
+         * `coreaudio/...` device would switch this handle back to that driver — so the output list
+         * must only ever offer this driver's own devices.
+         */
+        val pinnedAudioOutputDriver: String? = if (com.sun.jna.Platform.isMac()) "avfoundation" else null
+
         /** Userdata tag for every `mpv_observe_property` registration; we dispatch by name. */
         private const val OBSERVE_USERDATA = 1L
 
@@ -724,6 +734,24 @@ class MpvPlayer private constructor(
         setPropertyDouble("panscan", value.coerceIn(0.0, 1.0))
     }
 
+    /**
+     * Send this handle's audio to the mpv device [name] — `"auto"` for the system default. mpv
+     * reopens its audio output on the spot, so this can change mid-track.
+     */
+    fun setAudioDevice(name: String) {
+        if (isReleased) return
+        setPropertyString("audio-device", name)
+    }
+
+    /** `audio-device-list` as mpv prints it: a JSON array of `{name, description}`, every driver's devices together. */
+    fun audioDeviceListJson(): String? = if (isReleased) null else getPropertyString("audio-device-list")
+
+    /** The device this handle was told to use (`"auto"` unless set). */
+    fun audioDevice(): String? = if (isReleased) null else getPropertyString("audio-device")
+
+    /** The audio output driver this handle actually opened — null until its audio has started. */
+    fun currentAudioOutputDriver(): String? = if (isReleased) null else getPropertyString("current-ao")
+
     // ================= DJ crossfade audio chain =================
     //
     // Android runs the sweep through `CrossfadeFilterAudioProcessor` and the tempo/pitch match
@@ -1168,6 +1196,21 @@ class MpvPlayer private constructor(
         } catch (e: Throwable) {
             Logger.e(TAG, "set $name threw: ${e.message}")
             -1
+        }
+
+    /** @return the property printed as a string, or null when unavailable. The native buffer is freed here. */
+    private fun getPropertyString(name: String): String? =
+        try {
+            lib.mpv_get_property_string(ctx, name)?.let { buffer ->
+                try {
+                    buffer.getString(0, "UTF-8")
+                } finally {
+                    lib.mpv_free(buffer)
+                }
+            }
+        } catch (e: Throwable) {
+            Logger.e(TAG, "get $name threw: ${e.message}")
+            null
         }
 
     /** @return the property value, or 0.0 when unavailable (e.g. nothing loaded yet). */
