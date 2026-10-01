@@ -10,6 +10,7 @@ import com.maxrave.data.mapping.toTrack
 import com.maxrave.domain.data.entities.NewFormatEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.isBefore
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.extension.plusSeconds
@@ -119,6 +120,19 @@ internal class StreamRepositoryImpl(
                 )
                 .onSuccess { data ->
                     val response = data.second
+                    val isLive = response.videoDetails?.isLive == true
+                    LiveStreamRegistry.recordLiveStatus(videoId, isLive)
+                    if (isLive) {
+                        // A live broadcast plays from its HLS playlist alone, so none of the itag
+                        // choice below applies. Nothing about it goes into the format table either:
+                        // the playlist URL is good for a few hours and the broadcast may be over by
+                        // the next run, so every play resolves it afresh — and the players learn
+                        // that it is live from LiveStreamRegistry, recorded just above.
+                        val liveHlsUrl = response.streamingData?.hlsManifestUrl
+                        Logger.w("Stream", "Live stream $videoId: $liveHlsUrl")
+                        emit(liveHlsUrl)
+                        return@onSuccess
+                    }
                     if (data.third == MediaType.Song) {
                         Logger.w(
                             "Stream",

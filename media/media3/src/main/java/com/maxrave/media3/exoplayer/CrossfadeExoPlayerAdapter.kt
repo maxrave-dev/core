@@ -25,6 +25,7 @@ import com.maxrave.domain.data.player.AudioOutput
 import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
 import com.maxrave.domain.extension.isVideo
@@ -40,6 +41,7 @@ import com.maxrave.media3.audio.EchoAudioProcessor
 import com.maxrave.media3.audio.EqualizerAudioProcessor
 import com.maxrave.media3.audio.EqualizerCurve
 import com.maxrave.media3.audio.SleepFadeAudioProcessor
+import com.maxrave.media3.service.mediasourcefactory.isLiveStreamDetected
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter.Companion.SPEED_PITCH_STEP
 import com.maxrave.media3.service.mediasourcefactory.MergingMediaSourceFactory
 import kotlinx.coroutines.CancellationException
@@ -738,6 +740,8 @@ internal class CrossfadeExoPlayerAdapter(
     }
 
     override fun seekTo(positionMs: Long) {
+        // A live broadcast is followed at its live edge: its seek bar shows LIVE, not a length.
+        if (isCurrentTrackLive()) return
         castRemotePlayer?.let { remote ->
             remote.seekTo(positionMs)
             cachedPosition = positionMs
@@ -839,7 +843,8 @@ internal class CrossfadeExoPlayerAdapter(
             // - Position <= 3s → go to previous track
             val positionThresholdMs = 3000L
             val position = currentPosition
-            if (position > positionThresholdMs) {
+            // A live broadcast has no start to go back to, so Previous always means the previous track.
+            if (position > positionThresholdMs && !isCurrentTrackLive()) {
                 Logger.d(TAG, "seekToPrevious: pos=${position}ms > ${positionThresholdMs}ms — seeking to start")
                 seekTo(0)
             } else if (hasPreviousMediaItem()) {
@@ -1605,8 +1610,19 @@ internal class CrossfadeExoPlayerAdapter(
                         )
                     }
 
-                    // Use precached player if available
-                    val cachedPlayerEntry = precachedPlayers.remove(videoId)
+                    // Use precached player if available — unless it already failed. A precache that
+                    // ran into a live broadcast holds nothing playable (its progressive source threw
+                    // LiveStreamDetectedException while nobody was listening), so it is dropped and
+                    // the track is built afresh, which now gives it an HLS source.
+                    val cachedPlayerEntry =
+                        precachedPlayers.remove(videoId)?.let { cached ->
+                            if (cached.player.playerError == null) {
+                                cached
+                            } else {
+                                cached.player.release()
+                                null
+                            }
+                        }
                     val player: ExoPlayer
                     val playerFilter: CrossfadeFilterAudioProcessor?
                     if (cachedPlayerEntry?.player != null) {
@@ -1802,6 +1818,17 @@ internal class CrossfadeExoPlayerAdapter(
                             error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
 
                     val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
+                    // The progressive resolver found this track to be a live broadcast. Loading it
+                    // again builds an HLS source instead — see LiveStreamDetectedException. Not a
+                    // retry, and not counted as one: it is a different source, not the same one again.
+                    if (error.isLiveStreamDetected() && currentVideoId != null) {
+                        Logger.w(TAG, "$currentVideoId is a live stream; loading it again as HLS")
+                        coroutineScope.launch {
+                            precachedPlayers.remove(currentVideoId)?.player?.release()
+                            loadAndPlayTrackInternal(localCurrentMediaItemIndex, 0L, shouldPlay = true)
+                        }
+                        return
+                    }
                     if (error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND) {
                         // Without this the crash report is a bare FileDataSourceException with
                         // nothing tying it back to a cache decision made three layers up.
@@ -2005,6 +2032,12 @@ internal class CrossfadeExoPlayerAdapter(
     /** Same skip rule for the CURRENT track: a video should play out to its last frame instead of fading out under the incoming song. */
     private fun isCurrentTrackVideo(): Boolean = watchVideoEnabled && currentMediaItem?.isVideo() == true
 
+    /** A live broadcast never reaches an end to fade out of, and its "remaining time" is only how far behind the live edge it is. */
+    private fun isCurrentTrackLive(): Boolean = currentMediaItem?.mediaId?.let(LiveStreamRegistry::isLive) == true
+
+    /** Nor can a live broadcast fade in: its HLS source is not one a crossfade can prepare ahead of time. */
+    private fun isNextTrackLive(): Boolean = playlist.getOrNull(getNextMediaItemIndex())?.mediaId?.let(LiveStreamRegistry::isLive) == true
+
     /**
      * Crossfade needs a track long enough that both sides of the blend are still worth hearing. At
      * the default 5s fade a 20s track would spend half its length fading in or out, and a longer
@@ -2060,6 +2093,8 @@ internal class CrossfadeExoPlayerAdapter(
                 !isCrossfading &&
                 !isCurrentTrackVideo() &&
                 !isNextTrackVideo() &&
+                !isCurrentTrackLive() &&
+                !isNextTrackLive() &&
                 !isCurrentTrackTooShortForCrossfade() &&
                 !isWithinAlbum()
 
@@ -2934,6 +2969,8 @@ internal class CrossfadeExoPlayerAdapter(
                                     pos > 0 &&
                                     !isCurrentTrackVideo() &&
                                     !isNextTrackVideo() &&
+                                    !isCurrentTrackLive() &&
+                                    !isNextTrackLive() &&
                                     !isCurrentTrackTooShortForCrossfade() &&
                                     !isWithinAlbum()
                                 ) {
@@ -3009,8 +3046,12 @@ internal class CrossfadeExoPlayerAdapter(
                                 }
                             }
 
+                        val nextVideoId = playlist.getOrNull(nextIndex)?.mediaId
+                        // A live broadcast is not precached: buffered ahead, it would start behind
+                        // the live edge by however long it waited in the queue.
                         if (nextIndex != localCurrentMediaItemIndex &&
-                            !precachedPlayers.containsKey(playlist.getOrNull(nextIndex)?.mediaId)
+                            !precachedPlayers.containsKey(nextVideoId) &&
+                            nextVideoId?.let(LiveStreamRegistry::isLive) != true
                         ) {
                             indicesToPrecache.add(nextIndex)
                         }

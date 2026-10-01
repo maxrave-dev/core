@@ -111,8 +111,11 @@ import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.datetime.todayIn
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okio.Path
 import kotlin.jvm.JvmInline
@@ -1413,6 +1416,65 @@ class YouTube {
 
     fun isManifestUrl(url: String): Boolean = url.contains(".m3u8") || url.contains(".mpd") || url.contains("manifest")
 
+    /**
+     * The HLS playlist a live broadcast plays from — see [Ytmusic.liveStreamPlayer] for which
+     * client asks for it and why. Read as plain JSON: only one field is needed, and that client's
+     * response is not guaranteed to fit [PlayerResponse]'s non-null fields.
+     */
+    private suspend fun liveStreamHlsUrl(videoId: String): String? =
+        runCatching {
+            // A fresh visitor id every time, fetched without the session (sw.js_data sends no
+            // cookie), so this cookie-less request stays anonymous end to end — see
+            // Ytmusic.liveStreamPlayer.
+            val anonymousVisitorData =
+                visitorData() ?: run {
+                    Logger.w(TAG, "No anonymous visitorData for the live stream request of $videoId")
+                    return@runCatching null
+                }
+            val response = ytMusic.liveStreamPlayer(videoId, anonymousVisitorData).body<JsonObject>()
+            val status =
+                response["playabilityStatus"]
+                    ?.jsonObject
+                    ?.get("status")
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+            if (status != "OK") {
+                Logger.w(TAG, "Live stream request for $videoId: $status")
+                return@runCatching null
+            }
+            response["streamingData"]
+                ?.jsonObject
+                ?.get("hlsManifestUrl")
+                ?.jsonPrimitive
+                ?.contentOrNull
+        }.onFailure {
+            Logger.w(TAG, "Live stream request failed for $videoId: ${it.message}")
+        }.getOrNull()
+            ?.also { Logger.d(TAG, "live HLS from the Android client for $videoId") }
+
+    /**
+     * This response reduced to what a live broadcast plays from: its HLS playlist and nothing else.
+     * The fixed-length formats are dropped so nothing downstream picks one by mistake, and the status
+     * reads OK because the playlist came from an extractor even when this client was refused.
+     */
+    private fun PlayerResponse.asLiveStream(liveHlsUrl: String): PlayerResponse =
+        copy(
+            playabilityStatus = playabilityStatus.copy(status = "OK", reason = null),
+            streamingData =
+                (
+                    streamingData ?: PlayerResponse.StreamingData(
+                        hlsManifestUrl = null,
+                        formats = null,
+                        adaptiveFormats = emptyList(),
+                        expiresInSeconds = 0,
+                    )
+                ).copy(
+                    hlsManifestUrl = liveHlsUrl,
+                    formats = emptyList(),
+                    adaptiveFormats = emptyList(),
+                ),
+        )
+
     @OptIn(ExperimentalTime::class)
     suspend fun player(
         videoId: String,
@@ -1503,6 +1565,19 @@ class YouTube {
                                 ),
                         )
                     }
+
+            // A live broadcast has no fixed-length formats to decode: it plays from one HLS
+            // playlist. videoDetails is present even on a response this client was refused, so the
+            // check comes before anything that requires an OK status.
+            if (tempRes.videoDetails?.isLive == true) {
+                // tempRes carries an hlsManifestUrl of its own, and it is deliberately not used: the
+                // web clients' live playlists load, but every segment is refused with 403.
+                val liveHlsUrl =
+                    liveStreamHlsUrl(videoId)
+                        ?: ytMusic.getLiveHlsUrl(videoId)
+                        ?: throw RuntimeException("No live HLS URL found for $videoId")
+                return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
+            }
 
             val response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
             if (response != null) {

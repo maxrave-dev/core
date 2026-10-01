@@ -60,12 +60,19 @@ data class YouTubeClient(
                 xClientName = 21,
             )
 
+        /**
+         * The YouTube Android app — used for live broadcasts, see Ytmusic.liveStreamPlayer. Version
+         * and user agent follow yt-dlp's INNERTUBE_CLIENTS (master, 2026-10-01).
+         */
         val ANDROID =
             YouTubeClient(
                 clientName = "ANDROID",
-                clientVersion = "17.13.3",
+                clientVersion = "21.26.364",
                 api_key = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
-                userAgent = USER_AGENT_ANDROID,
+                userAgent = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip",
+                osName = "Android",
+                osVersion = "11",
+                xClientName = 3,
             )
 
         val WEB =

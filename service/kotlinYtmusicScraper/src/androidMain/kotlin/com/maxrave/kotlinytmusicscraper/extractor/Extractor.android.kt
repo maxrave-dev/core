@@ -65,6 +65,42 @@ actual class Extractor {
         return braveStreams(videoId)
     }
 
+    actual fun liveHlsUrl(videoId: String): String? {
+        // The same three tiers as newPipePlayer, in the same order and for the same reasons.
+        YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
+        pipePipeLiveHlsUrl(videoId, LOCAL_TIER)?.let { return it }
+        YoutubeApiDecoder.setLocalDecoder(null)
+        pipePipeLiveHlsUrl(videoId, REMOTE_TIER)?.let { return it }
+        return braveLiveHlsUrl(videoId)
+    }
+
+    private fun pipePipeLiveHlsUrl(
+        videoId: String,
+        tier: String,
+    ): String? =
+        runCatching {
+            StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId").hlsUrl
+        }.onFailure {
+            Logger.w(TAG, "PipePipe[$tier] live extraction failed for $videoId: ${it.message}")
+        }.getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            ?.also {
+                ExtractSource.record(videoId, "PipePipe · $tier · live")
+                Logger.d(TAG, "live HLS from PipePipe[$tier] for $videoId")
+            }
+
+    private fun braveLiveHlsUrl(videoId: String): String? =
+        runCatching {
+            BraveStreamInfo.getInfo(BraveServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId").hlsUrl
+        }.onFailure {
+            Logger.w(TAG, "BravePipe live extraction failed for $videoId: ${it.message}")
+        }.getOrNull()
+            ?.takeIf { it.isNotEmpty() }
+            ?.also {
+                ExtractSource.record(videoId, "BravePipe · live")
+                Logger.d(TAG, "live HLS from BravePipe for $videoId")
+            }
+
     /**
      * One PipePipe extraction with whatever decoder is currently registered. Returns null when the
      * attempt produced nothing usable, so the caller moves on to the next tier.

@@ -173,11 +173,14 @@ class MpvPlayer private constructor(
          *   is loaded, as render.h requires.
          * @param networkCacheSeconds mpv's `cache-secs`. VLC's `--network-caching` was expressed
          *   in milliseconds (10000 / 15000); mpv's equivalent is in seconds.
+         * @param liveStream the handle will play a live broadcast's HLS playlist — see the
+         *   `stream-lavf-o` option below for what that changes.
          * @return null if libmpv is unavailable or the handle could not be initialized.
          */
         fun create(
             audioOnly: Boolean = true,
             networkCacheSeconds: Int = 10,
+            liveStream: Boolean = false,
         ): MpvPlayer? {
             val lib = MpvLibrary.INSTANCE ?: return null
             val ctx = lib.mpv_create()
@@ -281,9 +284,19 @@ class MpvPlayer private constructor(
             option("demuxer-max-back-bytes", (8 * 1024 * 1024).toString())
 
             // VLC ":http-reconnect".
+            //
+            // reconnect_streamed reopens a connection that ended early — right for one long
+            // googlevideo download, wrong for a live broadcast. A live HLS playlist is fetched
+            // again every few seconds, FFmpeg takes each of those for a stream that ended early,
+            // and playback stalls a few seconds in: 4 s of a live stream played in 20 s with it,
+            // 17 s without (measured 2026-10-01, libmpv 0.37). The rest of the option stays.
             option(
                 "stream-lavf-o",
-                "reconnect=1,reconnect_streamed=1,reconnect_delay_max=30",
+                if (liveStream) {
+                    "reconnect=1,reconnect_delay_max=30"
+                } else {
+                    "reconnect=1,reconnect_streamed=1,reconnect_delay_max=30"
+                },
             )
 
             // ALWAYS pin the video output explicitly, on every branch.

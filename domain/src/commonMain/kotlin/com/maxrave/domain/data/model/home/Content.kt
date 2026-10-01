@@ -23,4 +23,9 @@ data class Content(
      * is not a track (artist, playlist, album) or carried no music config.
      */
     val videoType: String? = null,
+    /**
+     * YouTube marked this card as a broadcast on air right now. It only decorates the card: whether
+     * playback treats a video as live is learned when its stream resolves (LiveStreamRegistry).
+     */
+    val isLive: Boolean = false,
 ) : HomeContentType

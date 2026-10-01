@@ -6,6 +6,7 @@ import com.maxrave.kotlinytmusicscraper.models.Context
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.IOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB_REMIX
@@ -258,6 +259,8 @@ class Ytmusic {
 
     fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
 
+    fun getLiveHlsUrl(videoId: String): String? = extractor.liveHlsUrl(videoId)
+
     fun mergeAudioVideoDownload(filePath: String): DownloadProgress = extractor.mergeAudioVideoDownload(filePath)
 
     fun saveAudioWithThumbnail(
@@ -365,6 +368,42 @@ class Ytmusic {
 //    -H 'x-goog-api-key: AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw' \
 //    -H 'x-user-agent: grpc-web-javascript/0.1' \
 //    --data-raw '["O43z0dpjhgX20SCx4KAo"]'
+
+    /**
+     * The player request a live broadcast is resolved with, made as the YouTube Android app: its HLS
+     * playlist plays on without a PoToken. Measured 2026-10-01 on two live stations — every other
+     * client stops somewhere:
+     *  - WEB_REMIX, WEB, web_safari, MWEB: the playlists load, every segment is refused (403).
+     *  - IOS 21.26.4, TVHTML5: no HLS at all.
+     *  - ANDROID_VR 1.65.10: plays, then every segment past ~30 s is refused while the playlist
+     *    keeps refreshing — mpv sits on "loading" for good.
+     *  - ANDROID 21.26.364: 130 s straight, segments 200 throughout.
+     * The client takes no cookies, so the session is left out, and so is its visitorData: see
+     * [anonymousVisitorData].
+     *
+     * @param anonymousVisitorData a visitor id fetched without the session, so a request that carries
+     * no cookie is not tied to the signed-in account either. The ANDROID_VR client this replaced was
+     * refused outright (LOGIN_REQUIRED) with the session's own visitor id; ANDROID takes either.
+     */
+    suspend fun liveStreamPlayer(
+        videoId: String,
+        anonymousVisitorData: String,
+    ) = httpClient.post("https://www.youtube.com/youtubei/v1/player") {
+            contentType(ContentType.Application.Json)
+            header(HttpHeaders.UserAgent, ANDROID.userAgent)
+            header("X-YouTube-Client-Name", "${ANDROID.xClientName}")
+            header("X-YouTube-Client-Version", ANDROID.clientVersion)
+            header("X-Goog-Visitor-Id", anonymousVisitorData)
+            setBody(
+                PlayerBody(
+                    context = ANDROID.toContext(locale, anonymousVisitorData),
+                    videoId = videoId,
+                    playlistId = null,
+                    cpn = null,
+                ),
+            )
+            parameter("prettyPrint", false)
+        }
 
     suspend fun noLogInPlayer(
         videoId: String,

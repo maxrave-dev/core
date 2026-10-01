@@ -33,6 +33,7 @@ import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.flac.FlacExtractor
@@ -47,6 +48,7 @@ import com.maxrave.common.Config.MAIN_PLAYER
 import com.maxrave.common.Config.PLAYER_CACHE
 import com.maxrave.common.Config.SERVICE_SCOPE
 import com.maxrave.common.MERGING_DATA_TYPE
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
@@ -68,7 +70,10 @@ import com.maxrave.media3.repository.CacheRepositoryImpl
 import com.maxrave.media3.service.SimpleMediaService
 import com.maxrave.media3.service.callback.SimpleMediaSessionCallback
 import com.maxrave.media3.service.download.DownloadUtils
+import com.maxrave.media3.service.mediasourcefactory.LiveStreamAwareLoadErrorHandlingPolicy
+import com.maxrave.media3.service.mediasourcefactory.LiveStreamDetectedException
 import com.maxrave.media3.service.mediasourcefactory.MergingMediaSourceFactory
+import com.maxrave.media3.service.mediasourcefactory.liveStreamDataSourceFactory
 import com.maxrave.media3.utils.CoilBitmapLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -243,6 +248,10 @@ private fun provideResolvingDataSourceFactory(
     val chunkLength = 10 * 512 * 1024L
     return ResolvingDataSource.Factory(cacheDataSourceFactory) { dataSpec ->
         val mediaId = dataSpec.key ?: error("No media id")
+        val videoId = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+        // A live broadcast reached a progressive source that was built before it was known to be
+        // live; failing it is what gets the track rebuilt as HLS — see LiveStreamDetectedException.
+        if (LiveStreamRegistry.isLive(videoId)) throw LiveStreamDetectedException(videoId)
         Logger.w("Stream", mediaId)
         Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
         if (downloadCache.isFullyCached(mediaId, dataSpec.position)) {
@@ -355,6 +364,9 @@ private fun provideResolvingDataSourceFactory(
                     }
             }
         }
+        // getStream above is where a live broadcast is first recognised. Its HLS playlist URL must
+        // not be read as a file, so this source fails and the track is rebuilt as HLS.
+        if (LiveStreamRegistry.isLive(videoId)) throw LiveStreamDetectedException(videoId)
         if (!resolved) {
             Logger.e("Stream", "Failed to resolve stream URL for $mediaId")
             throw java.io.IOException("Failed to resolve stream URL for $mediaId")
@@ -397,15 +409,7 @@ private fun provideMediaSourceFactory(
                 downloadCache,
                 playerCache,
                 context,
-                dataStoreManager.getJVMProxy()?.let {
-                    Proxy(
-                        when (it.type) {
-                            DataStoreManager.ProxyType.PROXY_TYPE_HTTP -> Proxy.Type.HTTP
-                            DataStoreManager.ProxyType.PROXY_TYPE_SOCKS -> Proxy.Type.SOCKS
-                        },
-                        java.net.InetSocketAddress(it.host, it.port),
-                    )
-                },
+                provideProxy(dataStoreManager),
             ),
             downloadCache,
             playerCache,
@@ -414,6 +418,42 @@ private fun provideMediaSourceFactory(
             coroutineScope,
         ),
         provideExtractorFactory(),
+    ).setLoadErrorHandlingPolicy(LiveStreamAwareLoadErrorHandlingPolicy())
+
+/** The proxy the user configured, for every HTTP source the player opens. */
+private fun provideProxy(dataStoreManager: DataStoreManager): Proxy? =
+    dataStoreManager.getJVMProxy()?.let {
+        Proxy(
+            when (it.type) {
+                DataStoreManager.ProxyType.PROXY_TYPE_HTTP -> Proxy.Type.HTTP
+                DataStoreManager.ProxyType.PROXY_TYPE_SOCKS -> Proxy.Type.SOCKS
+            },
+            java.net.InetSocketAddress(it.host, it.port),
+        )
+    }
+
+/**
+ * HLS for live broadcasts. The playlist placeholder is resolved through the same getStream every
+ * other track uses, which answers with the broadcast's HLS playlist once it knows the video is live.
+ */
+@UnstableApi
+private fun provideLiveStreamMediaSourceFactory(
+    context: Context,
+    streamRepository: StreamRepository,
+    dataStoreManager: DataStoreManager,
+): HlsMediaSource.Factory =
+    HlsMediaSource.Factory(
+        liveStreamDataSourceFactory(provideHttpDataSourceFactory(context, provideProxy(dataStoreManager))) { videoId ->
+            runBlocking(Dispatchers.IO) {
+                streamRepository
+                    .getStream(
+                        dataStoreManager,
+                        videoId,
+                        isDownloading = false,
+                        isVideo = false,
+                    ).lastOrNull()
+            }
+        },
     )
 
 @OptIn(UnstableApi::class)
@@ -434,6 +474,7 @@ private fun provideMergingMediaSource(
             dataStoreManager,
             coroutineScope,
         ),
+        provideLiveStreamMediaSourceFactory(context, streamRepository, dataStoreManager),
         dataStoreManager,
     )
 
@@ -478,28 +519,33 @@ private fun provideCacheDataSource(
             CacheDataSource
                 .Factory()
                 .setCache(playerCache)
-                .setUpstreamDataSourceFactory(
-                    DefaultDataSource
-                        .Factory(
-                            context,
-                            OkHttpDataSource.Factory(
-                                OkHttpClient
-                                    .Builder()
-                                    .connectTimeout(30.seconds)
-                                    .readTimeout(30.seconds)
-                                    .proxy(
-                                        proxy,
-                                    ).addInterceptor(
-                                        HttpLoggingInterceptor()
-                                            .apply {
-                                                level = HttpLoggingInterceptor.Level.HEADERS
-                                            },
-                                    ).build(),
-                            ),
-                        ),
-                ),
+                .setUpstreamDataSourceFactory(provideHttpDataSourceFactory(context, proxy)),
         ).setCacheWriteDataSinkFactory(null)
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+/** The network underneath every player source: OkHttp behind the user's proxy, with header logging. */
+@UnstableApi
+private fun provideHttpDataSourceFactory(
+    context: Context,
+    proxy: Proxy?,
+): DataSource.Factory =
+    DefaultDataSource.Factory(
+        context,
+        OkHttpDataSource.Factory(
+            OkHttpClient
+                .Builder()
+                .connectTimeout(30.seconds)
+                .readTimeout(30.seconds)
+                .proxy(
+                    proxy,
+                ).addInterceptor(
+                    HttpLoggingInterceptor()
+                        .apply {
+                            level = HttpLoggingInterceptor.Level.HEADERS
+                        },
+                ).build(),
+        ),
+    )
 
 @UnstableApi
 private fun provideLoadControl(): LoadControl =

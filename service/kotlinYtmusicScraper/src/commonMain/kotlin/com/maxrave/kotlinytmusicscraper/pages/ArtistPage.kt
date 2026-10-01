@@ -319,7 +319,10 @@ data class ArtistPage(
                             renderer.subtitle?.runs?.let { list ->
                                 val artist = mutableListOf<Artist>()
                                 for (i in list.indices) {
-                                    if (i % 2 == 0 && i != list.lastIndex) {
+                                    // The last run is the view count — except under a live broadcast,
+                                    // whose subtitle is the channel alone. Skipping it there lost the
+                                    // artist: the card still showed the name, read back as the views.
+                                    if (i % 2 == 0 && (i != list.lastIndex || renderer.isLive)) {
                                         artist.add(
                                             Artist(
                                                 list[i].text,
@@ -336,7 +339,8 @@ data class ArtistPage(
                             renderer.subtitle
                                 ?.runs
                                 ?.lastOrNull()
-                                ?.text,
+                                ?.text
+                                ?.takeUnless { renderer.isLive },
                         musicVideoType = renderer.musicVideoType,
                     )
                 }

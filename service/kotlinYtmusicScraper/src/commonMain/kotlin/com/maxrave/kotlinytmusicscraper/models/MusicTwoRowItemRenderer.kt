@@ -24,6 +24,10 @@ data class MusicTwoRowItemRenderer(
     val thumbnailOverlay: MusicResponsiveListItemRenderer.Overlay?,
     val aspectRatio: String? = null,
 ) {
+    /** A broadcast on air right now, as YouTube marks it with its LIVE chip. */
+    val isLive: Boolean
+        get() = subtitleBadges?.any { it.liveBadgeRenderer != null } == true
+
     val isSong: Boolean
         get() =
             navigationEndpoint?.endpoint is WatchEndpoint &&

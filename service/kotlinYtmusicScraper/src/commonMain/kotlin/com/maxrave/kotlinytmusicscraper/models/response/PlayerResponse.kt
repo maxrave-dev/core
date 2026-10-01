@@ -81,6 +81,9 @@ data class PlayerResponse(
         val authorAvatar: String?,
         val authorSubCount: String?,
         val lengthSeconds: String,
+        // True only while the broadcast is on air. Not `isLiveContent`, which stays true on the
+        // recording a finished broadcast leaves behind — that one plays like any other video.
+        val isLive: Boolean? = null,
         val musicVideoType: String?,
         val viewCount: String?,
         val thumbnail: Thumbnails,

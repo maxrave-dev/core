@@ -288,6 +288,7 @@ internal fun parseMixedContent(
                                             durationSeconds = ytItem.duration,
                                             radio = null,
                                             videoType = ytItem.musicVideoType,
+                                            isLive = musicTwoRowItemRenderer.isLive,
                                         ),
                                     )
                                 }
