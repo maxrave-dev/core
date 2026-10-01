@@ -36,15 +36,7 @@ import com.maxrave.media3.service.SimpleMediaService
  */
 @UnstableApi
 internal class SimpMusicCarAppService : CarAppService() {
-    override fun createHostValidator(): HostValidator =
-        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-            HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
-        } else {
-            HostValidator
-                .Builder(applicationContext)
-                .addAllowedHosts(androidx.car.app.R.array.hosts_allowlist_sample)
-                .build()
-        }
+    override fun createHostValidator(): HostValidator = HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
 
     override fun onCreateSession(): Session = SimpMusicCarSession()
 }
