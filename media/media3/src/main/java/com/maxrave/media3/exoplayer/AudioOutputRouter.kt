@@ -21,7 +21,6 @@ import kotlinx.coroutines.flow.asStateFlow
  * Routing goes through `ExoPlayer.setPreferredAudioDevice` — the one routing decision the app owns
  * and the one that actually takes effect for its own player. The system output switcher routes the
  * whole phone instead, and `MediaRouter.selectRoute` is a request the framework is free to ignore.
- * Approach from BitChord's AudioRouting (github.com/kushagrasinghx/BitChord, GPL-3.0).
  *
  * [onPreferredChanged] hands the chosen device (null = back to the system's choice) to the owner,
  * which applies it to every player it runs. Callbacks arrive on the main thread.
