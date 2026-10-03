@@ -18,6 +18,7 @@ import com.maxrave.data.repository.PodcastRepositoryImpl
 import com.maxrave.data.repository.SearchRepositoryImpl
 import com.maxrave.data.repository.SongRepositoryImpl
 import com.maxrave.data.repository.StreamRepositoryImpl
+import com.maxrave.data.repository.TasteRepositoryImpl
 import com.maxrave.data.repository.UpdateRepositoryImpl
 import com.maxrave.domain.repository.AccountRepository
 import com.maxrave.domain.repository.AlbumRepository
@@ -35,6 +36,7 @@ import com.maxrave.domain.repository.PodcastRepository
 import com.maxrave.domain.repository.SearchRepository
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
+import com.maxrave.domain.repository.TasteRepository
 import com.maxrave.domain.repository.UpdateRepository
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
@@ -115,5 +117,10 @@ val repositoryModule =
 
         single<AnalyticsRepository>(createdAtStart = true) {
             AnalyticsRepositoryImpl(get())
+        }
+
+        // Lazy: only the taste card in Library asks for it.
+        single<TasteRepository> {
+            TasteRepositoryImpl(get(), get())
         }
     }

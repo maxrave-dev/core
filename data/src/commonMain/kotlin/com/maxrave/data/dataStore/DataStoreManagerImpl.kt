@@ -118,6 +118,23 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val tasteProfile: Flow<String?> =
+        settingsDataStore.data.map { preferences ->
+            preferences[TASTE_PROFILE]
+        }
+
+    override suspend fun setTasteProfile(json: String?) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                if (json == null) {
+                    settings.remove(TASTE_PROFILE)
+                } else {
+                    settings[TASTE_PROFILE] = json
+                }
+            }
+        }
+    }
+
     override val quality: Flow<String> =
         settingsDataStore.data.map { preferences ->
             preferences[QUALITY] ?: COMMON_QUALITY.items[0].toString()
@@ -1764,6 +1781,7 @@ internal class DataStoreManagerImpl(
         val LOCATION = stringPreferencesKey("location")
         val MOOD_AND_GENRES_CACHE = stringPreferencesKey("mood_and_genres_cache")
         val MOOD_ARTWORK_CACHE = stringPreferencesKey("mood_artwork_cache")
+        val TASTE_PROFILE = stringPreferencesKey("ai_taste_profile")
         val QUALITY = stringPreferencesKey("quality")
         val DOWNLOAD_QUALITY = stringPreferencesKey("download_quality")
         val VIDEO_DOWNLOAD_QUALITY = stringPreferencesKey("video_download_quality")

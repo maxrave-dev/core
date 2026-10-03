@@ -53,6 +53,14 @@ interface DataStoreManager {
 
     suspend fun setMoodArtworkCache(json: String)
 
+    /**
+     * The AI's reading of the listener's taste behind the Library card, as serialized JSON. Null
+     * until the first reading, and set back to null when the listening history is cleared.
+     */
+    val tasteProfile: Flow<String?>
+
+    suspend fun setTasteProfile(json: String?)
+
     fun getString(key: String): Flow<String?>
 
     suspend fun putString(
