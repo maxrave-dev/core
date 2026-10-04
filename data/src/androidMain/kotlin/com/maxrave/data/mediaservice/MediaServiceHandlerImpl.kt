@@ -22,6 +22,7 @@ import com.maxrave.common.LOCAL_PLAYLIST_ID_SAVED_QUEUE
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.common.SPONSOR_BLOCK_MIN_SEGMENT_SECONDS
 import com.maxrave.common.SPONSOR_BLOCK_SKIP_MARGIN_MS
+import com.maxrave.common.SponsorBlockType
 import com.maxrave.common.TITLE
 import com.maxrave.data.db.Converters
 import com.maxrave.data.lastfm.LastfmScrobbler
@@ -197,6 +198,11 @@ internal class MediaServiceHandlerImpl(
     // SponsorBlock skip segments
     private val _skipSegments: MutableStateFlow<List<SponsorSkipSegments>?> = MutableStateFlow<List<SponsorSkipSegments>?>(null)
     override val skipSegments: StateFlow<List<SponsorSkipSegments>?> = _skipSegments.asStateFlow()
+
+    // SponsorBlock's ticked categories, kept current by a collector in init; null while SponsorBlock is
+    // off or not loaded yet. The per-tick skip check reads this instead of asking DataStore on every progress tick (one
+    // read for the switch plus one per category). Kept identical to JvmMediaPlayerHandlerImpl.
+    private val sponsorBlockCategories = MutableStateFlow<Set<String>?>(null)
 
     private val _format: MutableStateFlow<NewFormatEntity?> = MutableStateFlow<NewFormatEntity?>(null)
     override val format: StateFlow<NewFormatEntity?> = _format.asStateFlow()
@@ -450,6 +456,16 @@ internal class MediaServiceHandlerImpl(
                         updateNotification()
                     }
                 }
+            val sponsorBlockCategoriesJob =
+                launch {
+                    combine(
+                        SponsorBlockType.toList().map { type ->
+                            dataStoreManager.getString(type.value).map { if (it == TRUE) type.value else null }
+                        },
+                    ) { ticked -> ticked.filterNotNull().toSet() }
+                        .combine(dataStoreManager.sponsorBlockEnabled) { ticked, enabled -> ticked.takeIf { enabled == TRUE } }
+                        .collect { sponsorBlockCategories.value = it }
+                }
             val skipSegmentsJob =
                 launch {
                     simpleMediaState
@@ -465,28 +481,24 @@ internal class MediaServiceHandlerImpl(
                         }.filter { it >= 0f }
                         .distinctUntilChanged()
                         .collect { current ->
-                            if (dataStoreManager.sponsorBlockEnabled.first() == TRUE) {
-                                if (player.duration > 0L) {
-                                    val skipSegments = skipSegments.value
-                                    val listCategory = dataStoreManager.getSponsorBlockCategories()
-                                    if (skipSegments != null) {
-                                        for (skip in skipSegments) {
-                                            if (listCategory.contains(skip.category)) {
-                                                if (skip.segment[1] - skip.segment[0] < SPONSOR_BLOCK_MIN_SEGMENT_SECONDS) {
-                                                    continue
-                                                }
-                                                val firstPart = ((skip.segment[0] / skip.videoDuration) * 100).toFloat()
-                                                val secondPart =
-                                                    ((skip.segment[1] / skip.videoDuration) * 100).toFloat()
-                                                if (current in firstPart..secondPart) {
-                                                    Logger.w(TAG, "Seek to $secondPart")
-                                                    Logger.d(TAG, "Seek to Cr: $current, First: $firstPart, Second: $secondPart")
-                                                    skipSegment(
-                                                        (secondPart * player.duration).toLong() / 100 + SPONSOR_BLOCK_SKIP_MARGIN_MS,
-                                                    )
-                                                    showToast(ToastType.SponsorBlockSkip(skip.category))
-                                                }
-                                            }
+                            val categories = sponsorBlockCategories.value
+                            val skipSegments = skipSegments.value
+                            if (categories != null && player.duration > 0L && skipSegments != null) {
+                                for (skip in skipSegments) {
+                                    if (categories.contains(skip.category)) {
+                                        if (skip.segment[1] - skip.segment[0] < SPONSOR_BLOCK_MIN_SEGMENT_SECONDS) {
+                                            continue
+                                        }
+                                        val firstPart = ((skip.segment[0] / skip.videoDuration) * 100).toFloat()
+                                        val secondPart =
+                                            ((skip.segment[1] / skip.videoDuration) * 100).toFloat()
+                                        if (current in firstPart..secondPart) {
+                                            Logger.w(TAG, "Seek to $secondPart")
+                                            Logger.d(TAG, "Seek to Cr: $current, First: $firstPart, Second: $secondPart")
+                                            skipSegment(
+                                                (secondPart * player.duration).toLong() / 100 + SPONSOR_BLOCK_SKIP_MARGIN_MS,
+                                            )
+                                            showToast(ToastType.SponsorBlockSkip(skip.category))
                                         }
                                     }
                                 }
@@ -598,6 +610,7 @@ internal class MediaServiceHandlerImpl(
                     }
                 }
             controlStateJob.join()
+            sponsorBlockCategoriesJob.join()
             skipSegmentsJob.join()
             playbackJob.join()
             playbackSpeedPitchJob.join()
