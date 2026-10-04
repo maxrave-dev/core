@@ -1282,7 +1282,9 @@ internal class MediaServiceHandlerImpl(
         // off the front while that screen is open. Check it against the queue as it is now, and
         // apply the removal to the current list rather than to a copy taken before.
         if (position !in queueData.value.data.listTracks.indices) return
-        player.removeMediaItem(position)
+        // The queue shows the shuffled order while shuffle is on, the player removes by playlist
+        // position; the same translation playMediaItemInMediaSource makes when a row is tapped.
+        player.removeMediaItem(if (player.shuffleModeEnabled) player.getUnshuffledIndex(position) else position)
         _queueData.update {
             val list = it.data.listTracks.toMutableList()
             if (position !in list.indices) return@update it
@@ -1339,7 +1341,9 @@ internal class MediaServiceHandlerImpl(
 //                moveItemUp(i)
 //            }
 //        }
-        moveMediaItem(from, to)
+        // A drag in the queue is in the order the queue shows, which with shuffle on is the shuffled
+        // one; see moveQueueItem. queueData follows through the timeline event either way.
+        if (player.shuffleModeEnabled) player.moveShuffledItem(from, to) else moveMediaItem(from, to)
     }
 
     override fun resetCrossfade() {
@@ -1718,33 +1722,41 @@ internal class MediaServiceHandlerImpl(
 
     override fun getCurrentMediaItem(): GenericMediaItem? = player.currentMediaItem
 
-    override suspend fun moveItemUp(position: Int) {
-        // Checked against the queue as it is now, for the reason in removeMediaItem.
-        if (position !in 1 until queueData.value.data.listTracks.size) return
-        moveMediaItem(position, position - 1)
-        _queueData.update {
-            val list = it.data.listTracks.toMutableList()
-            if (position !in 1 until list.size) return@update it
-            val temp = list[position]
-            list[position] = list[position - 1]
-            list[position - 1] = temp
-            it.copy(
-                data = it.data.copy(listTracks = list),
-            )
-        }
-        _currentSongIndex.value = player.currentMediaItemIndex
+    override suspend fun moveItemUp(position: Int) = moveQueueItem(position, position - 1)
+
+    override suspend fun moveItemDown(position: Int) = moveQueueItem(position, position + 1)
+
+    override suspend fun moveItemToPlayNext(position: Int) {
+        val current = currentOrderIndex()
+        // Already playing, or already next: nothing to move.
+        if (current < 0 || position == current || position == current + 1) return
+        // Once the track leaves its slot, everything after that slot shifts up by one: the slot
+        // right after the current track is `current` for a track coming from behind it.
+        moveQueueItem(position, if (position < current) current else current + 1)
     }
 
-    override suspend fun moveItemDown(position: Int) {
+    /**
+     * Moves the queue track at [from] to [to], in the player and in queueData alike.
+     *
+     * The positions are the ones the queue shows, and with shuffle on that is the shuffled order:
+     * the move then goes to the player's shuffle order. Moving the playlist instead touched a
+     * different track than the one picked, and rebuilt the whole shuffle on top.
+     */
+    private fun moveQueueItem(
+        from: Int,
+        to: Int,
+    ) {
+        val tracks = queueData.value.data.listTracks
         // Checked against the queue as it is now, for the reason in removeMediaItem.
-        if (position !in 0 until queueData.value.data.listTracks.size - 1) return
-        moveMediaItem(position, position + 1)
+        if (from !in tracks.indices || to !in tracks.indices || from == to) return
+        val movedId = tracks[from].videoId
+        if (player.shuffleModeEnabled) player.moveShuffledItem(from, to) else moveMediaItem(from, to)
         _queueData.update {
             val list = it.data.listTracks.toMutableList()
-            if (position !in 0 until list.size - 1) return@update it
-            val temp = list[position]
-            list[position] = list[position + 1]
-            list[position + 1] = temp
+            // The player's own timeline event rebuilds the queue in the moved order too. If it got
+            // here first, the track is no longer at `from`, and moving again would move it twice.
+            if (list.getOrNull(from)?.videoId != movedId || to !in list.indices) return@update it
+            list.add(to, list.removeAt(from))
             it.copy(
                 data = it.data.copy(listTracks = list),
             )

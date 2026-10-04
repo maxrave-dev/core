@@ -966,7 +966,13 @@ internal class CrossfadeExoPlayerAdapter(
             // earlier (a radio trimming its history) can shrink the playlist between an outside check
             // and this body — issue #2156's crash shape, fixed the same way in MpvPlayerAdapter.
             if (index !in playlist.indices) return@launch
+            // Where the track sat in the shuffled order, read before the order loses it.
+            val shuffledPos = if (internalShuffleModeEnabled) shuffleIndices.getOrNull(index) ?: -1 else -1
             val track = playlist.removeAt(index)
+            // Only this track leaves the shuffled order, before anything below reads the order.
+            // Rebuilding it here (createShuffleOrder) reshuffled the whole queue every time one track
+            // was removed with shuffle on.
+            if (internalShuffleModeEnabled) removeFromShuffleOrder(index)
 
             // Remove from precache
             precachedPlayers.remove(track.mediaId)?.let { cached ->
@@ -981,7 +987,11 @@ internal class CrossfadeExoPlayerAdapter(
                 }
 
                 index == localCurrentMediaItemIndex -> {
-                    if (localCurrentMediaItemIndex >= playlist.size) {
+                    if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
+                        // The track after it in the shuffled order takes over, not the next one in
+                        // the playlist: the removal shifted that track into the removed one's slot.
+                        localCurrentMediaItemIndex = shuffleOrder[shuffledPos.coerceIn(0, shuffleOrder.lastIndex)]
+                    } else if (localCurrentMediaItemIndex >= playlist.size) {
                         localCurrentMediaItemIndex = playlist.size - 1
                     }
                     if (localCurrentMediaItemIndex >= 0) {
@@ -995,10 +1005,6 @@ internal class CrossfadeExoPlayerAdapter(
                     clearPrecacheExceptCurrentInternal()
                     triggerPrecachingInternal()
                 }
-            }
-
-            if (internalShuffleModeEnabled) {
-                createShuffleOrder()
             }
 
             notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
@@ -1096,6 +1102,27 @@ internal class CrossfadeExoPlayerAdapter(
 
             notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
 
+            clearPrecacheExceptCurrentInternal()
+            triggerPrecachingInternal()
+        }
+    }
+
+    override fun moveShuffledItem(
+        fromShuffledIndex: Int,
+        toShuffledIndex: Int,
+    ) {
+        coroutineScope.launch {
+            // Same reason as removeMediaItem (issue #2156): checked against the order as it is now.
+            if (!internalShuffleModeEnabled) return@launch
+            if (fromShuffledIndex !in shuffleOrder.indices || toShuffledIndex !in shuffleOrder.indices) return@launch
+            // Only the play order moves. Playlist indices stay where they were, and with them the
+            // current index and the position a running crossfade would revert to.
+            shuffleOrder.add(toShuffledIndex, shuffleOrder.removeAt(fromShuffledIndex))
+            rebuildShuffleIndices()
+
+            notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
+
+            // What plays next may have changed.
             clearPrecacheExceptCurrentInternal()
             triggerPrecachingInternal()
         }
@@ -3181,6 +3208,31 @@ internal class CrossfadeExoPlayerAdapter(
             TAG,
             "Inserted index $insertedOriginalIndex into shuffle at position $insertPos (after shuffle pos $afterShufflePos)",
         )
+    }
+
+    /**
+     * Takes [removedOriginalIndex] — already removed from the playlist — out of the shuffled order,
+     * renumbering the playlist indices after it, so every other track keeps its place in the order.
+     */
+    private fun removeFromShuffleOrder(removedOriginalIndex: Int) {
+        shuffleOrder.remove(removedOriginalIndex)
+        for (i in shuffleOrder.indices) {
+            if (shuffleOrder[i] > removedOriginalIndex) {
+                shuffleOrder[i]--
+            }
+        }
+        rebuildShuffleIndices()
+    }
+
+    /** Re-derives the playlist index → shuffled position map from [shuffleOrder]. */
+    private fun rebuildShuffleIndices() {
+        shuffleIndices.clear()
+        shuffleIndices.addAll(List(playlist.size) { 0 })
+        shuffleOrder.forEachIndexed { shuffledPos, originalIndex ->
+            if (originalIndex in shuffleIndices.indices) {
+                shuffleIndices[originalIndex] = shuffledPos
+            }
+        }
     }
 
     private fun getShuffledMediaItemList(): List<GenericMediaItem> {

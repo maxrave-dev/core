@@ -83,6 +83,19 @@ interface MediaPlayerInterface {
         toIndex: Int,
     )
 
+    /**
+     * Moves one track within the SHUFFLED play order, the order the queue shows while shuffle is
+     * on: both arguments are positions in that order. The playlist itself does not move, so
+     * turning shuffle off returns the original order. [moveMediaItem] cannot stand in for this —
+     * it moves the playlist and rebuilds the shuffle from scratch.
+     *
+     * Does nothing while shuffle is off. The default does nothing at all.
+     */
+    fun moveShuffledItem(
+        fromShuffledIndex: Int,
+        toShuffledIndex: Int,
+    ) {}
+
     fun clearMediaItems()
 
     fun replaceMediaItem(

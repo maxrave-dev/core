@@ -93,6 +93,9 @@ interface MediaPlayerHandler {
 
     suspend fun moveItemDown(position: Int)
 
+    /** Moves the queue track at [position] to play right after the current one. */
+    suspend fun moveItemToPlayNext(position: Int)
+
     fun addFirstMediaItemToIndex(
         mediaItem: GenericMediaItem?,
         index: Int,
