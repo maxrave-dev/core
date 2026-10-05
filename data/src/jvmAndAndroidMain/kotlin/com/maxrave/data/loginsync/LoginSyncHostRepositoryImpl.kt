@@ -5,6 +5,7 @@ import com.maxrave.domain.data.model.loginsync.LoginSyncService
 import com.maxrave.domain.data.model.loginsync.NetAddress
 import com.maxrave.domain.repository.LoginSyncHostRepository
 import com.maxrave.logger.Logger
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,20 +17,25 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.simpmusic.loginsync.DeviceName
 import org.simpmusic.loginsync.LoginSyncServer
 import org.simpmusic.loginsync.reachableAddresses
 
 private const val TAG = "LoginSyncHost"
 
-/** Desktop: runs the loginSync service's server and restores whatever sign-ins the phone sends. */
+/**
+ * Desktop and Android TV: runs the loginSync service's server and restores whatever sign-ins the
+ * phone sends. [deviceName] is what the phone's trust prompt shows; each platform knows its own.
+ */
 internal class LoginSyncHostRepositoryImpl(
     private val store: LoginSyncStore,
+    deviceName: () -> DeviceName,
 ) : LoginSyncHostRepository,
     LoginSyncServer.Handler {
     private val _state = MutableStateFlow<LoginSyncHostState>(LoginSyncHostState.Starting)
     override val state: StateFlow<LoginSyncHostState> = _state.asStateFlow()
 
-    private val server = LoginSyncServer(this)
+    private val server = LoginSyncServer(this, deviceName)
 
     // Owns stop(): it must finish even when the caller's scope is being cancelled.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

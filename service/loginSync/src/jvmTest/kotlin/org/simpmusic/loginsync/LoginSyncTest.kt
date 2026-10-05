@@ -68,6 +68,7 @@ class LoginSyncTest {
                             events += "rejected: $reason"
                         }
                     },
+                    ::desktopDeviceName,
                 )
             val session = server.start()
             try {

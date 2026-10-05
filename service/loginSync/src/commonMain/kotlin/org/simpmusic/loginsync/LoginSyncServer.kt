@@ -13,19 +13,19 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.net.Inet4Address
-import java.net.InetAddress
 import java.net.NetworkInterface
 
 private const val TAG = "LoginSyncServer"
 
 /**
- * The Desktop's end of the transport: a one-shot Ktor server (CIO engine) between start() and stop().
+ * The receiving end of the transport — Desktop, or an Android TV — as a one-shot Ktor server (CIO
+ * engine) between start() and stop().
  *
  * Handlers are suspend functions, so [Handler.onPayload] is a plain call and no server thread is ever
  * blocked. The JDK HttpServer this replaced ran handlers ON its dispatcher thread and joined that
@@ -33,6 +33,8 @@ private const val TAG = "LoginSyncServer"
  */
 class LoginSyncServer(
     private val handler: Handler,
+    /** What the phone's trust prompt calls this device. Read once, off the main thread. */
+    deviceName: () -> DeviceName,
 ) {
     interface Handler {
         /** A phone holding this session's key said hello. */
@@ -65,7 +67,7 @@ class LoginSyncServer(
     @Volatile
     private var delivered = false
 
-    private val device by lazy { localDeviceName() }
+    private val device by lazy(deviceName)
 
     /** Opens a fresh session — new key, new port — replacing any previous one. */
     suspend fun start(): Session {
@@ -150,14 +152,14 @@ class LoginSyncServer(
     }
 }
 
-/** One address this computer can be reached on, labelled by the interface it belongs to. */
+/** One address this device can be reached on, labelled by the interface it belongs to. */
 data class LocalAddress(
     val interfaceName: String,
     val ip: String,
 )
 
 /**
- * Every IPv4 address the phone might reach this computer on, for the user to pick from: there is no
+ * Every IPv4 address the phone might reach this device on, for the user to pick from: there is no
  * way to tell from here which network the phone shares — the LAN, Wi-Fi, or a tailnet.
  *
  * Deliberately NOT limited to RFC 1918 or to broadcast interfaces. Corporate LANs number themselves
@@ -183,31 +185,3 @@ fun reachableAddresses(): List<LocalAddress> =
         .toList()
 
 private val HOST_ONLY_NIC_PREFIXES = listOf("docker", "br-", "veth", "virbr", "vboxnet", "vmnet", "podman", "cni")
-
-/** The name the user knows this computer by. Blocking on macOS (runs scutil). */
-private fun localDeviceName(): DeviceName {
-    val osName = System.getProperty("os.name").orEmpty()
-    val isMac = osName.startsWith("Mac")
-    val name =
-        when {
-            // The friendly name from System Settings ("Minh's MacBook Pro"), not the hostname.
-            isMac -> {
-                runCatching {
-                    val process = ProcessBuilder("scutil", "--get", "ComputerName").start()
-                    val out = process.inputStream.bufferedReader().use { it.readText() }.trim()
-                    out.takeIf { process.waitFor() == 0 }
-                }.getOrNull()
-            }
-
-            osName.startsWith("Windows") -> {
-                System.getenv("COMPUTERNAME")
-            }
-
-            else -> {
-                System.getenv("HOSTNAME") ?: runCatching { File("/etc/hostname").readText().trim() }.getOrNull()
-            }
-        }?.takeIf { it.isNotBlank() }
-            ?: runCatching { InetAddress.getLocalHost().hostName }.getOrNull()
-            ?: "SimpMusic Desktop"
-    return DeviceName(name = name, os = if (isMac) "macOS" else osName)
-}

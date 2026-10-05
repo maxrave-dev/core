@@ -6,6 +6,7 @@ import com.maxrave.data.loginsync.LoginSyncStore
 import com.maxrave.domain.repository.LoginSyncHostRepository
 import org.koin.core.context.loadKoinModules
 import org.koin.dsl.module
+import org.simpmusic.loginsync.desktopDeviceName
 
 actual fun loadMediaService() {
     loadDesktopPlayerModule()
@@ -15,7 +16,7 @@ actual fun loadLoginSyncModule() {
     loadKoinModules(
         module {
             single { LoginSyncStore(get(), get(), get()) }
-            single<LoginSyncHostRepository> { LoginSyncHostRepositoryImpl(get()) }
+            single<LoginSyncHostRepository> { LoginSyncHostRepositoryImpl(get(), ::desktopDeviceName) }
         },
     )
 }

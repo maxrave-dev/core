@@ -66,7 +66,22 @@ kotlin {
         implementation(platform(libs.koin.bom))
     }
 
+    // Explicit, so the hand-made jvmAndAndroidMain below adds to the default hierarchy instead of
+    // switching it off (iosMain still comes from the template).
+    applyDefaultHierarchyTemplate()
+
     sourceSets {
+        // Login sync's receiving end runs on Desktop and on Android TV. The loginSync service has no
+        // iOS target, so code that needs it on both platforms lives here rather than in commonMain.
+        val jvmAndAndroidMain by creating {
+            dependsOn(commonMain.get())
+            dependencies {
+                implementation(projects.loginSync)
+            }
+        }
+        androidMain.get().dependsOn(jvmAndAndroidMain)
+        jvmMain.get().dependsOn(jvmAndAndroidMain)
+
         commonMain {
             dependencies {
                 implementation(projects.common)
@@ -118,8 +133,6 @@ kotlin {
                 implementation(libs.koin.android)
                 implementation(projects.media3)
                 implementation(libs.room.ktx)
-                // Login sync: the phone sends sign-ins to the Desktop
-                implementation(projects.loginSync)
             }
         }
 
@@ -139,8 +152,6 @@ kotlin {
                 implementation(libs.nowplaying)
                 implementation(libs.jna)
                 implementation(libs.jna.platform)
-                // Login sync: the Desktop receives sign-ins from the phone
-                implementation(projects.loginSync)
             }
         }
     }
