@@ -1174,7 +1174,7 @@ class YouTube {
                     ?.likeButtonRenderer
                     ?.likeStatus
                     ?.toLikeStatus()
-            Logger.w("YouTube", "Like Status ${response.playerOverlays}")
+            Logger.d("YouTube", "Like status: $likeStatus")
             return@runCatching likeStatus ?: LikeStatus.INDIFFERENT
         }
 

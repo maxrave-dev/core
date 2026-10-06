@@ -252,8 +252,8 @@ private fun provideResolvingDataSourceFactory(
         // A live broadcast reached a progressive source that was built before it was known to be
         // live; failing it is what gets the track rebuilt as HLS — see LiveStreamDetectedException.
         if (LiveStreamRegistry.isLive(videoId)) throw LiveStreamDetectedException(videoId)
-        Logger.w("Stream", mediaId)
-        Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
+        Logger.d("Stream", mediaId)
+        Logger.d("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
         if (downloadCache.isFullyCached(mediaId, dataSpec.position)) {
             // Only on the first chunk: the subrange below makes the resolver run once per
             // chunk, and updateFormat is a fire-and-forget youTube.player() call with no
@@ -269,7 +269,7 @@ private fun provideResolvingDataSourceFactory(
                     )
                 }
             }
-            Logger.w("Stream", "Downloaded $mediaId")
+            Logger.d("Stream", "Downloaded $mediaId")
             return@Factory dataSpec.subrange(dataSpec.uriPositionOffset, chunkLength)
         }
         if (playerCache.isFullyCached(mediaId, dataSpec.position)) {
@@ -285,7 +285,7 @@ private fun provideResolvingDataSourceFactory(
                     )
                 }
             }
-            Logger.w("Stream", "Cached $mediaId")
+            Logger.d("Stream", "Cached $mediaId")
             // Every byte is on disk right now, so CacheDataSource can serve this chunk
             // without ever reaching upstream, and the bare media id is safe as the URI.
             //
@@ -311,7 +311,7 @@ private fun provideResolvingDataSourceFactory(
                     val videoUrl = it.videoUrl
                     if (videoUrl != null && it.expiredTime > now()) {
                         Logger.d("Stream", videoUrl)
-                        Logger.w("Stream", "Video from format")
+                        Logger.d("Stream", "Video from format")
                         val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
                         Logger.d("Stream", "is 403 $is403Url")
                         if (!is403Url) {
@@ -330,7 +330,7 @@ private fun provideResolvingDataSourceFactory(
                     ).lastOrNull()
                     ?.let {
                         Logger.d("Stream", it)
-                        Logger.w("Stream", "Video")
+                        Logger.d("Stream", "Video")
                         dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                         resolved = true
                     }
@@ -339,7 +339,7 @@ private fun provideResolvingDataSourceFactory(
                     val audioUrl = it.audioUrl
                     if (audioUrl != null && it.expiredTime > now()) {
                         Logger.d("Stream", audioUrl)
-                        Logger.w("Stream", "Audio from format")
+                        Logger.d("Stream", "Audio from format")
                         val is403Url = streamRepository.is403Url(audioUrl).firstOrNull() != false
                         Logger.d("Stream", "is 403 $is403Url")
                         if (!is403Url) {
@@ -358,7 +358,7 @@ private fun provideResolvingDataSourceFactory(
                     ).lastOrNull()
                     ?.let {
                         Logger.d("Stream", it)
-                        Logger.w("Stream", "Audio")
+                        Logger.d("Stream", "Audio")
                         dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                         resolved = true
                     }

@@ -156,7 +156,15 @@ open class DiscordWebSocket(
             // Authentication / identify failures (blank or invalid token, disallowed intents, …) are
             // NOT recoverable: reconnecting just loops forever and drains the battery (issue #2157).
             in NON_RECOVERABLE_CLOSE_CODES -> {
-                Logger.e(TAG, "Gateway closed with non-recoverable code $code — not reconnecting.")
+                // Logged under "Auth", not TAG: TAG is muted in Logger, so this line never reached any log.
+                Logger.e(
+                    "Auth",
+                    if (code == 4004) {
+                        "Discord: the gateway rejected the token (4004), not reconnecting — the user must log in to Discord again"
+                    } else {
+                        "Discord: gateway closed with non-recoverable code $code, not reconnecting"
+                    },
+                )
             }
             else -> scheduleReconnection()
         }

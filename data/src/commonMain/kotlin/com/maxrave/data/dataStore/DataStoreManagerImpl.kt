@@ -365,7 +365,7 @@ internal class DataStoreManagerImpl(
         mediaId: String,
         position: Long,
     ) {
-        Logger.w("saveRecentSong", "$mediaId $position")
+        Logger.d("saveRecentSong", "$mediaId $position")
         withContext(Dispatchers.IO) {
             settingsDataStore.edit { settings ->
                 settings[RECENT_SONG_MEDIA_ID_KEY] = mediaId
@@ -587,6 +587,8 @@ internal class DataStoreManagerImpl(
                 settings[SPDC] = spdc
             }
         }
+        // Every Spotify sign-in and sign-out path writes through here; the value itself never goes out.
+        Logger.i("Auth", if (spdc.isEmpty()) "Spotify: sp_dc cleared" else "Spotify: sp_dc saved")
     }
 
     override val equalizerEnabled: Flow<String> =
@@ -1635,6 +1637,7 @@ internal class DataStoreManagerImpl(
                 settings[DISCORD_TOKEN] = token
             }
         }
+        Logger.i("Auth", if (token.isEmpty()) "Discord: token cleared" else "Discord: token saved")
     }
 
     override val richPresenceEnabled: Flow<String> =
@@ -1677,6 +1680,7 @@ internal class DataStoreManagerImpl(
                 settings[LASTFM_USERNAME] = if (sessionKey.isEmpty()) "" else username
             }
         }
+        Logger.i("Auth", if (sessionKey.isEmpty()) "Last.fm: session cleared" else "Last.fm: session saved")
     }
 
     override val lastfmScrobbleEnabled: Flow<String> =

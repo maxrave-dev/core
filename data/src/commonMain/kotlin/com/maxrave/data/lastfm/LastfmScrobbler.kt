@@ -130,6 +130,7 @@ class LastfmScrobbler(
     ) {
         Logger.e(TAG, "$method failed (${error.code}): ${error.message}")
         if (error.needsReauth) {
+            Logger.e("Auth", "Last.fm: session rejected (code ${error.code}), signing out — the user must log in again")
             dataStoreManager.setLastfmSession(sessionKey = "", username = "")
         }
     }

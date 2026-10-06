@@ -62,6 +62,7 @@ kotlin {
                 implementation(libs.kotlin.test)
 
                 implementation(libs.common)
+                implementation(projects.common)
 
                 implementation(libs.logging)
             }

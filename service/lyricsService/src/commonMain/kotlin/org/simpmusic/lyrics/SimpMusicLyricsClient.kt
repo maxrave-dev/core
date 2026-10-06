@@ -25,6 +25,12 @@ import kotlin.math.abs
 
 private const val TAG = "SimpMusicLyricsClient"
 
+/** An error the SimpMusic Lyrics API answered with; [code] 404 means nobody has added that song yet. */
+class SimpMusicLyricsApiException(
+    val code: Int,
+    message: String,
+) : Exception(message)
+
 class SimpMusicLyricsClient {
     private val algorithm = ""
 
@@ -296,8 +302,10 @@ class SimpMusicLyricsClient {
             val data = body<BaseResponse<T>>()
             if (data.error != null) {
                 val error = data.error
-                Logger.e(TAG, "Error response: ${error.reason} (code: ${error.code})")
-                throw Exception("Error response: ${error.reason} (code: ${error.code})")
+                val message = "Error response: ${error.reason} (code: ${error.code})"
+                // 404 is the normal answer for a song nobody has added lyrics for, not a failure.
+                if (error.code == 404) Logger.d(TAG, message) else Logger.e(TAG, message)
+                throw SimpMusicLyricsApiException(error.code, message)
             }
             return data.data ?: throw Exception("Response data is null")
         } catch (e: Exception) {

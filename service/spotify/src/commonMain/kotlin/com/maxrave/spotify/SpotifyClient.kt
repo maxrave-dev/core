@@ -7,6 +7,7 @@ import com.maxrave.spotify.model.body.CanvasBody
 import com.maxrave.spotify.model.body.SpotifyClientBody
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.ProxyConfig
+import io.ktor.client.plugins.HttpResponseValidator
 import io.ktor.client.plugins.HttpSend
 import io.ktor.client.plugins.cache.HttpCache
 import io.ktor.client.plugins.compression.ContentEncoding
@@ -24,8 +25,10 @@ import io.ktor.client.request.headers
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.request
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.userAgent
 import io.ktor.serialization.kotlinx.KotlinxSerializationConverter
@@ -56,6 +59,16 @@ class SpotifyClient {
         HttpClient(getEngine()) {
             followRedirects = true
             expectSuccess = false
+            // Every rejected Spotify token lands in the app log in one place. Host and path only: the
+            // headers carry the tokens. Ktor's own Logger is imported here, hence the full name.
+            HttpResponseValidator {
+                validateResponse { response ->
+                    if (response.status == HttpStatusCode.Unauthorized || response.status == HttpStatusCode.Forbidden) {
+                        val url = response.request.url
+                        com.maxrave.logger.Logger.w("Auth", "Spotify: ${url.host}${url.encodedPath} answered ${response.status.value}")
+                    }
+                }
+            }
             install(HttpCache)
             install(Logging) {
                 logger = Logger.DEFAULT

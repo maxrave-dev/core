@@ -7,6 +7,7 @@ import com.maxrave.domain.data.model.loginsync.LoginSyncService
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.repository.CommonRepository
+import com.maxrave.logger.Logger
 import kotlinx.coroutines.flow.first
 
 /** Reads this device's sign-ins, and writes a received bundle in the same shape the login screens do. */
@@ -87,6 +88,7 @@ internal class LoginSyncStore(
         if (login.dataSyncId.isNotEmpty()) dataStore.setDataSyncId(login.dataSyncId)
         dataStore.setCookie(login.cookie, login.pageId, login.authUser)
         dataStore.setLoggedIn(true)
+        Logger.i("Auth", "YouTube: signed in through Login Sync, ${login.accounts.size} account(s)")
     }
 }
 

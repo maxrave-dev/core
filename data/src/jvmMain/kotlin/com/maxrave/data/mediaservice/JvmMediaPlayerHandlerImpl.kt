@@ -74,6 +74,7 @@ import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.logger.Logger
 import com.my.kizzy.DiscordRPC
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -665,7 +666,7 @@ class JvmMediaPlayerHandlerImpl(
                                                 if (!controlState.value.isPlaying) return@collectLatest
                                                 discordRPC
                                                     ?.updateSong(snap.progressMs, snap.durationMs, snap.speed, snap.song)
-                                                    ?.onFailure { Logger.e(TAG, "Discord RPC update failed: ${it.message}") }
+                                                    ?.onFailure { if (it !is CancellationException) Logger.e(TAG, "Discord RPC update failed: ${it.message}") }
                                             }
                                         }
                                     nowPlayingState.value.songEntity?.let { song ->
@@ -742,7 +743,7 @@ class JvmMediaPlayerHandlerImpl(
                                 )
                             if (songEntity.thumbnails != thumbUrl) {
                                 songRepository.updateThumbnailsSongEntity(thumbUrl, songEntity.videoId).singleOrNull()?.let {
-                                    Logger.w(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
+                                    Logger.d(TAG, "getDataOfNowPlayingState: Updated thumbs $it")
                                 }
                             }
                             // Rows written before the parsers carried YouTube's real MUSIC_VIDEO_TYPE_*
@@ -752,12 +753,12 @@ class JvmMediaPlayerHandlerImpl(
                             MusicVideoType.normalize(track?.videoType)?.let { freshVideoType ->
                                 if (songEntity.videoType != freshVideoType) {
                                     songRepository.updateVideoTypeSongEntity(freshVideoType, songEntity.videoId).singleOrNull()?.let {
-                                        Logger.w(TAG, "getDataOfNowPlayingState: Updated videoType $it")
+                                        Logger.d(TAG, "getDataOfNowPlayingState: Updated videoType $it")
                                     }
                                 }
                             }
                             songRepository.updateSongInLibrary(now(), songEntity.videoId).singleOrNull().let {
-                                Logger.w(TAG, "getDataOfNowPlayingState: $it")
+                                Logger.d(TAG, "getDataOfNowPlayingState: $it")
                             }
                             songRepository.updateListenCount(songEntity.videoId)
                             songEntity.copy(thumbnails = thumbUrl)
@@ -777,12 +778,10 @@ class JvmMediaPlayerHandlerImpl(
                                 .insertSong(newSong)
                                 .singleOrNull()
                                 ?.let {
-                                    Logger.w(TAG, "getDataOfNowPlayingState: $it")
+                                    Logger.d(TAG, "getDataOfNowPlayingState: $it")
                                 }
                             newSong
                         }
-                    Logger.w(TAG, "getDataOfNowPlayingState: $songEntity")
-                    Logger.w(TAG, "getDataOfNowPlayingState: $track")
                     _nowPlayingState.update {
                         it.copy(
                             songEntity = song,
@@ -799,7 +798,6 @@ class JvmMediaPlayerHandlerImpl(
                         song.thumbnails,
                     )
                     updateMacOSNowPlayingInfo(song)
-                    Logger.w(TAG, "getDataOfNowPlayingState: ${nowPlayingState.value}")
                 }
                 songEntityJob?.cancel()
                 songEntityJob =
@@ -861,7 +859,7 @@ class JvmMediaPlayerHandlerImpl(
             coroutineScope.launch {
                 if (mediaId != null) {
                     streamRepository.getFormatFlow(mediaId).cancellable().collectLatest { f ->
-                        Logger.w(TAG, "Get format for $mediaId: $f")
+                        Logger.d(TAG, "Get format for $mediaId: itag ${f?.itag}, expires ${f?.expiredTime}")
                         if (f != null) {
                             _format.emit(f)
                         } else {
@@ -1713,7 +1711,7 @@ class JvmMediaPlayerHandlerImpl(
                         .let { response ->
                             val list = response?.first
                             if (list != null) {
-                                Logger.w(TAG, "Check loadMore response $response")
+                                Logger.d(TAG, "Check loadMore response: ${list.size} tracks")
                                 loadMoreCatalog(list)
                                 _queueData.update {
                                     it.copy(
@@ -1837,7 +1835,7 @@ class JvmMediaPlayerHandlerImpl(
             } else {
                 emptySet()
             }
-        Logger.w(TAG, "setQueueData: $queueData")
+        Logger.d(TAG, "setQueueData: ${queueData.listTracks.size} tracks")
     }
 
     override fun getCurrentMediaItem(): GenericMediaItem? = player.currentMediaItem
@@ -2467,7 +2465,7 @@ class JvmMediaPlayerHandlerImpl(
                     val temp: ArrayList<Track> = ArrayList()
                     temp.clear()
                     temp.addAll(_queueData.value.data.listTracks)
-                    Logger.w("Check recover queue", temp.toString())
+                    Logger.i("Check recover queue", "Saved ${temp.size} tracks for the next launch")
                     songRepository.recoverQueue(temp)
                 }
             }

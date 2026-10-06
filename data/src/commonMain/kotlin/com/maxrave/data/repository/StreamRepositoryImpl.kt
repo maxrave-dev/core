@@ -46,9 +46,9 @@ internal class StreamRepositoryImpl(
 
     override suspend fun updateFormat(videoId: String) {
         localDataSource.getNewFormat(videoId)?.let { oldFormat ->
-            Logger.w("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
-            Logger.w("Stream", "now: ${now()}")
-            Logger.w("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(now())}")
+            Logger.d("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
+            Logger.d("Stream", "now: ${now()}")
+            Logger.d("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(now())}")
             if (oldFormat.expiredTime.isBefore(now())) {
                 youTube
                     .player(videoId)
@@ -129,19 +129,11 @@ internal class StreamRepositoryImpl(
                         // the next run, so every play resolves it afresh — and the players learn
                         // that it is live from LiveStreamRegistry, recorded just above.
                         val liveHlsUrl = response.streamingData?.hlsManifestUrl
-                        Logger.w("Stream", "Live stream $videoId: $liveHlsUrl")
+                        Logger.i("Stream", "$videoId: live stream, HLS URL ${if (liveHlsUrl == null) "missing" else "found"}")
                         emit(liveHlsUrl)
                         return@onSuccess
                     }
-                    if (data.third == MediaType.Song) {
-                        Logger.w(
-                            "Stream",
-                            "response: is SONG",
-                        )
-                    } else {
-                        Logger.w("Stream", "response: is VIDEO")
-                    }
-                    Logger.w(
+                    Logger.d(
                         "Stream",
                         response.streamingData
                             ?.formats
@@ -160,7 +152,6 @@ internal class StreamRepositoryImpl(
                         response.streamingData?.adaptiveFormats?.filter { it.url.isNullOrEmpty().not() }
                             ?: emptyList(),
                     )
-                    Logger.w("Stream", "Get stream for video $isVideo")
                     val videoFormat =
                         formatList.find { it.itag == videoItag }
                             ?: formatList.find { it.itag == ITAG.VIDEO_720P }
@@ -189,10 +180,14 @@ internal class StreamRepositoryImpl(
                                 url != null && youTube.isManifestUrl(url)
                             }.maxByOrNull { it.width ?: 0 } ?: formatList.find { it.itag == videoItag }
                     }
-                    Logger.w("Stream", "Selected hls ${response.streamingData?.hlsManifestUrl}")
-                    Logger.w("Stream", "format: $format")
-                    Logger.d("Stream", "expireInSeconds ${response.streamingData?.expiresInSeconds}")
-                    Logger.w("Stream", "expired at ${now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L)}")
+                    // One line per resolved stream and never the URL: a googlevideo URL carries the
+                    // listener's IP address.
+                    Logger.i(
+                        "Stream",
+                        "$videoId: ${data.third}, itag ${format?.itag} ${format?.mimeType?.substringBefore(';')}" +
+                            (if (muxed) ", HLS" else "") +
+                            ", expires in ${response.streamingData?.expiresInSeconds}s",
+                    )
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
                     // AutoMix metadata from Tidal official API
                     var tidalBpm: Int? = null
@@ -217,7 +212,7 @@ internal class StreamRepositoryImpl(
                         youTube
                             .searchTidalMetadata(q, durationSecond)
                             .onSuccess { metadata ->
-                                Logger.w("Stream", "Tidal metadata: $metadata")
+                                Logger.d("Stream", "Tidal metadata: $metadata")
                                 tidalBpm = metadata.bpm
                                 tidalMusicKey = metadata.musicKey
                                 tidalKeyScale = metadata.keyScale

@@ -501,7 +501,7 @@ internal class SimpleMediaSessionCallback(
                                     val playlist =
                                         localPlaylistRepository.getLocalPlaylist(playlistId.toLong()).lastOrNull()?.data
                                     if (playlist != null) {
-                                        Logger.w(TAG, "onGetChildren: $playlist")
+                                        Logger.d(TAG, "onGetChildren: local playlist $playlistId")
                                         val tracks = playlist.tracks
                                         if (tracks.isNullOrEmpty()) {
                                             emptyList()
@@ -660,7 +660,7 @@ internal class SimpleMediaSessionCallback(
                             ?.let {
                                 songRepository.getSongsByListVideoId(it)
                             }?.lastOrNull()
-                    Logger.w(TAG, "onSetMediaItems songs: $songs")
+                    Logger.d(TAG, "onSetMediaItems songs: ${songs?.size ?: 0}")
                     if (songs.isNullOrEmpty()) {
                         defaultResult
                     } else {
@@ -746,7 +746,7 @@ internal class SimpleMediaSessionCallback(
                                             .sortedBy {
                                                 tracks.indexOf(it.videoId)
                                             }.also {
-                                                Logger.w(TAG, "onSetMediaItems list songs: $it")
+                                                Logger.d(TAG, "onSetMediaItems list songs: ${it.size}")
                                             }
                                     }
                             var index = 0

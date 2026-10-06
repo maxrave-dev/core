@@ -33,7 +33,9 @@ import com.maxrave.ktorext.getEngine
 import com.maxrave.logger.Logger
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.ProxyConfig
+import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.plugins.HttpRedirect
+import io.ktor.client.plugins.HttpResponseValidator
 import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
@@ -56,6 +58,7 @@ import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 import io.ktor.http.contentType
 import io.ktor.http.userAgent
@@ -166,6 +169,18 @@ class Ytmusic {
             expectSuccess = true
             install(CurlLogger) {
                 logger = { Logger.d(TAG, it) }
+            }
+            // Every rejected sign-in on this client lands in the app log in one place. Host and path
+            // only: the query and headers carry the cookie and the account.
+            HttpResponseValidator {
+                handleResponseExceptionWithRequest { cause, request ->
+                    val status =
+                        (cause as? ClientRequestException)?.response?.status
+                            ?: return@handleResponseExceptionWithRequest
+                    if (status == HttpStatusCode.Unauthorized || status == HttpStatusCode.Forbidden) {
+                        Logger.w("Auth", "YouTube: ${request.url.host}${request.url.encodedPath} answered ${status.value}")
+                    }
+                }
             }
             install(HttpRedirect) {
                 checkHttpMethod = false

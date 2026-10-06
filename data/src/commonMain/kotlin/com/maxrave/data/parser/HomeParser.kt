@@ -62,9 +62,7 @@ internal fun parseMixedContent(
                 }
             } else {
                 val results1 = row.musicCarouselShelfRenderer
-                Logger.w("parse_mixed_content", results1.toString())
                 val contentList = results1?.contents
-                Logger.w("parse_mixed_content", results1?.contents?.size.toString())
                 val title =
                     results1
                         ?.header
@@ -74,10 +72,7 @@ internal fun parseMixedContent(
                         ?.get(0)
                         ?.text
                         ?: ""
-                Logger.w("parse_mixed_content", title)
-                if (title == "Your daily discover") {
-                    Logger.w("parse_mixed_content", list.toString())
-                }
+                Logger.d("parse_mixed_content", "$title: ${contentList?.size ?: 0} items")
                 val subtitle =
                     results1
                         ?.header
@@ -202,7 +197,6 @@ internal fun parseMixedContent(
                                             it.printStackTrace()
                                         }
                                 }
-                                Logger.w("Song", ytItem.toString())
                                 if (ytItem != null) {
                                     listContent.add(
                                         Content(
@@ -237,7 +231,6 @@ internal fun parseMixedContent(
                             } else if (musicTwoRowItemRenderer.isVideo) {
                                 val ytItem =
                                     ArtistPage.fromMusicTwoRowItemRenderer(musicTwoRowItemRenderer) as VideoItem?
-                                Logger.w("Video", ytItem.toString())
                                 val artists =
                                     ytItem
                                         ?.artists
@@ -295,7 +288,6 @@ internal fun parseMixedContent(
                             } else if (musicTwoRowItemRenderer.isArtist || musicTwoRowItemRenderer.isUserChannel) {
                                 val ytItem =
                                     RelatedPage.fromMusicTwoRowItemRenderer(musicTwoRowItemRenderer) as ArtistItem?
-                                Logger.w("Artists", ytItem.toString())
                                 if (ytItem != null) {
                                     listContent.add(
                                         Content(
@@ -564,7 +556,6 @@ internal fun parseMixedContent(
                         ),
                     )
                 }
-                Logger.w("parse_mixed_content", list.toString())
             }
         }
     }

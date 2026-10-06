@@ -11,7 +11,7 @@ import com.maxrave.logger.Logger
 
 internal fun parseAlbumData(data: AlbumPage): AlbumBrowse {
     val artist: ArrayList<Artist> = arrayListOf()
-    Logger.w("AlbumParser", "Parsing album data \n$data")
+    Logger.d("AlbumParser", "Parsing album ${data.album.title}: ${data.songs.size} songs")
     data.album.artists?.forEach {
         artist.add(Artist(it.id, it.name))
     }
