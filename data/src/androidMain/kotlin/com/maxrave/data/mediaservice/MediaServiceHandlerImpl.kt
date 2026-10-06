@@ -2765,6 +2765,10 @@ internal class MediaServiceHandlerImpl(
         // refresh the RPC timestamps so Discord's progress bar follows the new position.
         if (player.isPlaying) {
             nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
+        } else {
+            // Paused, the progress ticker is stopped, so nothing else tells the UI the position
+            // moved: every seek bar, clock and lyric line would wait for play to catch up (#2480).
+            _simpleMediaState.value = SimpleMediaState.Progress(positionMs)
         }
     }
 

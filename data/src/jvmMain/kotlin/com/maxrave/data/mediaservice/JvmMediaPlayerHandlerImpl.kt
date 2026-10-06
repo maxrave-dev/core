@@ -2794,6 +2794,15 @@ class JvmMediaPlayerHandlerImpl(
         updateMacOSPlaybackState(isPlaying)
     }
 
+    override fun onSeeked(positionMs: Long) {
+        // Paused, the progress ticker is stopped, so nothing else tells the UI the position moved:
+        // every seek bar, clock and lyric line would wait for play to catch up (#2480). Unlike the
+        // Android twin there is no Discord refresh here: each seek branch already does it.
+        if (!player.isPlaying) {
+            _simpleMediaState.value = SimpleMediaState.Progress(positionMs)
+        }
+    }
+
     override fun onMediaItemTransition(
         mediaItem: GenericMediaItem?,
         reason: Int,
