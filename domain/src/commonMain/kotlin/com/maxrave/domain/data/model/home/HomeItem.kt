@@ -1,6 +1,7 @@
 package com.maxrave.domain.data.model.home
 
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
+import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 
 data class HomeItem(
     val contents: List<Content?>,
@@ -9,6 +10,17 @@ data class HomeItem(
     val thumbnail: List<Thumbnail>? = null,
     val channelId: String? = null,
     val moreEndpoint: MoreEndpoint? = null,
+    /**
+     * Rows YouTube stacks per column (`numItemsPerColumn`). It is set on song-list shelves only
+     * (Quick picks, Heard in Shorts, Trending songs) and null on every card shelf.
+     */
+    val itemsPerColumn: Int? = null,
+    /**
+     * The header's "Play all" button, which YouTube sends in place of "More" on some shelves: a
+     * watch endpoint with `videoId` + `params` and no `playlistId`. `/next` turns it into a finite
+     * queue of the shelf's songs.
+     */
+    val playAllEndpoint: YouTubeWatchEndpoint? = null,
 ) {
     /**
      * Where the section's "More" button leads on YouTube Music — a browse page, not a play action.

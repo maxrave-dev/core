@@ -255,6 +255,18 @@ internal class LocalDataSource(
 
     fun getMostPlayedSongs() = databaseDao.getMostPlayedSongs()
 
+    fun countLikedSongs() = databaseDao.countLikedSongs()
+
+    fun getLikedSongThumbnails(limit: Int) = databaseDao.getLikedSongThumbnails(limit)
+
+    fun countDownloadedSongs() = databaseDao.countDownloadedSongs()
+
+    fun getDownloadedSongThumbnails(limit: Int) = databaseDao.getDownloadedSongThumbnails(limit)
+
+    fun countFollowedArtists() = databaseDao.countFollowedArtists()
+
+    fun getFollowedArtistThumbnails(limit: Int) = databaseDao.getFollowedArtistThumbnails(limit)
+
     suspend fun updateDownloadState(
         downloadState: Int,
         videoId: String,

@@ -5,6 +5,8 @@ import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.data.io.fileSystem
 import com.maxrave.domain.data.entities.NotificationEntity
 import com.maxrave.domain.data.model.cookie.CookieItem
+import com.maxrave.domain.data.model.library.LibraryCollectionPreview
+import com.maxrave.domain.data.model.library.LibraryOverview
 import com.maxrave.domain.data.type.RecentlyType
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.CommonRepository
@@ -21,6 +23,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okio.IOException
@@ -301,6 +304,25 @@ internal class CommonRepositoryImpl(
             emit(localDataSource.getAllRecentData())
         }.flowOn(Dispatchers.IO)
 
+    override fun getLibraryOverview(): Flow<LibraryOverview> =
+        combine(
+            collectionPreview(localDataSource.countLikedSongs(), localDataSource.getLikedSongThumbnails(LIBRARY_ARTWORK)),
+            collectionPreview(localDataSource.countFollowedArtists(), localDataSource.getFollowedArtistThumbnails(LIBRARY_ARTWORK)),
+            // Already capped at 50 by its own query, so the list size is the count the card shows.
+            localDataSource.getMostPlayedSongs().map { songs ->
+                LibraryCollectionPreview(songs.size, songs.mapNotNull { it.thumbnails }.take(LIBRARY_ARTWORK))
+            },
+            collectionPreview(localDataSource.countDownloadedSongs(), localDataSource.getDownloadedSongThumbnails(LIBRARY_ARTWORK)),
+        ) { favorite, followed, mostPlayed, downloaded ->
+            LibraryOverview(favorite, followed, mostPlayed, downloaded)
+        }.distinctUntilChanged()
+            .flowOn(Dispatchers.IO)
+
+    private fun collectionPreview(
+        count: Flow<Int>,
+        thumbnails: Flow<List<String?>>,
+    ): Flow<LibraryCollectionPreview> = combine(count, thumbnails) { n, urls -> LibraryCollectionPreview(n, urls.filterNotNull()) }
+
     // Notifications
     override suspend fun insertNotification(notificationEntity: NotificationEntity) =
         withContext(Dispatchers.IO) {
@@ -364,6 +386,9 @@ private data class ProxyData(
 expect fun setProxyAuthenticator(username: String, password: String)
 
 expect fun clearProxyAuthenticator()
+
+/** Newest artwork per Your library card; the card draws as many of these as its fan has slots. */
+private const val LIBRARY_ARTWORK = 3
 
 expect fun getCookies(
     url: String,

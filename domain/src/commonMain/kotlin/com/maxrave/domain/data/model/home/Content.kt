@@ -3,6 +3,7 @@ package com.maxrave.domain.data.model.home
 import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
+import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.data.type.HomeContentType
 
 data class Content(
@@ -28,4 +29,10 @@ data class Content(
      * playback treats a video as live is learned when its stream resolves (LiveStreamRegistry).
      */
     val isLive: Boolean = false,
+    /**
+     * Where the card's own play button points (YouTube's `thumbnailOverlay`): a song's radio, a
+     * playlist, or an album's track list. Null for artists, which carry no play button, and for
+     * cards built anywhere but Home.
+     */
+    val playEndpoint: YouTubeWatchEndpoint? = null,
 ) : HomeContentType
