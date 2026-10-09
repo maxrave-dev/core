@@ -776,8 +776,25 @@ interface DatabaseDao {
     @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertSetVideoId(setVideoIdEntity: SetVideoIdEntity)
 
-    @Query("SELECT * FROM set_video_id WHERE videoId = :videoId")
-    suspend fun getSetVideoId(videoId: String): SetVideoIdEntity?
+    /**
+     * A setVideoId names one entry of one playlist, so the playlist is part of the key. Looked up by
+     * videoId alone, SQLite returned the row whose playlist id sorts first — an entry of whichever
+     * other playlist also holds the song. Pass every spelling the playlist id is stored under.
+     */
+    @Query(
+        "SELECT * FROM set_video_id WHERE videoId = :videoId AND youtubePlaylistId IN (:youtubePlaylistIds) " +
+            "AND setVideoId IS NOT NULL LIMIT 1",
+    )
+    suspend fun getSetVideoId(
+        videoId: String,
+        youtubePlaylistIds: List<String>,
+    ): SetVideoIdEntity?
+
+    @Query("DELETE FROM set_video_id WHERE videoId = :videoId AND youtubePlaylistId = :youtubePlaylistId")
+    suspend fun deleteSetVideoId(
+        videoId: String,
+        youtubePlaylistId: String,
+    )
 
     // PairSongLocalPlaylist
     @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)

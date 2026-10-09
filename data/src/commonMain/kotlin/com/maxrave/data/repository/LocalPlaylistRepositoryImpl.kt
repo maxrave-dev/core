@@ -39,6 +39,7 @@ import com.maxrave.kotlinytmusicscraper.models.response.SearchResponse
 import com.maxrave.kotlinytmusicscraper.pages.NextPage
 import com.maxrave.kotlinytmusicscraper.pages.SearchPage
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistContinuation
+import com.maxrave.kotlinytmusicscraper.parser.playlistContinuationContents
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -325,39 +326,21 @@ internal class LocalPlaylistRepositoryImpl(
                             ?.musicPlaylistShelfRenderer
                             ?.contents
                     data?.let { listContent.addAll(it) }
-                    var continueParam =
-                        res.contents
-                            ?.twoColumnBrowseResultsRenderer
-                            ?.secondaryContents
-                            ?.sectionListRenderer
-                            ?.continuations
-                            ?.firstOrNull()
-                            ?.nextContinuationData
-                            ?.continuation
-                    while (continueParam != null) {
+                    // Follow the track shelf's own continuation, as the playlist screen does. The
+                    // section list's token leads to a carousel of other playlists, not to the next
+                    // tracks, so every track past the first page (100) was left without a setVideoId.
+                    var continueParam = res.getPlaylistContinuation()
+                    // A token seen twice would loop forever.
+                    val seenContinuations = mutableSetOf<String>()
+                    while (continueParam != null && seenContinuations.add(continueParam)) {
                         youTube
                             .customQuery(
                                 "",
                                 continuation = continueParam,
                                 setLogin = true,
                             ).onSuccess { values ->
-                                val dataMore: List<MusicShelfRenderer.Content>? =
-                                    values.continuationContents
-                                        ?.sectionListContinuation
-                                        ?.contents
-                                        ?.firstOrNull()
-                                        ?.musicShelfRenderer
-                                        ?.contents
-                                if (dataMore != null) {
-                                    listContent.addAll(dataMore)
-                                }
-                                continueParam =
-                                    values.continuationContents
-                                        ?.sectionListContinuation
-                                        ?.continuations
-                                        ?.firstOrNull()
-                                        ?.nextContinuationData
-                                        ?.continuation
+                                values.playlistContinuationContents()?.let { listContent.addAll(it) }
+                                continueParam = values.getPlaylistContinuation()
                             }.onFailure { continueParam = null }
                     }
                     if (listContent.isEmpty()) {
@@ -620,8 +603,9 @@ internal class LocalPlaylistRepositoryImpl(
                             for (d in data) {
                                 localDataSource.insertSetVideoId(
                                     SetVideoIdEntity(
-                                        d.playlistEditVideoAddedResultData.videoId,
-                                        d.playlistEditVideoAddedResultData.setVideoId,
+                                        videoId = d.playlistEditVideoAddedResultData.videoId,
+                                        setVideoId = d.playlistEditVideoAddedResultData.setVideoId,
+                                        youtubePlaylistId = ytId,
                                     ),
                                 )
                             }
@@ -652,11 +636,19 @@ internal class LocalPlaylistRepositoryImpl(
             emit(LocalResource.Success(successMessage))
             val ytPlaylistId = localPlaylist.youtubePlaylistId
             if (ytPlaylistId != null) {
-                val setVideoId = localDataSource.getSetVideoId(song.videoId)?.setVideoId
-                if (setVideoId != null) {
+                val entry = findSetVideoId(song.videoId, ytPlaylistId)
+                val setVideoId = entry?.setVideoId
+                if (entry != null && setVideoId != null) {
                     youTube
                         .removeItemYouTubePlaylist(ytPlaylistId, song.videoId, setVideoId)
                         .onSuccess {
+                            // Nothing else ever deletes from set_video_id: a row left behind for an
+                            // entry YouTube no longer has would be sent again on the next lookup.
+                            // A legacy "" row is kept, since it may hold another playlist's entry
+                            // that the other playlist still falls back to.
+                            if (entry.youtubePlaylistId.isNotEmpty()) {
+                                localDataSource.deleteSetVideoId(entry.videoId, entry.youtubePlaylistId)
+                            }
                             emit(LocalResource.Success(successMessage))
                         }.onFailure {
                             emit(LocalResource.Error<String>("$errorMessage: ${it.message}"))
@@ -666,6 +658,23 @@ internal class LocalPlaylistRepositoryImpl(
                 }
             }
         }.flowOn(Dispatchers.IO)
+
+    /**
+     * The stored entry of [videoId] in the YouTube playlist [youtubePlaylistId], matched with and
+     * without the "VL" browse prefix since both spellings are stored.
+     *
+     * Rows written before the playlist id was recorded carry "". Such a row is used only when no row
+     * names this playlist; it is the row every lookup returned first before, so old data with nothing
+     * better resolves exactly as it used to.
+     */
+    private suspend fun findSetVideoId(
+        videoId: String,
+        youtubePlaylistId: String,
+    ): SetVideoIdEntity? {
+        val bareId = youtubePlaylistId.removePrefix("VL")
+        return localDataSource.getSetVideoId(videoId, listOf(bareId, "VL$bareId"))
+            ?: localDataSource.getSetVideoId(videoId, listOf(""))
+    }
 
     override fun getSuggestionsTrackForPlaylist(id: Long): Flow<LocalResource<Pair<String?, List<Track>>>> =
         flow {
@@ -841,8 +850,9 @@ internal class LocalPlaylistRepositoryImpl(
                         for (playlistEditResult in it.playlistEditResults) {
                             localDataSource.insertSetVideoId(
                                 SetVideoIdEntity(
-                                    playlistEditResult.playlistEditVideoAddedResultData.videoId,
-                                    playlistEditResult.playlistEditVideoAddedResultData.setVideoId,
+                                    videoId = playlistEditResult.playlistEditVideoAddedResultData.videoId,
+                                    setVideoId = playlistEditResult.playlistEditVideoAddedResultData.setVideoId,
+                                    youtubePlaylistId = youtubePlaylistId.removePrefix("VL"),
                                 ),
                             )
                         }
@@ -958,29 +968,32 @@ internal class LocalPlaylistRepositoryImpl(
             val movedVideoId = movedPair.songId
 
             // Resolve setVideoId of the moved item
-            val movedSetVideoIdEntity = localDataSource.getSetVideoId(movedVideoId)
+            val movedSetVideoIdEntity = findSetVideoId(movedVideoId, ytPlaylistId)
             val movedSetVideoId = movedSetVideoIdEntity?.setVideoId ?: run {
                 emit(LocalResource.Error("SetVideoId not found for moved item: $movedVideoId"))
                 return@flow
             }
 
-            // Resolve the successor's setVideoId (the item that should come AFTER the moved item)
+            // Resolve the successor (the item that should come AFTER the moved item)
             // If moving down (fromIndex < toIndex): successor is the item at toIndex + 1 (if exists)
             // If moving up (fromIndex > toIndex): successor is the item at toIndex
-            val successorSetVideoId: String? = if (fromIndex < toIndex) {
+            val successorVideoId: String? = if (fromIndex < toIndex) {
                 // Moving down: after removal, the successor is at toIndex + 1 in original list
-                val successorIndex = toIndex + 1
-                if (successorIndex < allPairs.size) {
-                    val successorVideoId = allPairs[successorIndex].songId
-                    localDataSource.getSetVideoId(successorVideoId)?.setVideoId
-                } else {
-                    null // Move to end
-                }
+                allPairs.getOrNull(toIndex + 1)?.songId // null: move to end
             } else {
                 // Moving up: successor is the item currently at toIndex
-                val successorVideoId = allPairs[toIndex].songId
-                localDataSource.getSetVideoId(successorVideoId)?.setVideoId
+                allPairs[toIndex].songId
             }
+            // A successor that exists but has no setVideoId must not be sent as null: YouTube reads
+            // a missing successor as "move to the end", so the song would land at the end on YouTube
+            // while the app shows it where the user dropped it.
+            val successorSetVideoId: String? =
+                successorVideoId?.let { videoId ->
+                    findSetVideoId(videoId, ytPlaylistId)?.setVideoId ?: run {
+                        emit(LocalResource.Error("SetVideoId not found for successor item: $videoId"))
+                        return@flow
+                    }
+                }
 
             // Step 1: Call YouTube API
             youTube
