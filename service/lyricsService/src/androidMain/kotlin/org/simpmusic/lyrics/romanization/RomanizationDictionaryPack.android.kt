@@ -1,5 +1,8 @@
 package org.simpmusic.lyrics.romanization
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.IO
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -27,6 +30,13 @@ actual object RomanizationDictionaryPack {
         val directory =
             dictionaryDirectory
                 ?: return Result.failure(IllegalStateException("RomanizationDictionaryPack.configure was never called"))
-        return KuromojiDictionary.download(directory)
+        return KuromojiDictionary.download(directory).onSuccess {
+            // Built here, on IO, before the caller announces the pack ready. Lyrics on screen read
+            // their lines again at that moment, and the first Japanese one would otherwise build
+            // the analyzer on the UI thread — reading the whole dictionary mid-song. A build that
+            // fails is not a failed download: the files are in place, so this stays a success and
+            // the analyzer is tried again on first use, as before.
+            withContext(Dispatchers.IO) { PlatformRomanizer.prepareJapanese() }
+        }
     }
 }

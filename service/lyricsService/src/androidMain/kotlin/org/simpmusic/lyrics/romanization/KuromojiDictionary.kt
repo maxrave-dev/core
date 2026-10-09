@@ -19,12 +19,14 @@ import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.Duration.Companion.minutes
 
 private const val TAG = "KuromojiDictionary"
 
@@ -52,6 +54,16 @@ internal object KuromojiDictionary {
 
     private const val TAR_BLOCK_BYTES = 512
     private const val COPY_BUFFER_BYTES = 64 * 1024
+
+    /**
+     * The longest the fetch may take. A connection that trickles a byte every few seconds never
+     * trips OkHttp's socket timeouts, and the download belongs to no screen that could give up on
+     * it, so without this it would hold DOWNLOADING for as long as the trickle lasts. Fifteen
+     * minutes still lets the pack through at about 15 KB/s. Only the fetch is bounded: extracting
+     * and installing are local and take seconds, and a deadline landing in the middle of them
+     * would report a pack as failed after it was installed.
+     */
+    private val FETCH_TIMEOUT = 15.minutes
 
     /**
      * The eight resources kuromoji 0.9.0 asks its resolver for — it passes exactly these BARE
@@ -97,7 +109,8 @@ internal object KuromojiDictionary {
             val staging = File(parent, "${directory.name}.staging")
             try {
                 staging.deleteRecursively()
-                fetchArchive(archive)
+                withTimeoutOrNull(FETCH_TIMEOUT) { fetchArchive(archive) }
+                    ?: throw IOException("dictionary pack took longer than $FETCH_TIMEOUT to download")
                 extractDictionary(archive, staging)
                 val missing = DICTIONARY_FILE_NAMES.filterNot { name -> File(staging, name).length() > 0 }
                 if (missing.isNotEmpty()) {

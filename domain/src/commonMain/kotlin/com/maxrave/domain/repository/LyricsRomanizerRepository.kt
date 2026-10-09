@@ -35,7 +35,25 @@ interface LyricsRomanizerRepository {
      * Fetch, verify and install the Japanese dictionary pack, moving [japaneseDictionaryState]
      * through DOWNLOADING to READY or FAILED. A no-op when the pack is already READY; a FAILED
      * state is retried by simply calling this again. Safe to call concurrently — a second caller
-     * waits for the running download instead of starting another.
+     * waits for the running download instead of starting another. The download runs in the
+     * repository's own scope, so cancelling the caller only ends its wait.
+     *
+     * This is the user's explicit request. Code that merely finds Japanese selected calls
+     * [ensureJapaneseDictionary] instead.
+     *
+     * @return the state the download settled on, READY or FAILED — read from the same update that
+     *   ended the wait, so a later attempt cannot change what this caller reports.
      */
-    suspend fun downloadJapaneseDictionary()
+    suspend fun downloadJapaneseDictionary(): RomanizationDictionaryState
+
+    /**
+     * Starts the Japanese dictionary download in the background if the pack is missing, and
+     * returns at once. For callers that find Japanese selected but did not just ask for it: the
+     * selection survives a reinstall through a restored backup, the pack does not. For a while
+     * after a failed attempt — 2 minutes, doubling with each automatic failure in a row up to an
+     * hour — calls do nothing, and the first one after that retries; [downloadJapaneseDictionary]
+     * retries at once, and when a download it started fails the wait starts over from 2 minutes.
+     * The caller decides whether Japanese is selected — this only checks the pack.
+     */
+    fun ensureJapaneseDictionary()
 }

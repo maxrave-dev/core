@@ -6,6 +6,7 @@ import net.sourceforge.pinyin4j.format.HanyuPinyinCaseType
 import net.sourceforge.pinyin4j.format.HanyuPinyinOutputFormat
 import net.sourceforge.pinyin4j.format.HanyuPinyinToneType
 import net.sourceforge.pinyin4j.format.HanyuPinyinVCharType
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Japanese and Chinese romanization on Android.
@@ -16,24 +17,47 @@ import net.sourceforge.pinyin4j.format.HanyuPinyinVCharType
  * [japanese] answers null, which the pipeline already treats as "show nothing extra".
  */
 internal actual object PlatformRomanizer {
-    // Loading the ipadic dictionary costs real time and memory, so it happens once, on first use —
-    // never at startup, since most listeners never play a Japanese track. Only a SUCCESSFUL build
-    // is cached: a failed attempt (mid-download, corrupted file) stays null and the next Japanese
-    // line simply tries again, which is also how the analyzer comes alive right after a download
-    // finishes, with no restart.
+    // Loading the ipadic dictionary costs real time and memory, so it happens once: on first use,
+    // or right after a download installs the pack, which builds it off the UI thread — never at
+    // startup, since most listeners never play a Japanese track. Only a SUCCESSFUL build is
+    // cached: a failed attempt (mid-download, corrupted file) stays null and the next Japanese line
+    // simply tries again, so the analyzer comes alive after a download with no restart.
     @Volatile
     private var tokenizer: Tokenizer? = null
+
+    // Held while one thread builds the analyzer. A second caller does not queue behind it the way
+    // it did behind a `synchronized` block: the build reads the whole dictionary and takes
+    // seconds, and the caller left waiting would be the UI thread composing a lyric line. It gets
+    // null instead — the existing "show nothing" contract — and asks again once the pack is
+    // announced READY, which the download only does after calling [prepareJapanese].
+    //
+    // That last part is what makes the null safe, so keep it true: the only build off the UI
+    // thread runs while the pack is still DOWNLOADING, and the READY that follows is what makes the
+    // lyrics read their lines again. A warm-up started anywhere else — say, at startup with the
+    // pack already on disk — needs a signal of its own, or the lines it answered null stay null.
+    private val building = AtomicBoolean(false)
 
     private fun tokenizerOrNull(): Tokenizer? {
         tokenizer?.let { return it }
         val directory = RomanizationDictionaryPack.dictionaryDirectory ?: return null
         if (!KuromojiDictionary.isReady(directory)) return null
-        return synchronized(this) {
+        if (!building.compareAndSet(false, true)) return null
+        return try {
             tokenizer ?: runCatching { KuromojiDictionary.buildTokenizer(directory) }
                 .getOrNull()
                 ?.also { tokenizer = it }
+        } finally {
+            building.set(false)
         }
     }
+
+    /**
+     * Builds the analyzer now, on the calling thread, unless another thread is already building
+     * it; true when it is built. The download calls this on its IO thread right after installing
+     * the pack, so the lyrics on screen — which read their lines again the moment the pack is
+     * announced ready — find it built instead of building it on the UI thread.
+     */
+    fun prepareJapanese(): Boolean = tokenizerOrNull() != null
 
     actual fun japanese(line: String): String? {
         val analyzer = tokenizerOrNull() ?: return null

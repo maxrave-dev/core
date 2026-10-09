@@ -23,7 +23,9 @@ expect object RomanizationDictionaryPack {
 
     /**
      * Download, verify and install the dictionary. Success when [isReady] was already true.
-     * Never throws — failures come back inside the [Result].
+     * Never throws — failures come back inside the [Result]. On Android it also builds the
+     * analyzer before returning, so whoever announces the pack ready next does not hand that cost
+     * to the UI thread.
      */
     suspend fun download(): Result<Unit>
 }
