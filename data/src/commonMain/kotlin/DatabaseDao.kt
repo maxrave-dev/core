@@ -1195,8 +1195,10 @@ interface DatabaseDao {
      * decides it here is the follow, not the row: the artists that statement spares are unfollowed
      * too, so their notifications go with the rest.
      * `artist.channelId` is NOT NULL, so the subquery cannot smuggle a NULL into the NOT IN.
+     * Blog rows are spared: their `channelId` is "", so without the type filter every one of them
+     * matched, and the RSS worker — which dedups against them — pushed recent posts a second time.
      */
-    @Query("DELETE FROM notification WHERE channelId NOT IN (SELECT channelId FROM artist WHERE followed = 1)")
+    @Query("DELETE FROM notification WHERE type = 'artist' AND channelId NOT IN (SELECT channelId FROM artist WHERE followed = 1)")
     suspend fun deleteNotificationsOfUnfollowedArtists(): Int
 
     /**
