@@ -112,6 +112,9 @@ internal class SimpleMediaService :
             mediaSession?.setMediaButtonPreferences(
                 commandButtonList,
             )
+            mediaSession?.setCustomLayout(
+                commandButtonList,
+            )
         }
     }
 
