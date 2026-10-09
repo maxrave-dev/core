@@ -476,6 +476,8 @@ private fun provideMergingMediaSource(
         ),
         provideLiveStreamMediaSourceFactory(context, streamRepository, dataStoreManager),
         dataStoreManager,
+        context,
+        downloadCache,
     )
 
 @UnstableApi

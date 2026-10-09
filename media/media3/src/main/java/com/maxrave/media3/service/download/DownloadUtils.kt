@@ -33,6 +33,7 @@ import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.flow.update
@@ -191,7 +192,8 @@ internal class DownloadUtils(
     val downloadingVideoIds = MutableStateFlow<MutableSet<String>>(mutableSetOf())
 
     /**
-     * Use thumbnail to check video or audio
+     * Use thumbnail to check video or audio. The video stream is fetched only while
+     * "play video instead of audio" is on: playback merges it in for nothing else.
      */
     override suspend fun downloadTrack(
         videoId: String,
@@ -199,15 +201,17 @@ internal class DownloadUtils(
         thumbnail: String,
     ) {
         var isVideo = false
-        val request =
-            ImageRequest
-                .Builder(context)
-                .data(thumbnail)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .build()
-        val imageResult = ImageLoader(context).execute(request)
-        if (imageResult.image?.height != imageResult.image?.width && imageResult.image != null) {
-            isVideo = true
+        if (dataStoreManager.watchVideoInsteadOfPlayingAudio.first() == DataStoreManager.Values.TRUE) {
+            val request =
+                ImageRequest
+                    .Builder(context)
+                    .data(thumbnail)
+                    .diskCachePolicy(CachePolicy.ENABLED)
+                    .build()
+            val imageResult = ImageLoader(context).execute(request)
+            if (imageResult.image?.height != imageResult.image?.width && imageResult.image != null) {
+                isVideo = true
+            }
         }
         val downloadRequest =
             DownloadRequest

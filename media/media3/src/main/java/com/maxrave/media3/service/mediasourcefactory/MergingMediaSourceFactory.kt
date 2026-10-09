@@ -1,8 +1,12 @@
 package com.maxrave.media3.service.mediasourcefactory
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.cache.Cache
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
@@ -12,6 +16,7 @@ import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.logger.Logger
+import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -22,6 +27,8 @@ internal class MergingMediaSourceFactory(
     // HLS over plain HTTP, for live broadcasts only — see LiveStreamPlayback.kt.
     private val liveStreamMediaSourceFactory: MediaSource.Factory,
     private val dataStoreManager: DataStoreManager,
+    private val context: Context,
+    private val downloadCache: Cache,
 ) : MediaSource.Factory {
     override fun setDrmSessionManagerProvider(drmSessionManagerProvider: DrmSessionManagerProvider): MediaSource.Factory {
         defaultMediaSourceFactory.setDrmSessionManagerProvider(drmSessionManagerProvider)
@@ -53,7 +60,7 @@ internal class MergingMediaSourceFactory(
         Logger.w("Merging Media Source", mediaItem.mediaMetadata.description.toString())
         val getVideo = runBlocking(Dispatchers.IO) { dataStoreManager.watchVideoInsteadOfPlayingAudio.first() } == DataStoreManager.Values.TRUE
         Logger.w("Merging Media Source", getVideo.toString())
-        if (mediaItem.mediaMetadata.description == MERGING_DATA_TYPE.VIDEO && getVideo) {
+        if (mediaItem.mediaMetadata.description == MERGING_DATA_TYPE.VIDEO && getVideo && !isVideoUnreachable(mediaItem.mediaId)) {
             val videoItem =
                 mediaItem
                     .buildUpon()
@@ -69,5 +76,19 @@ internal class MergingMediaSourceFactory(
         }
 
 //        val default = defaultMediaSourceFactory.createMediaSource(mediaItem.buildUpon().setMediaId("AUDIO-${mediaItem.mediaId}").build())
+    }
+
+    // A track downloaded while video playback was off holds its audio only. Offline, its video
+    // half can be neither read nor fetched, and one failing half fails the whole merged source.
+    private fun isVideoUnreachable(mediaId: String): Boolean =
+        downloadCache.isFullyCached(mediaId, 0L) &&
+            !downloadCache.isFullyCached("${MERGING_DATA_TYPE.VIDEO}$mediaId", 0L) &&
+            !isOnline()
+
+    private fun isOnline(): Boolean {
+        val connectivityManager = context.getSystemService(ConnectivityManager::class.java) ?: return true
+        return connectivityManager
+            .getNetworkCapabilities(connectivityManager.activeNetwork)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
     }
 }
