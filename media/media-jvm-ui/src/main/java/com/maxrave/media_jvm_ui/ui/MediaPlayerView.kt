@@ -20,6 +20,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -55,6 +56,7 @@ fun MediaPlayerViewWithUrl(
     url: String,
     modifier: Modifier,
     cropToBounds: Boolean = false,
+    onFirstFrame: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     var frameSource by remember { mutableStateOf<MpvVideoFrameSource?>(null) }
@@ -103,6 +105,7 @@ fun MediaPlayerViewWithUrl(
                     Modifier
                         .fillMaxSize()
                         .align(Alignment.Center),
+                onFirstFrame = onFirstFrame,
             )
         }
     }
@@ -128,6 +131,7 @@ fun MediaPlayerViewWithUrl(
 private fun MpvVideoFrames(
     source: MpvVideoFrameSource,
     modifier: Modifier = Modifier,
+    onFirstFrame: () -> Unit = {},
 ) {
     var frame by remember(source) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(source) {
@@ -138,6 +142,12 @@ private fun MpvVideoFrames(
                 frame = image?.toComposeImageBitmap()
             }
         }
+    }
+    // Until a frame arrives this box is plain black, so tell the caller when it stops being.
+    val hasFrame = frame != null
+    val currentOnFirstFrame by rememberUpdatedState(onFirstFrame)
+    LaunchedEffect(hasFrame) {
+        if (hasFrame) currentOnFirstFrame()
     }
     Box(
         modifier

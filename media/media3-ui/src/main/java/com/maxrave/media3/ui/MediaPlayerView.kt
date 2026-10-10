@@ -84,6 +84,7 @@ fun MediaPlayerView(
     url: String,
     screenSize: ScreenSizeInfo,
     cropToBounds: Boolean = false,
+    onFirstFrame: () -> Unit = {},
 ) {
     val canvasCache: SimpleCache = koinInject<SimpleCache>(named(Config.CANVAS_CACHE))
 
@@ -175,6 +176,11 @@ fun MediaPlayerView(
     }
 
     val presentationState = rememberPresentationState(exoPlayer)
+    // Media3 lifts coverSurface on EVENT_RENDERED_FIRST_FRAME: the moment the shutter below goes.
+    val currentOnFirstFrame by rememberUpdatedState(onFirstFrame)
+    LaunchedEffect(presentationState.coverSurface) {
+        if (!presentationState.coverSurface) currentOnFirstFrame()
+    }
     if (cropToBounds) {
         // Center scale-to-cover (ContentScale.Crop) into whatever frame the caller gives us.
         // resizeWithContentScale keeps the true video aspect ratio (no stretch), scales it
