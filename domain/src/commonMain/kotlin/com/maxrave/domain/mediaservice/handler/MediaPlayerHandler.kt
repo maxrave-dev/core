@@ -9,6 +9,7 @@ import com.maxrave.domain.data.player.GenericCommandButton
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.PlayerError
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
+import com.maxrave.domain.utils.isEndlessQueueId
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -357,6 +358,30 @@ data class QueueData(
         this.data.playlistType == PlaylistType.PLAYLIST ||
             this.data.playlistType == PlaylistType.ALBUM
 }
+
+/**
+ * Why "Add to queue" is unavailable. It appends to the END of the queue, and two kinds of queue never
+ * reach one: a radio or mix, which YouTube keeps extending, and any queue while Endless queue is on,
+ * which the app keeps extending. Only Play next has somewhere to put a song there.
+ */
+enum class AddToQueueBlock {
+    RADIO,
+    ENDLESS_QUEUE,
+}
+
+/**
+ * The reason Add to queue is blocked for this queue, or null when it is not.
+ *
+ * Decided by the id alone, not the type: a mix opened from its playlist page is queued as
+ * [PlaylistType.PLAYLIST] and still never ends. [AddToQueueBlock.RADIO] wins when both apply, since
+ * turning Endless queue off would not lift the block then.
+ */
+fun QueueData?.addToQueueBlock(endlessQueue: Boolean): AddToQueueBlock? =
+    when {
+        this?.data?.playlistId?.isEndlessQueueId() == true -> AddToQueueBlock.RADIO
+        endlessQueue -> AddToQueueBlock.ENDLESS_QUEUE
+        else -> null
+    }
 
 enum class PlaylistType {
     PLAYLIST,

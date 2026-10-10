@@ -66,6 +66,30 @@ class RadioQueueTrimTest {
     }
 
     @Test
+    fun `blocks Add to queue only for queues that never end`() {
+        fun queue(
+            type: PlaylistType?,
+            id: String?,
+        ) = QueueData(data = QueueData.Data(playlistId = id, playlistType = type))
+
+        assertEquals(AddToQueueBlock.RADIO, queue(PlaylistType.RADIO, "RDAMVMabc").addToQueueBlock(false))
+        // A mix opened from its playlist page is queued as PLAYLIST and still never ends.
+        assertEquals(AddToQueueBlock.RADIO, queue(PlaylistType.PLAYLIST, "RDTMAK5uy_abc").addToQueueBlock(false))
+        // A playlist's Start radio, a prefix isRadioPlaylistId does not list.
+        assertEquals(AddToQueueBlock.RADIO, queue(PlaylistType.RADIO, "RDAMPLPLabc").addToQueueBlock(false))
+        // Turning Endless queue off would not lift this one, so radio is the reason given.
+        assertEquals(AddToQueueBlock.RADIO, queue(PlaylistType.RADIO, "RDAMVMabc").addToQueueBlock(true))
+        assertEquals(AddToQueueBlock.ENDLESS_QUEUE, queue(PlaylistType.PLAYLIST, "PLabc").addToQueueBlock(true))
+        assertEquals(AddToQueueBlock.ENDLESS_QUEUE, null.addToQueueBlock(true))
+        // Finite lists: a curated playlist, a plain one, Favorites and friends, nothing playing yet.
+        assertNull(queue(PlaylistType.PLAYLIST, "RDCLAK5uy_abc").addToQueueBlock(false))
+        assertNull(queue(PlaylistType.PLAYLIST, "VLRDCLAK5uy_abc").addToQueueBlock(false))
+        assertNull(queue(PlaylistType.ALBUM, "OLAK5uy_abc").addToQueueBlock(false))
+        assertNull(queue(PlaylistType.RADIO, null).addToQueueBlock(false))
+        assertNull(null.addToQueueBlock(false))
+    }
+
+    @Test
     fun `cuts the mirrored queue only when the removed tracks are its front`() {
         val queue = listOf("a", "b", "a", "c", "d")
         assertEquals(

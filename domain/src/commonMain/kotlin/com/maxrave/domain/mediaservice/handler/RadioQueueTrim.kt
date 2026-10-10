@@ -1,6 +1,6 @@
 package com.maxrave.domain.mediaservice.handler
 
-import com.maxrave.domain.utils.isRadioQueueId
+import com.maxrave.domain.utils.isEndlessQueueId
 
 /**
  * How many already-played tracks a radio queue keeps behind the current one.
@@ -42,10 +42,7 @@ object RadioQueueTrim {
         playlistType: PlaylistType?,
         playlistId: String?,
     ): Boolean =
-        playlistType == PlaylistType.RADIO &&
-            playlistId != null &&
-            playlistId.isRadioQueueId() &&
-            !playlistId.removePrefix("VL").startsWith("RDCLAK")
+        playlistType == PlaylistType.RADIO && playlistId?.isEndlessQueueId() == true
 
     /**
      * How many tracks to drop from the FRONT of a radio queue, or 0 when it should be left alone.

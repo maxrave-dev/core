@@ -35,4 +35,13 @@ fun String.isRadioPlaylistId(): Boolean = RADIO_PLAYLIST_ID_PREFIXES.any { start
  */
 fun String.isRadioQueueId(): Boolean = removePrefix("VL").startsWith("RD")
 
+/**
+ * Whether a queue playing from this id never reaches an end: any radio or mix, minus the curated
+ * `RDCLAK5uy_…` playlists, whose track list is finite.
+ *
+ * Wider than [isRadioPlaylistId], which only knows the prefixes it lists and so misses radios such
+ * as the `RDAMPL…` a playlist's Start radio plays from.
+ */
+fun String.isEndlessQueueId(): Boolean = isRadioQueueId() && !removePrefix("VL").startsWith("RDCLAK")
+
 fun String.isRadioMix(): Boolean = RADIO_MIX_ID_PREFIXES.any { startsWith(it) }
