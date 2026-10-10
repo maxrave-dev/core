@@ -1,5 +1,6 @@
 package com.maxrave.data.di
 
+import com.maxrave.common.AppIdentity
 import com.maxrave.common.Config.SERVICE_SCOPE
 import com.maxrave.data.io.fileDir
 import com.maxrave.data.repository.AccountRepositoryImpl
@@ -57,7 +58,7 @@ val repositoryModule =
 
         single<CommonRepository>(createdAtStart = true) {
             CommonRepositoryImpl(get(named(SERVICE_SCOPE)), get(), get(), get(), get(), get()).apply {
-                this.init("${fileDir()}/ytdlp-cookie.txt", get())
+                this.init("${fileDir()}/ytdlp-cookie.txt", get(), get<AppIdentity>().isDevBuild)
             }
         }
 

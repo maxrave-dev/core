@@ -1346,10 +1346,10 @@ class Ytmusic {
      * ContentNegotiation will not auto-deserialize the body. We read it as text and parse
      * it explicitly with [normalJson] (which ignores unknown keys for forward-compat).
      */
-    suspend fun getTidalRemoteConfig(): RemoteConfig {
+    suspend fun getTidalRemoteConfig(dev: Boolean = false): RemoteConfig {
         val text =
             httpClient
-                .get(TIDAL_REMOTE_CONFIG_URL) {
+                .get(if (dev) REMOTE_CONFIG_DEV_URL else TIDAL_REMOTE_CONFIG_URL) {
                     accept(ContentType.Application.Json)
                 }.bodyAsText()
         return normalJson.decodeFromString(RemoteConfig.serializer(), text)
@@ -1364,6 +1364,10 @@ class Ytmusic {
         // kept in a separate repo (simpmusic-files) so the main repo stays credential-free.
         const val TIDAL_REMOTE_CONFIG_URL =
             "https://raw.githubusercontent.com/maxrave-dev/simpmusic-files/refs/heads/main/remote-config.json"
+
+        // Read by dev builds only, so a banner can be tried out without any real user seeing it.
+        const val REMOTE_CONFIG_DEV_URL =
+            "https://raw.githubusercontent.com/maxrave-dev/simpmusic-files/refs/heads/main/remote-config-dev.json"
     }
 }
 

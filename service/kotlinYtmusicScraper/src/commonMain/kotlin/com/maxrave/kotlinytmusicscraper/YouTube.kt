@@ -2156,9 +2156,9 @@ class YouTube {
      * Fetch the remote app config (TIDAL credentials) from GitHub raw.
      * Returns a [Result] so callers can fall back silently when the fetch/parse fails.
      */
-    suspend fun getTidalRemoteConfig(): Result<RemoteConfig> =
+    suspend fun getTidalRemoteConfig(dev: Boolean = false): Result<RemoteConfig> =
         runCatching {
-            ytMusic.getTidalRemoteConfig()
+            ytMusic.getTidalRemoteConfig(dev)
         }
 
     /**

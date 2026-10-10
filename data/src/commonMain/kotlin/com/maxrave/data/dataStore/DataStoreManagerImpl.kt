@@ -188,8 +188,15 @@ internal class DataStoreManagerImpl(
         key: String,
         value: String,
     ) {
-        settingsDataStore.edit { settings ->
-            settings[stringPreferencesKey(key)] = value
+        // Off the caller's thread, like every other write here. DataStore runs an edit's transform in
+        // the caller's context, so a write asked for from the main thread needs the main thread to
+        // finish. When the player's runBlocking holds the main thread waiting on a later write, the two
+        // wait on each other for good: an ANR at launch on 2026-10-10, when the remote config's
+        // promos block was saved from the main-thread service scope as playback started.
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[stringPreferencesKey(key)] = value
+            }
         }
     }
 
