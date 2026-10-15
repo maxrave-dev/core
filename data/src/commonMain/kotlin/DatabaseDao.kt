@@ -218,12 +218,6 @@ interface DatabaseDao {
     suspend fun insertSearchHistory(searchHistory: SearchHistory): Long
 
     // Song
-    @Query("SELECT * FROM song ORDER BY inLibrary DESC LIMIT :limit OFFSET :offset")
-    suspend fun getRecentSongs(
-        limit: Int,
-        offset: Int,
-    ): List<SongEntity>
-
     @Query("SELECT * FROM song ORDER BY inLibrary DESC LIMIT :limit OFFSET 0")
     suspend fun getAllSongs(limit: Int): List<SongEntity>
 

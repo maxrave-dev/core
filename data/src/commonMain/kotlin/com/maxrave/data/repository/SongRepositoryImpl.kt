@@ -295,11 +295,6 @@ internal class SongRepositoryImpl(
         )
     }
 
-    override suspend fun getRecentSong(
-        limit: Int,
-        offset: Int,
-    ) = localDataSource.getRecentSongs(limit, offset)
-
     override suspend fun insertSongInfo(songInfo: SongInfoEntity) =
         withContext(Dispatchers.IO) {
             localDataSource.insertSongInfo(songInfo)
