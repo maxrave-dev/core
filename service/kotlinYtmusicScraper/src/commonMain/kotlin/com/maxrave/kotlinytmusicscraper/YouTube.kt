@@ -2142,6 +2142,11 @@ class YouTube {
             ytMusic.addToLiked(mediaId).status.value
         }
 
+    suspend fun addToDisliked(mediaId: String) =
+        runCatching {
+            ytMusic.addToDisliked(mediaId).status.value
+        }
+
     suspend fun removeFromLiked(mediaId: String) =
         runCatching {
             ytMusic.removeFromLiked(mediaId).status.value

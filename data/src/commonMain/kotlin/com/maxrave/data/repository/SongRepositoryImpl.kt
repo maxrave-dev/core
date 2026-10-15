@@ -20,6 +20,7 @@ import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.YouTubeLikeStatus
 import com.maxrave.domain.utils.isRadioQueueId
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.SongItem
@@ -463,16 +464,22 @@ internal class SongRepositoryImpl(
             }
         }.flowOn(Dispatchers.IO)
 
-    override suspend fun getLikeStatus(videoId: String): Flow<Boolean> =
+    override suspend fun getLikeStatus(videoId: String): Flow<YouTubeLikeStatus> =
         flow {
             runCatching {
                 youTube
                     .getLikedInfo(videoId)
                     .onSuccess {
-                        if (it == LikeStatus.LIKE) emit(true) else emit(false)
+                        emit(
+                            when (it) {
+                                LikeStatus.LIKE -> YouTubeLikeStatus.LIKE
+                                LikeStatus.DISLIKE -> YouTubeLikeStatus.DISLIKE
+                                LikeStatus.INDIFFERENT -> YouTubeLikeStatus.INDIFFERENT
+                            },
+                        )
                     }.onFailure {
                         it.printStackTrace()
-                        emit(false)
+                        emit(YouTubeLikeStatus.INDIFFERENT)
                     }
             }
         }
@@ -485,6 +492,23 @@ internal class SongRepositoryImpl(
                         .addToLiked(mediaId)
                         .onSuccess {
                             Logger.d(TAG, "Liked -> Success: $it")
+                            emit(it)
+                        }.onFailure {
+                            it.printStackTrace()
+                            emit(0)
+                        }
+                }
+            }
+        }.flowOn(Dispatchers.IO)
+
+    override suspend fun addToYouTubeDisliked(mediaId: String?): Flow<Int> =
+        flow {
+            if (mediaId != null) {
+                runCatching {
+                    youTube
+                        .addToDisliked(mediaId)
+                        .onSuccess {
+                            Logger.d(TAG, "Disliked -> Success: $it")
                             emit(it)
                         }.onFailure {
                             it.printStackTrace()

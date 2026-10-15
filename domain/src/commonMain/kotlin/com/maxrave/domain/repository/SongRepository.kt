@@ -7,6 +7,7 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.YouTubeLikeStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.datetime.LocalDateTime
 
@@ -126,9 +127,11 @@ interface SongRepository {
 
     fun getSongInfo(videoId: String): Flow<SongInfoEntity?>
 
-    suspend fun getLikeStatus(videoId: String): Flow<Boolean>
+    suspend fun getLikeStatus(videoId: String): Flow<YouTubeLikeStatus>
 
     suspend fun addToYouTubeLiked(mediaId: String?): Flow<Int>
+
+    suspend fun addToYouTubeDisliked(mediaId: String?): Flow<Int>
 
     suspend fun removeFromYouTubeLiked(mediaId: String?): Flow<Int>
 
