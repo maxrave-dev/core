@@ -13,6 +13,7 @@ actual fun getDatabaseBuilder(converters: Converters): RoomDatabase.Builder<Musi
     return Room.databaseBuilder<MusicDatabase>(
         name = dbFilePath,
     ).addTypeConverter(converters)
+        .addMigrations(Migration27_28)
 }
 
 @OptIn(ExperimentalForeignApi::class)
