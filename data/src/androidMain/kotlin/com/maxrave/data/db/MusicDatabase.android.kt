@@ -113,6 +113,7 @@ actual fun getDatabaseBuilder(converters: Converters) : RoomDatabase.Builder<Mus
                     connection.execSQL("ALTER TABLE song ADD COLUMN canvasUrl TEXT")
                 }
             },
+            Migration27_28,
         ).addCallback(
             object : RoomDatabase.Callback() {
                 override fun onOpen(connection: SQLiteConnection) {
