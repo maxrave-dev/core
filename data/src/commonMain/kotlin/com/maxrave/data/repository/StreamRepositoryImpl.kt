@@ -122,6 +122,16 @@ internal class StreamRepositoryImpl(
                     val response = data.second
                     val isLive = response.videoDetails?.isLive == true
                     LiveStreamRegistry.recordLiveStatus(videoId, isLive)
+                    // The song row follows, so the LIVE badge and the download gate know too —
+                    // including when a broadcast has ended and its recording downloads normally.
+                    localDataSource.updateSongLiveStatus(videoId, isLive)
+                    if (isLive && isDownloading) {
+                        // Nothing to save: handing an endless HLS playlist to a downloader stores
+                        // the playlist text as if it were the song. Emitting nothing fails the
+                        // download where the caller resolves its URL.
+                        Logger.i("Stream", "$videoId: live stream, refusing download")
+                        return@onSuccess
+                    }
                     if (isLive) {
                         // A live broadcast plays from its HLS playlist alone, so none of the itag
                         // choice below applies. Nothing about it goes into the format table either:

@@ -3,6 +3,7 @@ package com.maxrave.data.parser
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
+import com.maxrave.domain.utils.LIVE_RESULT_TYPE
 import com.maxrave.kotlinytmusicscraper.models.PlaylistPanelRenderer
 import com.maxrave.kotlinytmusicscraper.utils.parseTime
 
@@ -94,7 +95,7 @@ internal fun parseRelated(data: List<PlaylistPanelRenderer.Content>?): ArrayList
                     videoType = musicVideoType,
                     category = "MUSIC",
                     feedbackTokens = null,
-                    resultType = null,
+                    resultType = if (track.playlistPanelVideoRenderer?.isLive == true) LIVE_RESULT_TYPE else null,
                     year = null,
                 ),
             )

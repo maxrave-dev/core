@@ -10,6 +10,7 @@ import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
 import com.maxrave.domain.extension.now
+import com.maxrave.domain.utils.LIVE_RESULT_TYPE
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
 import com.maxrave.kotlinytmusicscraper.models.SectionListRenderer
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
@@ -329,7 +330,7 @@ internal fun parsePlaylistData(
                     videoType = renderer?.musicVideoType,
                     category = null,
                     feedbackTokens = null,
-                    resultType = null,
+                    resultType = if (renderer?.isLive == true) LIVE_RESULT_TYPE else null,
                     year = null,
                 )
             if (track.videoId != "") {

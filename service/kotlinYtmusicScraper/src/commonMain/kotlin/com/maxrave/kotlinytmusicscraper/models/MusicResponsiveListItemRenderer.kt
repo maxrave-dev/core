@@ -26,6 +26,10 @@ data class MusicResponsiveListItemRenderer(
     val overlay: Overlay?,
     val navigationEndpoint: NavigationEndpoint?,
 ) {
+    /** A broadcast on air right now, as YouTube marks it with its LIVE chip on search and playlist rows. */
+    val isLive: Boolean
+        get() = badges?.any { it.liveBadgeRenderer != null } == true
+
     val isSong: Boolean
         get() = navigationEndpoint == null || navigationEndpoint.watchEndpoint != null || navigationEndpoint.watchPlaylistEndpoint != null
 

@@ -6,6 +6,7 @@ import com.maxrave.domain.data.model.browse.artist.ResultAlbum
 import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
+import com.maxrave.domain.utils.LIVE_RESULT_TYPE
 import com.maxrave.kotlinytmusicscraper.pages.AlbumPage
 import com.maxrave.logger.Logger
 
@@ -50,7 +51,7 @@ internal fun parseAlbumData(data: AlbumPage): AlbumBrowse {
                 videoType = songItem.musicVideoType,
                 category = null,
                 feedbackTokens = null,
-                resultType = null,
+                resultType = if (songItem.isLive) LIVE_RESULT_TYPE else null,
                 year = data.album.year.toString(),
             ),
         )

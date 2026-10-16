@@ -23,6 +23,24 @@ import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
 import com.maxrave.domain.data.model.searchResult.videos.VideosResult
 import kotlin.jvm.JvmName
 
+/**
+ * `resultType` value that marks a [Track] or a [SongEntity] row as a live broadcast.
+ *
+ * The column was otherwise dead — mappers fill it with labels nothing reads, and no query filters
+ * on it — so it carries the flag without a schema change. Not `videoType`: both player handlers
+ * rewrite that from YouTube's own value on every play, and YouTube labels a live row
+ * `MUSIC_VIDEO_TYPE_UGC` like any other upload, so a marker there would not survive one play.
+ */
+const val LIVE_RESULT_TYPE = "LIVE"
+
+/** A broadcast on air, as the row it came from — or its stream — said. False also means "never said". */
+val Track.isLive: Boolean
+    get() = resultType == LIVE_RESULT_TYPE
+
+/** See [Track.isLive]. An extension rather than a member, so Room never mistakes it for a column. */
+val SongEntity.isLive: Boolean
+    get() = resultType == LIVE_RESULT_TYPE
+
 fun SearchHistory.toQuery(): String = this.query
 
 fun List<SearchHistory>.toQueryList(): ArrayList<String> {
@@ -48,7 +66,7 @@ fun ResultSong.toTrack(): Track =
         videoType = videoType,
         category = null,
         feedbackTokens = null,
-        resultType = null,
+        resultType = if (isLive) LIVE_RESULT_TYPE else null,
         year = "",
     )
 
@@ -70,7 +88,7 @@ fun ResultVideo.toTrack(): Track =
         videoType = this.videoType,
         category = null,
         feedbackTokens = null,
-        resultType = null,
+        resultType = this.resultType.takeIf { it == LIVE_RESULT_TYPE },
         year = "",
         views = this.views,
     )
@@ -149,7 +167,7 @@ fun SongEntity.toTrack(): Track {
         videoType = this.videoType,
         category = this.category,
         feedbackTokens = null,
-        resultType = null,
+        resultType = if (isLive) LIVE_RESULT_TYPE else null,
         year = "",
     )
 }
@@ -219,7 +237,7 @@ fun Content.toTrack(): Track =
         videoType = videoType,
         category = null,
         feedbackTokens = null,
-        resultType = null,
+        resultType = if (isLive) LIVE_RESULT_TYPE else null,
         year = "",
     )
 

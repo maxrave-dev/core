@@ -120,6 +120,7 @@ object SearchPage {
                             } != null,
                         thumbnails = renderer.thumbnail.musicThumbnailRenderer.thumbnail,
                         musicVideoType = renderer.musicVideoType,
+                        isLive = renderer.isLive,
                     )
                 }
 

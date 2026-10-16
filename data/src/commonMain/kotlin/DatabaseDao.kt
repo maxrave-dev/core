@@ -42,6 +42,7 @@ import com.maxrave.domain.data.entities.analytics.query.TopPlayedTracks
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.data.type.RecentlyType
 import com.maxrave.domain.extension.now
+import com.maxrave.domain.utils.LIVE_RESULT_TYPE
 import kotlinx.coroutines.flow.Flow
 import kotlinx.datetime.LocalDateTime
 
@@ -376,6 +377,15 @@ interface DatabaseDao {
         videoType: String,
         videoId: String,
     ): Int
+
+    // `resultType` doubles as the live marker (LIVE_RESULT_TYPE). insertSong is IGNORE, so a row
+    // that already exists only learns it is live through these.
+    @Query("UPDATE song SET resultType = '$LIVE_RESULT_TYPE' WHERE videoId = :videoId")
+    suspend fun markSongLive(videoId: String): Int
+
+    // Clears the marker and nothing else: a row whose resultType holds some other label keeps it.
+    @Query("UPDATE song SET resultType = NULL WHERE videoId = :videoId AND resultType = '$LIVE_RESULT_TYPE'")
+    suspend fun unmarkSongLive(videoId: String): Int
 
     @Query("SELECT * FROM song WHERE totalPlayTime > 1 ORDER BY totalPlayTime DESC LIMIT 50")
     fun getMostPlayedSongs(): Flow<List<SongEntity>>

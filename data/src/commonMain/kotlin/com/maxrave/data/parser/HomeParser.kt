@@ -238,6 +238,7 @@ internal fun parseMixedContent(
                                             durationSeconds = ytItem.duration,
                                             radio = null,
                                             videoType = ytItem.musicVideoType,
+                                            isLive = musicTwoRowItemRenderer.isLive,
                                         ),
                                     )
                                 }
@@ -525,6 +526,7 @@ internal fun parseMixedContent(
                                         videoId = ytItem.id,
                                         views = "",
                                         radio = null,
+                                        isLive = result1.musicResponsiveListItemRenderer!!.isLive,
                                     )
                                 listContent.add(content)
                             }
@@ -632,6 +634,7 @@ internal fun parseSongFlat(
             // count is now recognised by its shape rather than by "whatever the last run of
             // column 1 happens to be", which picked up the album name on rows laid out differently.
             views = if (columns.albumIndex != null) null else parseSongViews(data) ?: "",
+            isLive = data.isLive,
         )
     } else {
         return null
@@ -860,6 +863,7 @@ internal fun parseNewRelease(
                         views = videoItem.view,
                         durationSeconds = videoItem.duration,
                         radio = null,
+                        isLive = videoItem.isLive,
                     )
                 },
             moreEndpoint = explore.musicVideoMoreEndpoint?.toMoreEndpoint(),

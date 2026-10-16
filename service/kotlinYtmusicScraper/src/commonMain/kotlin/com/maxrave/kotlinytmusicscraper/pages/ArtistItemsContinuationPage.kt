@@ -71,6 +71,7 @@ data class ArtistItemsContinuationPage(
                         ?.playNavigationEndpoint
                         ?.watchEndpoint,
                 musicVideoType = renderer.musicVideoType,
+                isLive = renderer.isLive,
             )
         }
     }

@@ -25,8 +25,10 @@ import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.entities.YourYouTubePlaylistList
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.FilterState
+import com.maxrave.domain.utils.isLive
 import kotlinx.datetime.LocalDateTime
 
 /** SQLite caps bind parameters per statement; stay well under it when deleting in bulk. */
@@ -198,8 +200,21 @@ internal class LocalDataSource(
                 )
             }
         }
+        // A row stored before its LIVE chip was seen learns it here, and so does one inserted just
+        // after its stream resolved — resolution (a precache, say) cannot mark a row that does not
+        // exist yet. Only raised, never cleared: a source that shows no chip has not said the
+        // broadcast ended.
+        if ((rowId == -1L && song.isLive) || (!song.isLive && LiveStreamRegistry.isLive(song.videoId))) {
+            databaseDao.markSongLive(song.videoId)
+        }
         return rowId
     }
+
+    /** Written from stream resolution, the one source that can also say a broadcast has ended. */
+    suspend fun updateSongLiveStatus(
+        videoId: String,
+        isLive: Boolean,
+    ) = if (isLive) databaseDao.markSongLive(videoId) else databaseDao.unmarkSongLive(videoId)
 
     /**
      * Batch counterpart of [insertSong], used by the importer.

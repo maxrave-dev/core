@@ -2242,6 +2242,13 @@ class YouTube {
             trySend(DownloadProgress(0.01f))
             player(videoId = videoId)
                 .onSuccess { playerResponse ->
+                    // A live broadcast has no file to save: player() hands it back as an HLS
+                    // playlist with every format emptied, which would otherwise surface as the
+                    // misleading "Audio format url is null" below.
+                    if (playerResponse.second.videoDetails?.isLive == true) {
+                        trySend(DownloadProgress.failed("Live streams cannot be downloaded"))
+                        return@channelFlow
+                    }
                     val audioFormat =
                         listOf(
                             playerResponse.second.streamingData

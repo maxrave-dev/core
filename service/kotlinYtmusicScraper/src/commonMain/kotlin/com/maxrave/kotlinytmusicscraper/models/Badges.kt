@@ -5,7 +5,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class Badges(
     val musicInlineBadgeRenderer: MusicInlineBadgeRenderer?,
-    // The red LIVE chip under a broadcast that is on air right now (Home's "Station" shelf).
+    // The red LIVE chip on a broadcast that is on air right now: Home's live shelf, search rows and
+    // playlist rows. Queue rows (`next`) leave it off.
     val liveBadgeRenderer: LiveBadgeRenderer? = null,
 ) {
     @Serializable

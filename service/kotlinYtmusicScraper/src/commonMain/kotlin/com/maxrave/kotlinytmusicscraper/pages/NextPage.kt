@@ -97,6 +97,7 @@ object NextPage {
                     ?.watchEndpoint,
             thumbnails = renderer.thumbnail?.musicThumbnailRenderer?.thumbnail,
             musicVideoType = renderer.musicVideoType,
+            isLive = renderer.isLive,
         )
     }
 
@@ -154,6 +155,7 @@ object NextPage {
                     ?.watchEndpointMusicSupportedConfigs
                     ?.watchEndpointMusicConfig
                     ?.musicVideoType,
+            isLive = renderer.isLive,
         )
     }
 }

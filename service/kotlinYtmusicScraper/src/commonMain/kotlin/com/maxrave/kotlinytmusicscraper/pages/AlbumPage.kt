@@ -118,6 +118,7 @@ data class AlbumPage(
                             it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
                         } != null,
                     musicVideoType = renderer.musicVideoType,
+                    isLive = renderer.isLive,
                 )
             }
         }

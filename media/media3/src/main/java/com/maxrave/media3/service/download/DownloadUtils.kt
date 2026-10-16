@@ -20,11 +20,13 @@ import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.entities.DownloadState
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
+import com.maxrave.domain.utils.isLive
 import com.maxrave.logger.Logger
 import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.CoroutineScope
@@ -154,8 +156,16 @@ internal class DownloadUtils(
                 }
             }
             if (!resolved) {
-                Logger.e("Stream", "Failed to resolve download stream URL for $mediaId")
-                throw java.io.IOException("Failed to resolve stream URL for $mediaId")
+                // getStream hands a live broadcast no URL here (StreamRepositoryImpl), so say
+                // which case this is rather than a bare "failed to resolve".
+                val reason =
+                    if (LiveStreamRegistry.isLive(mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO))) {
+                        "it is a live stream"
+                    } else {
+                        "failed to resolve stream URL"
+                    }
+                Logger.e("Stream", "Cannot download $mediaId: $reason")
+                throw java.io.IOException("Cannot download $mediaId: $reason")
             }
             return@Factory dataSpecReturn
         }
@@ -200,6 +210,13 @@ internal class DownloadUtils(
         title: String,
         thumbnail: String,
     ) {
+        // Every download path ends here, so this is where a broadcast already known to be live
+        // is turned away. One not known yet is refused when its stream resolves.
+        if (songRepository.getSongById(videoId).lastOrNull()?.isLive == true) {
+            Logger.i("Download", "$videoId is a live stream, not downloading")
+            songRepository.updateDownloadState(videoId, DownloadState.STATE_NOT_DOWNLOADED)
+            return
+        }
         var isVideo = false
         if (dataStoreManager.watchVideoInsteadOfPlayingAudio.first() == DataStoreManager.Values.TRUE) {
             val request =
