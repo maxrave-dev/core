@@ -35,6 +35,7 @@ import com.maxrave.domain.data.entities.analytics.EventArtistEntity
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
 import com.maxrave.domain.data.entities.analytics.query.DecadeCount
 import com.maxrave.domain.data.entities.analytics.query.PlaybackSample
+import com.maxrave.domain.data.entities.analytics.query.SongPlaySample
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedAlbum
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtist
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtistTime
@@ -416,6 +417,42 @@ interface DatabaseDao {
         videoId: String,
         downloadedAt: LocalDateTime? = if (downloadState == 3) now() else null,
     )
+
+    /** Songs holding [category], oldest download first. One still downloading has no date yet and sorts last. */
+    @Query("SELECT * FROM song WHERE category = :category ORDER BY downloadedAt IS NULL, downloadedAt")
+    suspend fun getSongsByCategory(category: String): List<SongEntity>
+
+    /** Returns how many rows changed, so a caller can tell the song row is gone. */
+    @Query("UPDATE song SET category = :category WHERE videoId = :videoId")
+    suspend fun updateSongCategory(
+        category: String?,
+        videoId: String,
+    ): Int
+
+    /** Drops [category] from songs that are no longer downloaded: removed by hand, or failed. */
+    @Query("UPDATE song SET category = NULL WHERE category = :category AND downloadState = 0")
+    suspend fun clearCategoryFromNotDownloaded(category: String): Int
+
+    /**
+     * Drops [category] from songs the user now keeps: liked while liked songs are auto-downloaded
+     * ([includeLiked]), or part of a downloaded local playlist, album or playlist. Album and playlist
+     * tracks are JSON lists, matched as quoted tokens with the same `replace()` + ESCAPE '\' treatment
+     * as [getLikedSongsByArtist], because video ids contain `_`.
+     */
+    @Query(
+        "UPDATE song SET category = NULL WHERE category = :category AND (" +
+            "(:includeLiked AND liked = 1)" +
+            " OR EXISTS (SELECT 1 FROM pair_song_local_playlist p JOIN local_playlist l ON l.id = p.playlistId" +
+            " WHERE p.songId = song.videoId AND l.downloadState = 3)" +
+            " OR EXISTS (SELECT 1 FROM album a WHERE a.downloadState = 3 AND a.tracks LIKE " +
+            "'%\"' || replace(replace(replace(song.videoId, '\\', '\\\\'), '_', '\\_'), '%', '\\%') || '\"%' ESCAPE '\\')" +
+            " OR EXISTS (SELECT 1 FROM playlist pl WHERE pl.downloadState = 3 AND pl.tracks LIKE " +
+            "'%\"' || replace(replace(replace(song.videoId, '\\', '\\\\'), '_', '\\_'), '%', '\\%') || '\"%' ESCAPE '\\'))",
+    )
+    suspend fun clearCategoryFromClaimed(
+        category: String,
+        includeLiked: Boolean,
+    ): Int
 
     @Query("UPDATE song SET durationSeconds = :durationSeconds WHERE videoId = :videoId")
     suspend fun updateDurationSeconds(
@@ -1482,6 +1519,10 @@ interface DatabaseDao {
         startTimestamp: LocalDateTime,
         endTimestamp: LocalDateTime,
     ): List<PlaybackSample>
+
+    /** Every play since [from], for the Smart downloads score. */
+    @Query("SELECT videoId, timestamp, durationSecond, listenedSecond FROM playback_event WHERE timestamp >= :from")
+    suspend fun getSongPlaysSince(from: LocalDateTime): List<SongPlaySample>
 
     @Query(
         "SELECT COUNT(DISTINCT videoId) FROM playback_event" +

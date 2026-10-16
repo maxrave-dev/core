@@ -465,6 +465,25 @@ interface DataStoreManager {
 
     suspend fun setAutoDownloadLikedSongs(enabled: Boolean)
 
+    /**
+     * Smart downloads (Android only) keep the songs played most, scored from local tracking,
+     * downloaded, and refresh them at most once a day when the app opens on an unmetered network.
+     * Off by default, for the same reason as [autoDownloadLikedSongs].
+     */
+    val smartDownloadsEnabled: Flow<String>
+
+    suspend fun setSmartDownloadsEnabled(enabled: Boolean)
+
+    /** How many songs Smart downloads keep: 25, 50 or 100. */
+    val smartDownloadsCount: Flow<Int>
+
+    suspend fun setSmartDownloadsCount(count: Int)
+
+    /** When Smart downloads last ran, in epoch milliseconds. 0 lets the next app open run them at once. */
+    val smartDownloadsLastRun: Flow<Long>
+
+    suspend fun setSmartDownloadsLastRun(time: Long)
+
     val youtubeSubtitleLanguage: Flow<String>
 
     suspend fun setYoutubeSubtitleLanguage(language: String)

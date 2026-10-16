@@ -19,6 +19,17 @@ data class PlaybackSample(
 )
 
 /**
+ * One play as Smart downloads score it: which song, when, and how much of it was heard.
+ * [timestamp] is a `LocalDateTime` for the same reason as in [PlaybackSample].
+ */
+data class SongPlaySample(
+    @ColumnInfo(name = "videoId") val videoId: String,
+    @ColumnInfo(name = "timestamp") val timestamp: LocalDateTime,
+    @ColumnInfo(name = "durationSecond") val durationSecond: Long,
+    @ColumnInfo(name = "listenedSecond") val listenedSecond: Long,
+)
+
+/**
  * Plays whose album carries a release year, bucketed by decade.
  *
  * Only plays that have an `albumBrowseId` AND an album row with a parseable year can be counted —

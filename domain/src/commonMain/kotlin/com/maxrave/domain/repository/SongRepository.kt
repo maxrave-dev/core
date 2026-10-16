@@ -44,6 +44,19 @@ interface SongRepository {
     suspend fun downloadAllLikedSongs(): Int
 
     /**
+     * One Smart downloads pass. Keeps the [count] songs scored highest from the last 30 days of
+     * local tracking downloaded, marking each with [SongEntity.SMART_DOWNLOAD], and removes the
+     * oldest marked songs once more than [count] are kept. Songs the user downloaded themselves carry
+     * no mark and are never touched.
+     *
+     * @return how many songs were newly queued for download.
+     */
+    suspend fun runSmartDownloads(count: Int): Int
+
+    /** Smart downloads switched off: removes every marked song, except the ones the user now keeps. */
+    suspend fun clearSmartDownloads()
+
+    /**
      * Erase the local listening history and drop every song row nothing refers to any more.
      *
      * A song is kept when its id appears anywhere else at all: in an album, a YouTube playlist, a

@@ -11,8 +11,13 @@ import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.media3.exoplayer.scheduler.PlatformScheduler
 import androidx.media3.exoplayer.scheduler.Scheduler
+import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.media3.R
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
 
 @UnstableApi
@@ -51,12 +56,24 @@ internal class MusicDownloadService :
         private val context: Context,
         private val notificationHelper: DownloadNotificationHelper,
         private var nextNotificationId: Int,
+        private val scope: CoroutineScope,
+        private val isSmartDownload: suspend (videoId: String) -> Boolean,
     ) : DownloadManager.Listener {
         override fun onDownloadChanged(
             downloadManager: DownloadManager,
             download: Download,
             finalException: Exception?,
         ) {
+            if (download.state != Download.STATE_FAILED && download.state != Download.STATE_COMPLETED) return
+            scope.launch {
+                // Smart downloads fetch dozens of songs on their own, and a notification for each would
+                // flood the shade. The service's progress notification still shows while they run.
+                if (isSmartDownload(download.request.id.removePrefix(MERGING_DATA_TYPE.VIDEO))) return@launch
+                withContext(Dispatchers.Main) { postTerminalNotification(download) }
+            }
+        }
+
+        private fun postTerminalNotification(download: Download) {
             if (download.state == Download.STATE_FAILED) {
                 val notification =
                     notificationHelper.buildDownloadFailedNotification(

@@ -10,9 +10,11 @@ import com.maxrave.domain.data.entities.QueueEntity
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
+import com.maxrave.domain.data.entities.analytics.query.SongPlaySample
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
+import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
@@ -21,6 +23,7 @@ import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.YouTubeLikeStatus
+import com.maxrave.domain.utils.isLive
 import com.maxrave.domain.utils.isRadioQueueId
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.SongItem
@@ -39,8 +42,13 @@ import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.minus
+import kotlinx.datetime.toInstant
 import org.koin.mp.KoinPlatform.getKoin
+import kotlin.math.pow
 
 private const val TAG = "SongRepositoryImpl"
 
@@ -120,6 +128,66 @@ internal class SongRepositoryImpl(
             }
             pending.size
         }
+
+    override suspend fun runSmartDownloads(count: Int): Int =
+        withContext(Dispatchers.IO) {
+            val mark = SongEntity.SMART_DOWNLOAD
+            // Marks on songs that are no longer downloaded, or that the user now keeps, come off
+            // first, so neither counts toward the limit nor gets removed below.
+            localDataSource.clearCategoryFromNotDownloaded(mark)
+            localDataSource.clearCategoryFromClaimed(mark, includeLiked = dataStoreManager.autoDownloadLikedSongs.first() == TRUE)
+
+            val nowTime = now()
+            val since = LocalDateTime(nowTime.date.minus(SMART_DOWNLOADS_WINDOW_DAYS, DateTimeUnit.DAY), nowTime.time)
+            val top = mutableListOf<SongEntity>()
+            for (videoId in rankBySmartDownloadScore(localDataSource.getSongPlaysSince(since), nowTime)) {
+                if (top.size >= count) break
+                val song = localDataSource.getSong(videoId) ?: continue
+                // Only what YouTube confirms is a song: videos, podcasts, live streams and rows of
+                // unknown type stay out.
+                if (!MusicVideoType.isAudio(song.videoType) || song.isLive) continue
+                // Downloaded or downloading without the mark: the user downloaded it themselves.
+                if (song.downloadState != DownloadState.STATE_NOT_DOWNLOADED && song.category != mark) continue
+                top += song
+            }
+
+            var queued = 0
+            top.filter { it.downloadState == DownloadState.STATE_NOT_DOWNLOADED }.forEach { song ->
+                // No row updated means the song was deleted meanwhile, and its file would belong to no row.
+                if (localDataSource.updateSongCategory(song.videoId, mark) > 0) {
+                    downloadHandler.downloadTrack(song.videoId, song.title, song.thumbnails.orEmpty())
+                    queued++
+                }
+            }
+
+            // FIFO: the oldest marked download goes first, but never one still in today's top.
+            val keep = top.mapTo(HashSet()) { it.videoId }
+            val marked = localDataSource.getSongsByCategory(mark)
+            var removed = 0
+            for (song in marked) {
+                if (marked.size - removed <= count) break
+                if (song.videoId in keep) continue
+                localDataSource.updateSongCategory(song.videoId, null)
+                downloadHandler.removeDownload(song.videoId)
+                removed++
+            }
+            Logger.i(TAG, "Smart downloads: ${top.size} kept, $queued queued, $removed removed")
+            queued
+        }
+
+    override suspend fun clearSmartDownloads() {
+        withContext(Dispatchers.IO) {
+            val mark = SongEntity.SMART_DOWNLOAD
+            // Songs the user now keeps only lose the mark; every other marked song is removed.
+            localDataSource.clearCategoryFromClaimed(mark, includeLiked = dataStoreManager.autoDownloadLikedSongs.first() == TRUE)
+            val marked = localDataSource.getSongsByCategory(mark)
+            marked.forEach { song ->
+                localDataSource.updateSongCategory(song.videoId, null)
+                downloadHandler.removeDownload(song.videoId)
+            }
+            Logger.i(TAG, "Smart downloads off: ${marked.size} removed")
+        }
+    }
 
     /**
      * The order below is the whole feature.
@@ -599,4 +667,37 @@ internal class SongRepositoryImpl(
                     }
             }
         }
+}
+
+private const val SMART_DOWNLOADS_WINDOW_DAYS = 30
+private const val SMART_DOWNLOADS_HALF_LIFE_DAYS = 14.0
+private const val MILLIS_PER_DAY = 86_400_000.0
+
+/**
+ * The songs in [plays], best Smart downloads score first. Each play adds how much of the song was
+ * heard (0..1; a song with no stored length counts as heard in full) times how recent it is, halving
+ * every 14 days: a song played through this week outranks one played more often a month ago, and a
+ * play skipped at a quarter counts a quarter. Ties go to the song played most recently.
+ *
+ * Both sides are encoded the way `Converters` stores timestamps (the local wall clock read as UTC),
+ * so their difference is the real age whatever the device's time zone.
+ */
+private fun rankBySmartDownloadScore(
+    plays: List<SongPlaySample>,
+    now: LocalDateTime,
+): List<String> {
+    val nowMillis = now.toInstant(TimeZone.UTC).toEpochMilliseconds()
+    val scores = HashMap<String, Double>()
+    val lastPlayed = HashMap<String, Long>()
+    for (play in plays) {
+        val playedMillis = play.timestamp.toInstant(TimeZone.UTC).toEpochMilliseconds()
+        val heard =
+            if (play.durationSecond > 0) (play.listenedSecond.toDouble() / play.durationSecond).coerceIn(0.0, 1.0) else 1.0
+        val ageDays = ((nowMillis - playedMillis) / MILLIS_PER_DAY).coerceAtLeast(0.0)
+        scores[play.videoId] = (scores[play.videoId] ?: 0.0) + heard * 0.5.pow(ageDays / SMART_DOWNLOADS_HALF_LIFE_DAYS)
+        lastPlayed[play.videoId] = maxOf(lastPlayed[play.videoId] ?: playedMillis, playedMillis)
+    }
+    return scores.keys.sortedWith(
+        compareByDescending<String> { scores.getValue(it) }.thenByDescending { lastPlayed.getValue(it) },
+    )
 }

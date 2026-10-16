@@ -20,6 +20,7 @@ import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.entities.DownloadState
+import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
@@ -189,6 +190,10 @@ internal class DownloadUtils(
                     context = context,
                     notificationHelper = downloadNotificationHelper,
                     nextNotificationId = MusicDownloadService.NOTIFICATION_ID + 1,
+                    scope = coroutineScope,
+                    isSmartDownload = { videoId ->
+                        songRepository.getSongById(videoId).lastOrNull()?.category == SongEntity.SMART_DOWNLOAD
+                    },
                 ),
             )
         }
