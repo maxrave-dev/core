@@ -3,7 +3,11 @@ package com.maxrave.media3.repository
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.cache.SimpleCache
 import com.maxrave.common.Config
+import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.repository.CacheRepository
+import com.maxrave.media3.extension.isFullyCached
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @UnstableApi
 internal class CacheRepositoryImpl(
@@ -58,5 +62,20 @@ internal class CacheRepositoryImpl(
                 canvasCache.keys.toList()
             }
             else -> emptyList()
+        }
+
+    // SimpleCache is synchronized, and a write in progress holds its lock, so these stay off the
+    // caller's thread. The video stream of a song is cached under its own prefixed key.
+    override suspend fun getFullyCachedSongIds(): List<String> =
+        withContext(Dispatchers.IO) {
+            playerCache.keys.filter { key ->
+                !key.startsWith(MERGING_DATA_TYPE.VIDEO) && playerCache.isFullyCached(key, 0L)
+            }
+        }
+
+    override suspend fun removeCachedSong(videoId: String) =
+        withContext(Dispatchers.IO) {
+            playerCache.removeResource(videoId)
+            playerCache.removeResource(MERGING_DATA_TYPE.VIDEO + videoId)
         }
 }

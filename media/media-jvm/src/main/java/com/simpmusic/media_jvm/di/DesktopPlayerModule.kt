@@ -49,6 +49,11 @@ private val desktopPlayerModule =
                 override fun clearCache(cacheName: String) {}
 
                 override suspend fun getAllCacheKeys(cacheName: String): List<String> = emptyList()
+
+                // mpv streams straight from the network; Desktop keeps no song cache on disk.
+                override suspend fun getFullyCachedSongIds(): List<String> = emptyList()
+
+                override suspend fun removeCachedSong(videoId: String) {}
             }
         }
         single<DesktopNotificationManager> {
