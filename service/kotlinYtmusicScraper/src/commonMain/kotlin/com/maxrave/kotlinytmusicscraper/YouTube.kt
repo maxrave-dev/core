@@ -135,13 +135,6 @@ import kotlin.time.Instant
 private const val TAG = "YouTubeScraper"
 
 /**
- * How far the audio rendition's length may differ from the refused track's before it is rejected,
- * in seconds. A matching title already narrows it to the same recording; this is what keeps a live
- * take or a radio edit from being silently swapped in for the studio cut.
- */
-private const val AUDIO_FALLBACK_MAX_DURATION_DELTA_SECONDS = 15
-
-/**
  * Special thanks to [z-huang/InnerTune](https://github.com/z-huang/InnerTune)
  * This library is from [z-huang/InnerTune] and I just modified it to comply with SimpMusic
  *
@@ -1690,9 +1683,11 @@ class YouTube {
      *
      * The refused response still names the recording in `videoDetails`, so the audio rendition is
      * looked up by title and artist and extracted in its place. Only a candidate YouTube itself typed
-     * as the audio version ([MusicVideoType.isAudio]) whose title and artist match — and, when both
-     * lengths are known, a close duration — is accepted, so a live take, a remix or a karaoke cover
-     * is never swapped in.
+     * as the audio version ([MusicVideoType.isAudio]) whose title and artist match is considered;
+     * among those the plain upload is preferred and the closest length breaks the tie, so a live
+     * take, a remix or a karaoke cover is never swapped in. Length is a preference rather than a
+     * gate on purpose: a music video runs well past the audio upload (5:38 against 4:32 for Mind
+     * Mischief), and requiring the two to agree would refuse the very track this exists to rescue.
      *
      * Returns null when nothing fits; the caller then fails exactly as it did before.
      */
@@ -1725,13 +1720,18 @@ class YouTube {
                                 (name == wantedArtist || name.contains(wantedArtist) || wantedArtist.contains(name))
                         }
                 }
-                .filter {
-                    originalDuration == null || it.duration == null ||
-                        abs(it.duration - originalDuration) <= AUDIO_FALLBACK_MAX_DURATION_DELTA_SECONDS
-                }
-                .minByOrNull { song ->
-                    originalDuration?.let { length -> song.duration?.let { abs(it - length) } ?: Int.MAX_VALUE } ?: 0
-                } ?: return null
+                .minWithOrNull(
+                    compareBy<SongItem>(
+                        // Prefer the plain upload ("Mind Mischief") over a bracketed variant
+                        // ("Mind Mischief (Live)"), which normalises to the same title.
+                        { if (normalizeTrackTitle(it.title, stripParentheses = false) == wantedTitle) 0 else 1 },
+                        {
+                            originalDuration
+                                ?.let { length -> it.duration?.let { duration -> abs(duration - length) } ?: Int.MAX_VALUE }
+                                ?: 0
+                        },
+                    ),
+                ) ?: return null
         Logger.i(TAG, "YouTube Player refused $originalVideoId; trying audio rendition ${match.id}")
         val fallbackTempRes =
             ytMusic
@@ -1745,10 +1745,17 @@ class YouTube {
         return newPipePlayer(match.id, fallbackTempRes, preferredAudioLanguage)
     }
 
-    /** Case- and parenthetical-insensitive title, so "(Official Video)" and "(Audio)" still match. */
-    private fun normalizeTrackTitle(raw: String): String =
+    /**
+     * Case- and parenthetical-insensitive title, so "(Official Video)" and "(Audio)" still match.
+     * With [stripParentheses] off the brackets are kept, which is how a plain upload is told apart
+     * from a variant that differs only inside them.
+     */
+    private fun normalizeTrackTitle(
+        raw: String,
+        stripParentheses: Boolean = true,
+    ): String =
         raw
-            .replace(Regex("\\([^)]*\\)|\\[[^\\]]*\\]"), " ")
+            .let { if (stripParentheses) it.replace(Regex("\\([^)]*\\)|\\[[^\\]]*\\]"), " ") else it }
             .replace(Regex("\\s+"), " ")
             .trim()
             .lowercase()
