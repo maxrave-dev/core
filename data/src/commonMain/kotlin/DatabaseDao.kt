@@ -824,6 +824,17 @@ interface DatabaseDao {
     @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertPairSongLocalPlaylist(pairSongLocalPlaylist: PairSongLocalPlaylist)
 
+    /**
+     * The position a new entry should take: one past the highest in use.
+     *
+     * Deliberately not `tracks.size`. `tracks` only ever holds videoIds, so an album entry — which
+     * has no videoId and is not written there — would leave `tracks.size` unchanged and the next
+     * song would be appended on top of the album's position. Reading the table also keeps positions
+     * unique when a platform's delete path leaves gaps.
+     */
+    @Query("SELECT COALESCE(MAX(position) + 1, 0) FROM pair_song_local_playlist WHERE playlistId = :playlistId")
+    suspend fun getNextPositionOfLocalPlaylist(playlistId: Long): Int
+
     @Query("SELECT * FROM pair_song_local_playlist WHERE songId = :videoId AND playlistId = :localPlaylistId LIMIT 1")
     suspend fun getPlaylistPairOfSong(
         videoId: String,
@@ -912,6 +923,18 @@ interface DatabaseDao {
         newPosition: Int,
     )
 
+    /**
+     * Places an entry by its own id, so it works for an album row too — a song-only update by
+     * `songId` would never match an album's NULL and its move would silently do nothing.
+     */
+    @Query(
+        "UPDATE pair_song_local_playlist SET position = :newPosition WHERE id = :id",
+    )
+    suspend fun editPositionOfPairById(
+        id: Int,
+        newPosition: Int,
+    )
+
     @Query(
         "SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId ORDER BY position ASC",
     )
@@ -961,7 +984,7 @@ interface DatabaseDao {
         } else {
             shiftPositionsForward(playlistId, target, moved.position)
         }
-        editPositionOfSongInPlaylist(playlistId, moved.songId, target)
+        editPositionOfPairById(moved.id, target)
         return true
     }
 
@@ -991,6 +1014,15 @@ interface DatabaseDao {
         playlistId: Long,
         videoId: String,
     )
+
+    /**
+     * Removes an entry by its own id. An album entry has no `songId`, so the delete above can never
+     * match it — this is the one that works whatever the row is.
+     */
+    @Query(
+        "DELETE FROM pair_song_local_playlist WHERE id = :id",
+    )
+    suspend fun deletePairSongLocalPlaylistById(id: Int)
 
     // GoogleAccountEntity
     @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)

@@ -6,8 +6,41 @@ import com.maxrave.data.db.Converters
 import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.domain.data.entities.PairSongLocalPlaylist
 import com.maxrave.domain.data.entities.SongEntity
+import com.maxrave.domain.data.entities.isAlbumItem
 import com.maxrave.domain.utils.FilterState
 import com.maxrave.logger.Logger
+
+/** Prefix of the synthetic [SongEntity.videoId] used to render an album entry as a list row. */
+internal const val ALBUM_ITEM_VIDEO_ID_PREFIX = "album:"
+
+/**
+ * An album entry has no song, so it is given a synthetic one carrying only what its row draws.
+ * The pair beside it is the source of truth — callers tell an album from a song with
+ * [isAlbumItem], never by looking at this placeholder.
+ */
+private fun synthesizedAlbumSong(pair: PairSongLocalPlaylist): SongEntity =
+    SongEntity(
+        videoId = ALBUM_ITEM_VIDEO_ID_PREFIX + (pair.albumBrowseId ?: pair.id.toString()),
+        albumId = pair.albumBrowseId,
+        albumName = pair.title,
+        title = pair.title ?: "",
+        thumbnails = pair.thumbnail,
+        duration = "",
+        durationSeconds = 0,
+        isAvailable = true,
+        isExplicit = false,
+        likeStatus = "",
+        videoType = "",
+        category = null,
+        resultType = null,
+    )
+
+private fun PairSongLocalPlaylist.toPagingItem(songsById: Map<String, SongEntity>): Pair<SongEntity, PairSongLocalPlaylist>? =
+    when {
+        isAlbumItem -> synthesizedAlbumSong(this) to this
+        songId != null -> songsById[songId]?.let { it to this }
+        else -> null
+    }
 
 internal class LocalPlaylistPagingSource(
     private val playlistId: Long,
@@ -29,20 +62,15 @@ internal class LocalPlaylistPagingSource(
             val songs =
                 localDataSource
                     .getSongByListVideoIdFull(
-                        pairs?.map { it.songId } ?: emptyList(),
+                        pairs?.mapNotNull { it.songId } ?: emptyList(),
                     )
             val idValue = songs.associateBy { it.videoId }
-            val sorted =
-                (pairs ?: mutableListOf<PairSongLocalPlaylist>()).mapNotNull {
-                    idValue[it.songId]?.let { songEntity ->
-                        Pair(songEntity, it)
-                    }
-                }
+            val sorted = (pairs ?: emptyList()).mapNotNull { it.toPagingItem(idValue) }
             Logger.d("LocalPlaylistPagingSource", "load: $songs")
             return LoadResult.Page(
                 data = sorted,
                 prevKey = if (currentPage == 0) null else currentPage - 1,
-                nextKey = if (songs.isEmpty()) null else currentPage + 1,
+                nextKey = if (pairs.isNullOrEmpty()) null else currentPage + 1,
             )
         } catch (e: Exception) {
             Logger.e("LocalPlaylistPagingSource", "load: ${e.printStackTrace()}")
@@ -97,15 +125,10 @@ internal class LocalPlaylistTimeBasedPagingSource(
             val songs =
                 localDataSource
                     .getSongByListVideoIdFull(
-                        pairs?.map { it.songId } ?: emptyList(),
+                        pairs?.mapNotNull { it.songId } ?: emptyList(),
                     )
             val idValue = songs.associateBy { it.videoId }
-            val sorted =
-                (pairs ?: mutableListOf<PairSongLocalPlaylist>()).mapNotNull {
-                    idValue[it.songId]?.let { songEntity ->
-                        Pair(songEntity, it)
-                    }
-                }
+            val sorted = (pairs ?: emptyList()).mapNotNull { it.toPagingItem(idValue) }
             Logger.d("LocalPlaylistPagingSource", "load: $songs")
             val nextKey =
                 pairs?.lastOrNull()?.inPlaylist.let {
@@ -115,7 +138,7 @@ internal class LocalPlaylistTimeBasedPagingSource(
                 data = sorted,
                 prevKey = null,
                 nextKey =
-                    if (songs.isEmpty()) {
+                    if (pairs.isNullOrEmpty()) {
                         null
                     } else if (nextKey == currentPage) {
                         null
