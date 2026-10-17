@@ -24,7 +24,6 @@ internal class AccountRepositoryImpl(
 
     override fun getAccountInfo(cookie: String): Flow<List<AccountInfo>> =
         flow {
-            youTube.cookie = cookie
             delay(1000)
             youTube
                 .getAccountListWithPageId(cookie)
