@@ -14,6 +14,8 @@ import androidx.media3.exoplayer.scheduler.Scheduler
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.media3.R
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
+import com.maxrave.logger.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -68,7 +70,17 @@ internal class MusicDownloadService :
             scope.launch {
                 // Smart downloads fetch dozens of songs on their own, and a notification for each would
                 // flood the shade. The service's progress notification still shows while they run.
-                if (isSmartDownload(download.request.id.removePrefix(MERGING_DATA_TYPE.VIDEO))) return@launch
+                val isSmart =
+                    try {
+                        isSmartDownload(download.request.id.removePrefix(MERGING_DATA_TYPE.VIDEO))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // A database error must not take the app down over a notification.
+                        Logger.e("Download", "Smart download check failed for ${download.request.id}", e)
+                        false
+                    }
+                if (isSmart) return@launch
                 withContext(Dispatchers.Main) { postTerminalNotification(download) }
             }
         }

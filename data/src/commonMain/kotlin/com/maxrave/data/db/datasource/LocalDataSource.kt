@@ -171,10 +171,7 @@ internal class LocalDataSource(
 
     suspend fun clearCategoryFromNotDownloaded(category: String) = databaseDao.clearCategoryFromNotDownloaded(category)
 
-    suspend fun clearCategoryFromClaimed(
-        category: String,
-        includeLiked: Boolean,
-    ) = databaseDao.clearCategoryFromClaimed(category, includeLiked)
+    suspend fun clearCategoryFromLiked(category: String) = databaseDao.clearCategoryFromLiked(category)
 
     fun getSongAsFlow(videoId: String) = databaseDao.getSongAsFlow(videoId)
 

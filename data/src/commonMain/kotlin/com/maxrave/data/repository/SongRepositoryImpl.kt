@@ -32,6 +32,7 @@ import com.maxrave.kotlinytmusicscraper.models.response.LikeStatus
 import com.maxrave.kotlinytmusicscraper.pages.NextPage
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistContinuation
 import com.maxrave.logger.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
@@ -132,60 +133,79 @@ internal class SongRepositoryImpl(
     override suspend fun runSmartDownloads(count: Int): Int =
         withContext(Dispatchers.IO) {
             val mark = SongEntity.SMART_DOWNLOAD
-            // Marks on songs that are no longer downloaded, or that the user now keeps, come off
-            // first, so neither counts toward the limit nor gets removed below.
-            localDataSource.clearCategoryFromNotDownloaded(mark)
-            localDataSource.clearCategoryFromClaimed(mark, includeLiked = dataStoreManager.autoDownloadLikedSongs.first() == TRUE)
-
-            val nowTime = now()
-            val since = LocalDateTime(nowTime.date.minus(SMART_DOWNLOADS_WINDOW_DAYS, DateTimeUnit.DAY), nowTime.time)
-            val top = mutableListOf<SongEntity>()
-            for (videoId in rankBySmartDownloadScore(localDataSource.getSongPlaysSince(since), nowTime)) {
-                if (top.size >= count) break
-                val song = localDataSource.getSong(videoId) ?: continue
-                // Only what YouTube confirms is a song: videos, podcasts, live streams and rows of
-                // unknown type stay out.
-                if (!MusicVideoType.isAudio(song.videoType) || song.isLive) continue
-                // Downloaded or downloading without the mark: the user downloaded it themselves.
-                if (song.downloadState != DownloadState.STATE_NOT_DOWNLOADED && song.category != mark) continue
-                top += song
-            }
-
             var queued = 0
-            top.filter { it.downloadState == DownloadState.STATE_NOT_DOWNLOADED }.forEach { song ->
-                // No row updated means the song was deleted meanwhile, and its file would belong to no row.
-                if (localDataSource.updateSongCategory(song.videoId, mark) > 0) {
-                    downloadHandler.downloadTrack(song.videoId, song.title, song.thumbnails.orEmpty())
-                    queued++
-                }
-            }
+            try {
+                // Marks on songs that are no longer downloaded, or that the user now keeps (liked while
+                // liked songs are auto-downloaded), come off first, so neither counts toward the limit
+                // nor gets removed below. Album and playlist download states are not asked: opening an
+                // album whose tracks are all downloaded marks it downloaded, which would claim songs
+                // the user never claimed.
+                localDataSource.clearCategoryFromNotDownloaded(mark)
+                if (dataStoreManager.autoDownloadLikedSongs.first() == TRUE) localDataSource.clearCategoryFromLiked(mark)
 
-            // FIFO: the oldest marked download goes first, but never one still in today's top.
-            val keep = top.mapTo(HashSet()) { it.videoId }
-            val marked = localDataSource.getSongsByCategory(mark)
-            var removed = 0
-            for (song in marked) {
-                if (marked.size - removed <= count) break
-                if (song.videoId in keep) continue
-                localDataSource.updateSongCategory(song.videoId, null)
-                downloadHandler.removeDownload(song.videoId)
-                removed++
+                val nowTime = now()
+                val since = LocalDateTime(nowTime.date.minus(SMART_DOWNLOADS_WINDOW_DAYS, DateTimeUnit.DAY), nowTime.time)
+                val top = mutableListOf<SongEntity>()
+                for (videoId in rankBySmartDownloadScore(localDataSource.getSongPlaysSince(since), nowTime)) {
+                    if (top.size >= count) break
+                    val song = localDataSource.getSong(videoId) ?: continue
+                    // Only what YouTube confirms is a song: videos, podcasts, live streams and rows of
+                    // unknown type stay out.
+                    if (!MusicVideoType.isAudio(song.videoType) || song.isLive) continue
+                    // Downloaded or downloading without the mark: the user downloaded it themselves.
+                    if (song.downloadState != DownloadState.STATE_NOT_DOWNLOADED && song.category != mark) continue
+                    top += song
+                }
+
+                top.filter { it.downloadState == DownloadState.STATE_NOT_DOWNLOADED }.forEach { song ->
+                    // No row updated means the song was deleted meanwhile, and its file would belong to no row.
+                    if (localDataSource.updateSongCategory(song.videoId, mark) > 0) {
+                        downloadHandler.downloadTrack(song.videoId, song.title, song.thumbnails.orEmpty())
+                        queued++
+                    }
+                }
+
+                // FIFO: the oldest marked download goes first, but never one still in today's top.
+                val keep = top.mapTo(HashSet()) { it.videoId }
+                val marked = localDataSource.getSongsByCategory(mark)
+                var removed = 0
+                for (song in marked) {
+                    if (marked.size - removed <= count) break
+                    if (song.videoId in keep) continue
+                    // File first, mark second: if the process dies in between, the next pass finds the
+                    // mark on a song that is no longer downloaded and clears it.
+                    downloadHandler.removeDownload(song.videoId)
+                    localDataSource.updateSongCategory(song.videoId, null)
+                    removed++
+                }
+                Logger.i(TAG, "Smart downloads: ${top.size} kept, $queued queued, $removed removed")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A service start refused because the app went to the background, or a database error,
+                // ends the pass here instead of crashing the app; the rest waits for the next pass.
+                Logger.e(TAG, "Smart downloads stopped after $queued queued", e)
             }
-            Logger.i(TAG, "Smart downloads: ${top.size} kept, $queued queued, $removed removed")
             queued
         }
 
     override suspend fun clearSmartDownloads() {
         withContext(Dispatchers.IO) {
             val mark = SongEntity.SMART_DOWNLOAD
-            // Songs the user now keeps only lose the mark; every other marked song is removed.
-            localDataSource.clearCategoryFromClaimed(mark, includeLiked = dataStoreManager.autoDownloadLikedSongs.first() == TRUE)
-            val marked = localDataSource.getSongsByCategory(mark)
-            marked.forEach { song ->
-                localDataSource.updateSongCategory(song.videoId, null)
-                downloadHandler.removeDownload(song.videoId)
+            try {
+                // Songs the user now keeps only lose the mark; every other marked song is removed.
+                if (dataStoreManager.autoDownloadLikedSongs.first() == TRUE) localDataSource.clearCategoryFromLiked(mark)
+                val marked = localDataSource.getSongsByCategory(mark)
+                marked.forEach { song ->
+                    downloadHandler.removeDownload(song.videoId)
+                    localDataSource.updateSongCategory(song.videoId, null)
+                }
+                Logger.i(TAG, "Smart downloads off: ${marked.size} removed")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logger.e(TAG, "Smart downloads clear stopped", e)
             }
-            Logger.i(TAG, "Smart downloads off: ${marked.size} removed")
         }
     }
 

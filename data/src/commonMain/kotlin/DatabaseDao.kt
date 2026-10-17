@@ -433,26 +433,9 @@ interface DatabaseDao {
     @Query("UPDATE song SET category = NULL WHERE category = :category AND downloadState = 0")
     suspend fun clearCategoryFromNotDownloaded(category: String): Int
 
-    /**
-     * Drops [category] from songs the user now keeps: liked while liked songs are auto-downloaded
-     * ([includeLiked]), or part of a downloaded local playlist, album or playlist. Album and playlist
-     * tracks are JSON lists, matched as quoted tokens with the same `replace()` + ESCAPE '\' treatment
-     * as [getLikedSongsByArtist], because video ids contain `_`.
-     */
-    @Query(
-        "UPDATE song SET category = NULL WHERE category = :category AND (" +
-            "(:includeLiked AND liked = 1)" +
-            " OR EXISTS (SELECT 1 FROM pair_song_local_playlist p JOIN local_playlist l ON l.id = p.playlistId" +
-            " WHERE p.songId = song.videoId AND l.downloadState = 3)" +
-            " OR EXISTS (SELECT 1 FROM album a WHERE a.downloadState = 3 AND a.tracks LIKE " +
-            "'%\"' || replace(replace(replace(song.videoId, '\\', '\\\\'), '_', '\\_'), '%', '\\%') || '\"%' ESCAPE '\\')" +
-            " OR EXISTS (SELECT 1 FROM playlist pl WHERE pl.downloadState = 3 AND pl.tracks LIKE " +
-            "'%\"' || replace(replace(replace(song.videoId, '\\', '\\\\'), '_', '\\_'), '%', '\\%') || '\"%' ESCAPE '\\'))",
-    )
-    suspend fun clearCategoryFromClaimed(
-        category: String,
-        includeLiked: Boolean,
-    ): Int
+    /** Drops [category] from liked songs: the user keeps those once liked songs are auto-downloaded. */
+    @Query("UPDATE song SET category = NULL WHERE category = :category AND liked = 1")
+    suspend fun clearCategoryFromLiked(category: String): Int
 
     @Query("UPDATE song SET durationSeconds = :durationSeconds WHERE videoId = :videoId")
     suspend fun updateDurationSeconds(
