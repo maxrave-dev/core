@@ -2286,6 +2286,9 @@ class YouTube {
                             combine(downloadVideoJob, downloadAudioJob) { videoProgress, audioProgress ->
                                 Pair(videoProgress, audioProgress)
                             }.collectLatest { (videoProgress, audioProgress) ->
+                                if (videoProgress.isFailedDownload() || audioProgress.isFailedDownload()) {
+                                    throw Exception("Download failed")
+                                }
                                 if (!videoProgress.first || !audioProgress.first) {
                                     trySend(
                                         DownloadProgress(
@@ -2317,6 +2320,8 @@ class YouTube {
                                 .collect { downloadProgress ->
                                     if (!downloadProgress.first) {
                                         trySend(DownloadProgress(audioDownloadProgress = downloadProgress.second))
+                                    } else if (downloadProgress.isFailedDownload()) {
+                                        throw Exception("Download failed")
                                     } else {
                                         trySend(DownloadProgress(audioDownloadProgress = 1f, isDone = true))
                                     }
@@ -2341,6 +2346,8 @@ class YouTube {
                     trySend(DownloadProgress.failed(it.message ?: "Player response is null"))
                 }
         }.flowOn(Dispatchers.IO)
+
+    private fun Triple<Boolean, Float, Int>.isFailedDownload(): Boolean = first && second < 1f
 
     suspend fun is403Url(url: String) = ytMusic.is403Url(url)
 
