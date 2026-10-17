@@ -13,6 +13,8 @@ import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB_REMIX
 import com.maxrave.kotlinytmusicscraper.models.YouTubeLocale
 import com.maxrave.kotlinytmusicscraper.models.body.AccountMenuBody
 import com.maxrave.kotlinytmusicscraper.models.body.BrowseBody
+import com.maxrave.kotlinytmusicscraper.models.body.CreateCommentBody
+import com.maxrave.kotlinytmusicscraper.models.body.CreateCommentReplyBody
 import com.maxrave.kotlinytmusicscraper.models.body.CreatePlaylistBody
 import com.maxrave.kotlinytmusicscraper.models.body.EditPlaylistBody
 import com.maxrave.kotlinytmusicscraper.models.body.FormData
@@ -21,6 +23,7 @@ import com.maxrave.kotlinytmusicscraper.models.body.GetSearchSuggestionsBody
 import com.maxrave.kotlinytmusicscraper.models.body.LikeBody
 import com.maxrave.kotlinytmusicscraper.models.body.SubscribeBody
 import com.maxrave.kotlinytmusicscraper.models.body.NextBody
+import com.maxrave.kotlinytmusicscraper.models.body.PerformCommentActionBody
 import com.maxrave.kotlinytmusicscraper.models.body.PlayerBody
 import com.maxrave.kotlinytmusicscraper.models.body.SearchBody
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
@@ -856,6 +859,46 @@ class Ytmusic {
             ),
         )
     }
+
+    // Comment writes go out as YouTube Music's own web client does, signed in.
+    suspend fun createComment(
+        createCommentParams: String,
+        text: String,
+    ) = httpClient.post("comment/create_comment") {
+        ytClient(WEB_REMIX, setLogin = true)
+        setBody(
+            CreateCommentBody(
+                context = WEB_REMIX.toContext(locale, visitorData),
+                createCommentParams = createCommentParams,
+                commentText = text,
+            ),
+        )
+    }
+
+    suspend fun createCommentReply(
+        createReplyParams: String,
+        text: String,
+    ) = httpClient.post("comment/create_comment_reply") {
+        ytClient(WEB_REMIX, setLogin = true)
+        setBody(
+            CreateCommentReplyBody(
+                context = WEB_REMIX.toContext(locale, visitorData),
+                createReplyParams = createReplyParams,
+                commentText = text,
+            ),
+        )
+    }
+
+    suspend fun performCommentAction(action: String) =
+        httpClient.post("comment/perform_comment_action") {
+            ytClient(WEB_REMIX, setLogin = true)
+            setBody(
+                PerformCommentActionBody(
+                    context = WEB_REMIX.toContext(locale, visitorData),
+                    actions = listOf(action),
+                ),
+            )
+        }
 
     suspend fun getSearchSuggestions(
         client: YouTubeClient,

@@ -4,6 +4,8 @@ import com.maxrave.domain.data.entities.QueueEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.model.browse.album.Track
+import com.maxrave.domain.data.model.comments.YouTubeComment
+import com.maxrave.domain.data.model.comments.YouTubeCommentsPage
 import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.utils.Resource
@@ -151,6 +153,30 @@ interface SongRepository {
     ): Flow<DownloadProgress>
 
     fun getRelatedData(videoId: String): Flow<Resource<Pair<List<Track>, String?>>>
+
+    /**
+     * A track's comments, from YouTube Music's Comments tab: the first page and its header.
+     * Success with null when the track has none (comments turned off, or a live stream with only its chat).
+     */
+    fun getComments(videoId: String): Flow<Resource<YouTubeCommentsPage?>>
+
+    /** Whatever a comments token loads: the next page, a sort, a thread's replies, or more of them. */
+    fun getCommentsPage(token: String): Flow<Resource<YouTubeCommentsPage>>
+
+    /** Success with null when YouTube's answer did not carry the new comment back. */
+    fun postComment(
+        createCommentParams: String,
+        text: String,
+    ): Flow<Resource<YouTubeComment?>>
+
+    /** Success with null when YouTube's answer did not carry the new reply back. */
+    fun postCommentReply(
+        createReplyParams: String,
+        text: String,
+    ): Flow<Resource<YouTubeComment?>>
+
+    /** Like, dislike, or undo either: [action] is the token the comment carries for it. */
+    fun performCommentAction(action: String): Flow<Resource<Unit>>
 
     fun getRadioFromEndpoint(endpoint: YouTubeWatchEndpoint): Flow<Resource<Pair<List<Track>, String?>>>
 }

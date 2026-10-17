@@ -4,6 +4,8 @@ import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.data.extension.getFullDataFromDB
 import com.maxrave.data.mapping.toListTrack
+import com.maxrave.data.mapping.toYouTubeComment
+import com.maxrave.data.mapping.toYouTubeCommentsPage
 import com.maxrave.data.mapping.toSongItemForDownload
 import com.maxrave.data.mapping.toWatchEndpoint
 import com.maxrave.domain.data.entities.QueueEntity
@@ -12,6 +14,8 @@ import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.entities.analytics.query.SongPlaySample
 import com.maxrave.domain.data.model.browse.album.Track
+import com.maxrave.domain.data.model.comments.YouTubeComment
+import com.maxrave.domain.data.model.comments.YouTubeCommentsPage
 import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.extension.now
@@ -52,6 +56,7 @@ import org.koin.mp.KoinPlatform.getKoin
 import kotlin.math.pow
 
 private const val TAG = "SongRepositoryImpl"
+private const val COMMENTS_TAG = "Comments"
 
 internal class SongRepositoryImpl(
     private val dataStoreManager: DataStoreManager,
@@ -668,6 +673,77 @@ internal class SongRepositoryImpl(
                         emit(Resource.Error<Pair<List<Track>, String?>>(exception.message.toString()))
                     }
             }
+        }.flowOn(Dispatchers.IO)
+
+    override fun getComments(videoId: String): Flow<Resource<YouTubeCommentsPage?>> =
+        flow {
+            youTube
+                .comments(videoId)
+                .onSuccess {
+                    Logger.i(
+                        COMMENTS_TAG,
+                        if (it == null) "Comments for $videoId: turned off" else "Comments for $videoId: ${it.header?.countText}, ${it.comments.size} on the first page",
+                    )
+                    emit(Resource.Success<YouTubeCommentsPage?>(it?.toYouTubeCommentsPage()))
+                }
+                .onFailure {
+                    Logger.e(COMMENTS_TAG, "Comments for $videoId failed", it)
+                    emit(Resource.Error<YouTubeCommentsPage?>(it.message.toString()))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun getCommentsPage(token: String): Flow<Resource<YouTubeCommentsPage>> =
+        flow {
+            youTube
+                .commentsPage(token)
+                .onSuccess { emit(Resource.Success(it.toYouTubeCommentsPage())) }
+                .onFailure {
+                    Logger.e(COMMENTS_TAG, "Comments page failed", it)
+                    emit(Resource.Error<YouTubeCommentsPage>(it.message.toString()))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun postComment(
+        createCommentParams: String,
+        text: String,
+    ): Flow<Resource<YouTubeComment?>> =
+        flow {
+            youTube
+                .createComment(createCommentParams, text)
+                .onSuccess {
+                    Logger.i(COMMENTS_TAG, "Comment posted, returned=${it != null}")
+                    emit(Resource.Success<YouTubeComment?>(it?.toYouTubeComment()))
+                }.onFailure {
+                    Logger.e(COMMENTS_TAG, "Posting a comment failed", it)
+                    emit(Resource.Error<YouTubeComment?>(it.message.toString()))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun postCommentReply(
+        createReplyParams: String,
+        text: String,
+    ): Flow<Resource<YouTubeComment?>> =
+        flow {
+            youTube
+                .createCommentReply(createReplyParams, text)
+                .onSuccess {
+                    Logger.i(COMMENTS_TAG, "Reply posted, returned=${it != null}")
+                    emit(Resource.Success<YouTubeComment?>(it?.toYouTubeComment()))
+                }.onFailure {
+                    Logger.e(COMMENTS_TAG, "Posting a reply failed", it)
+                    emit(Resource.Error<YouTubeComment?>(it.message.toString()))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun performCommentAction(action: String): Flow<Resource<Unit>> =
+        flow {
+            youTube
+                .performCommentAction(action)
+                .onSuccess { emit(Resource.Success(Unit)) }
+                .onFailure {
+                    Logger.e(COMMENTS_TAG, "Comment action failed", it)
+                    emit(Resource.Error<Unit>(it.message.toString()))
+                }
         }.flowOn(Dispatchers.IO)
 
     override fun getRadioFromEndpoint(endpoint: YouTubeWatchEndpoint): Flow<Resource<Pair<List<Track>, String?>>> =
