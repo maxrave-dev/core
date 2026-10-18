@@ -2,6 +2,7 @@ package com.maxrave.kotlinytmusicscraper
 
 import com.eygraber.uri.toKmpUri
 import com.maxrave.common.ITAG
+import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
@@ -1541,16 +1542,7 @@ class YouTube {
         preferredAudioLanguage: String? = null,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
-            val cpn =
-                (1..16)
-                    .map {
-                        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"[
-                            Random.nextInt(
-                                0,
-                                64,
-                            ),
-                        ]
-                    }.joinToString("")
+            val cpn = newCpn()
 
             var decodedSigResponse: PlayerResponse? = null
             val tempRes =
@@ -1560,16 +1552,7 @@ class YouTube {
                         videoId,
                         playlistId,
                         cpn,
-                        signatureTimestamp =
-                            run {
-                                val today = Clock.System.todayIn(TimeZone.UTC)
-                                val epoch =
-                                    Instant
-                                        .fromEpochSeconds(0)
-                                        .toLocalDateTime(TimeZone.UTC)
-                                        .date
-                                epoch.daysUntil(today)
-                            },
+                        signatureTimestamp = signatureTimestamp(),
                     ).body<PlayerResponse>()
                     .let {
                         val fexp =
@@ -1637,7 +1620,10 @@ class YouTube {
                 return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
             }
 
-            val response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
+            var response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
+            if (response == null) {
+                response = audioRenditionFallback(videoId, tempRes, preferredAudioLanguage)
+            }
             if (response != null) {
                 decodedSigResponse = response
                 Logger.d(TAG, "YouTube Player found URL")
@@ -1661,6 +1647,112 @@ class YouTube {
                 thumbnails,
             )
         }
+
+    private fun newCpn(): String =
+        (1..16)
+            .map {
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"[
+                    Random.nextInt(
+                        0,
+                        64,
+                    ),
+                ]
+            }.joinToString("")
+
+    private fun signatureTimestamp(): Int {
+        val today = Clock.System.todayIn(TimeZone.UTC)
+        val epoch =
+            Instant
+                .fromEpochSeconds(0)
+                .toLocalDateTime(TimeZone.UTC)
+                .date
+        return epoch.daysUntil(today)
+    }
+
+    /**
+     * YouTube sometimes puts a music video where a song belongs — most visibly on an album, where the
+     * album entry itself points at an official music video. When that video is age-restricted the
+     * player is refused for every client (`LOGIN_REQUIRED`), so the track plays nowhere even though
+     * the exact same recording exists as an audio-only upload nobody has to sign in for.
+     *
+     * The refused response still names the recording in `videoDetails`, so the audio rendition is
+     * looked up by title and artist and extracted in its place. Only a candidate YouTube itself typed
+     * as the audio version ([MusicVideoType.isAudio]) whose title and artist match is considered;
+     * among those the plain upload is preferred and the closest length breaks the tie, so a live
+     * take, a remix or a karaoke cover is never swapped in. Length is a preference rather than a
+     * gate on purpose: a music video runs well past the audio upload (5:38 against 4:32 for Mind
+     * Mischief), and requiring the two to agree would refuse the very track this exists to rescue.
+     *
+     * Returns null when nothing fits; the caller then fails exactly as it did before.
+     */
+    private suspend fun audioRenditionFallback(
+        originalVideoId: String,
+        tempRes: PlayerResponse,
+        preferredAudioLanguage: String?,
+    ): PlayerResponse? {
+        val details = tempRes.videoDetails ?: return null
+        val title = details.title?.takeIf { it.isNotBlank() } ?: return null
+        val author = details.author?.takeIf { it.isNotBlank() } ?: return null
+        val originalDuration = details.lengthSeconds?.toIntOrNull()
+        val wantedTitle = normalizeTrackTitle(title)
+        val candidates =
+            search("$title $author", SearchFilter.FILTER_SONG)
+                .getOrNull()
+                ?.items
+                ?.filterIsInstance<SongItem>()
+                .orEmpty()
+        val match =
+            candidates
+                .filter { it.id != originalVideoId && MusicVideoType.isAudio(it.musicVideoType) }
+                .filter { normalizeTrackTitle(it.title) == wantedTitle }
+                .filter { song ->
+                    val wantedArtist = normalizeTrackTitle(author)
+                    song.artists.isEmpty() ||
+                        song.artists.any {
+                            val name = normalizeTrackTitle(it.name)
+                            name.isNotEmpty() && wantedArtist.isNotEmpty() &&
+                                (name == wantedArtist || name.contains(wantedArtist) || wantedArtist.contains(name))
+                        }
+                }
+                .minWithOrNull(
+                    compareBy<SongItem>(
+                        // Prefer the plain upload ("Mind Mischief") over a bracketed variant
+                        // ("Mind Mischief (Live)"), which normalises to the same title.
+                        { if (normalizeTrackTitle(it.title, stripParentheses = false) == wantedTitle) 0 else 1 },
+                        {
+                            originalDuration
+                                ?.let { length -> it.duration?.let { duration -> abs(duration - length) } ?: Int.MAX_VALUE }
+                                ?: 0
+                        },
+                    ),
+                ) ?: return null
+        Logger.i(TAG, "YouTube Player refused $originalVideoId; trying audio rendition ${match.id}")
+        val fallbackTempRes =
+            ytMusic
+                .player(
+                    WEB_REMIX,
+                    match.id,
+                    null,
+                    newCpn(),
+                    signatureTimestamp = signatureTimestamp(),
+                ).body<PlayerResponse>()
+        return newPipePlayer(match.id, fallbackTempRes, preferredAudioLanguage)
+    }
+
+    /**
+     * Case- and parenthetical-insensitive title, so "(Official Video)" and "(Audio)" still match.
+     * With [stripParentheses] off the brackets are kept, which is how a plain upload is told apart
+     * from a variant that differs only inside them.
+     */
+    private fun normalizeTrackTitle(
+        raw: String,
+        stripParentheses: Boolean = true,
+    ): String =
+        raw
+            .let { if (stripParentheses) it.replace(Regex("\\([^)]*\\)|\\[[^\\]]*\\]"), " ") else it }
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .lowercase()
 
     suspend fun updateWatchTime(
         watchtimeUrl: String,

@@ -124,8 +124,8 @@ internal class LocalPlaylistRepositoryImpl(
             // Two steps, the same shape LocalPlaylistPagingSource uses: the join narrows the rows,
             // then the songs are fetched by id. Re-sorted by the pair order afterwards because the
             // id lookup returns them in whatever order the database finds them.
-            val byId = localDataSource.getSongByListVideoIdFull(pairs.map { it.songId }).associateBy { it.videoId }
-            emit(pairs.mapNotNull { pair -> byId[pair.songId]?.let { it to pair } })
+            val byId = localDataSource.getSongByListVideoIdFull(pairs.mapNotNull { it.songId }).associateBy { it.videoId }
+            emit(pairs.mapNotNull { pair -> pair.songId?.let { byId[it] }?.let { it to pair } })
         }.flowOn(Dispatchers.IO)
 
     override fun getTracksPaging(
@@ -175,12 +175,12 @@ internal class LocalPlaylistRepositoryImpl(
             val songs =
                 localDataSource
                     .getSongByListVideoIdFull(
-                        pairs.map { it.songId },
+                        pairs.mapNotNull { it.songId },
                     )
             val idValue = songs.associateBy { it.videoId }
             val sorted =
                 pairs.mapNotNull {
-                    idValue[it.songId]
+                    it.songId?.let { id -> idValue[id] }
                 }
             tracks.addAll(sorted)
             currentPage++
@@ -192,6 +192,9 @@ internal class LocalPlaylistRepositoryImpl(
         val playlist = localDataSource.getLocalPlaylist(id)
         return playlist?.tracks ?: emptyList()
     }
+
+    override suspend fun getAllPlaylistPairSongByPosition(id: Long): List<PairSongLocalPlaylist> =
+        localDataSource.getAllPlaylistPairSongByPosition(id)
 
     override fun insertLocalPlaylist(
         localPlaylist: LocalPlaylistEntity,
@@ -574,7 +577,7 @@ internal class LocalPlaylistRepositoryImpl(
                 localDataSource.insertSong(song)
             }
             val localPlaylist = localDataSource.getLocalPlaylist(id) ?: return@flow
-            val nextPosition = localPlaylist.tracks?.size ?: 0
+            val nextPosition = localDataSource.getNextPositionOfLocalPlaylist(id)
             val nextPair =
                 PairSongLocalPlaylist(
                     playlistId = id,
@@ -619,6 +622,32 @@ internal class LocalPlaylistRepositoryImpl(
             }
         }.flowOn(Dispatchers.IO)
 
+    override fun addAlbumToLocalPlaylist(
+        id: Long,
+        albumBrowseId: String,
+        title: String?,
+        thumbnail: String?,
+        successMessage: String,
+    ): Flow<LocalResource<String>> =
+        flow {
+            emit(LocalResource.Loading())
+            localDataSource.getLocalPlaylist(id) ?: return@flow
+            val nextPosition = localDataSource.getNextPositionOfLocalPlaylist(id)
+            localDataSource.insertPairSongLocalPlaylist(
+                PairSongLocalPlaylist(
+                    playlistId = id,
+                    songId = null,
+                    position = nextPosition,
+                    inPlaylist = now(),
+                    itemType = PairSongLocalPlaylist.ITEM_ALBUM,
+                    albumBrowseId = albumBrowseId,
+                    title = title,
+                    thumbnail = thumbnail,
+                ),
+            )
+            emit(LocalResource.Success(successMessage))
+        }.flowOn(Dispatchers.IO)
+
     override fun removeTrackFromLocalPlaylist(
         id: Long,
         song: SongEntity,
@@ -657,6 +686,17 @@ internal class LocalPlaylistRepositoryImpl(
                     emit(LocalResource.Error<String>("$errorMessage: SetVideoId is null"))
                 }
             }
+        }.flowOn(Dispatchers.IO)
+
+    override fun removeAlbumFromLocalPlaylist(
+        id: Long,
+        pairId: Int,
+        successMessage: String,
+    ): Flow<LocalResource<String>> =
+        flow {
+            emit(LocalResource.Loading())
+            localDataSource.deletePairSongLocalPlaylistById(pairId)
+            emit(LocalResource.Success(successMessage))
         }.flowOn(Dispatchers.IO)
 
     /**
@@ -964,8 +1004,17 @@ internal class LocalPlaylistRepositoryImpl(
                 return@flow
             }
 
-            val movedPair = allPairs[fromIndex]
-            val movedVideoId = movedPair.songId
+            val movedVideoId = allPairs[fromIndex].songId
+            // An album entry lives only in this list: YouTube has no such item, so there is nothing
+            // to move remotely and the local position is the whole move.
+            if (movedVideoId == null) {
+                if (!localDataSource.moveSongInPlaylist(playlistId, fromIndex, toIndex)) {
+                    emit(LocalResource.Error("Index out of bounds"))
+                    return@flow
+                }
+                emit(LocalResource.Success("Position updated"))
+                return@flow
+            }
 
             // Resolve setVideoId of the moved item
             val movedSetVideoIdEntity = findSetVideoId(movedVideoId, ytPlaylistId)
@@ -974,16 +1023,11 @@ internal class LocalPlaylistRepositoryImpl(
                 return@flow
             }
 
-            // Resolve the successor (the item that should come AFTER the moved item)
-            // If moving down (fromIndex < toIndex): successor is the item at toIndex + 1 (if exists)
-            // If moving up (fromIndex > toIndex): successor is the item at toIndex
-            val successorVideoId: String? = if (fromIndex < toIndex) {
-                // Moving down: after removal, the successor is at toIndex + 1 in original list
-                allPairs.getOrNull(toIndex + 1)?.songId // null: move to end
-            } else {
-                // Moving up: successor is the item currently at toIndex
-                allPairs[toIndex].songId
-            }
+            // The successor is the first SONG after the moved item once it has landed. Albums are
+            // skipped: they are not on YouTube, so the song is placed relative to the next song in
+            // the local order, however many albums sit in between.
+            val reordered = allPairs.toMutableList().apply { add(toIndex, removeAt(fromIndex)) }
+            val successorVideoId = reordered.drop(toIndex + 1).firstOrNull { it.songId != null }?.songId
             // A successor that exists but has no setVideoId must not be sent as null: YouTube reads
             // a missing successor as "move to the end", so the song would land at the end on YouTube
             // while the app shows it where the user dropped it.
