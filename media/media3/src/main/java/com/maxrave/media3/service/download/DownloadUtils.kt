@@ -289,23 +289,44 @@ internal class DownloadUtils(
 
     init {
         coroutineScope.launch {
+            var previousIds = emptySet<String>()
             downloads.collect { download ->
+                // A song that left the map was removed (onDownloadRemoved, removeAllDownloads).
+                // Written here rather than in the listener so it lands after any older snapshot
+                // that still listed the song as downloaded.
+                (previousIds - download.keys).forEach { videoId ->
+                    _downloadTask.update { it + (videoId to DownloadState.STATE_NOT_DOWNLOADED) }
+                    downloadingVideoIds.update {
+                        it.apply {
+                            remove(videoId)
+                        }
+                    }
+                    songRepository.updateDownloadState(videoId, DownloadState.STATE_NOT_DOWNLOADED)
+                }
+                previousIds = download.keys.toSet()
                 download.forEach {
                     val videoId = it.key
                     val audio = it.value.first?.state
                     val video = it.value.second?.state
                     val combineState =
-                        when (audio to video) {
-                            Download.STATE_COMPLETED to Download.STATE_COMPLETED -> DownloadState.STATE_DOWNLOADED
-                            Download.STATE_FAILED to Download.STATE_FAILED -> DownloadState.STATE_NOT_DOWNLOADED
-                            Download.STATE_QUEUED to Download.STATE_QUEUED -> DownloadState.STATE_PREPARING
-                            Download.STATE_COMPLETED to null -> DownloadState.STATE_DOWNLOADED
-                            Download.STATE_FAILED to null -> DownloadState.STATE_NOT_DOWNLOADED
-                            Download.STATE_QUEUED to null -> DownloadState.STATE_PREPARING
-                            null to Download.STATE_COMPLETED -> DownloadState.STATE_DOWNLOADING
-                            null to Download.STATE_QUEUED -> DownloadState.STATE_PREPARING
-                            null to Download.STATE_FAILED -> DownloadState.STATE_NOT_DOWNLOADED
-                            else -> DownloadState.STATE_DOWNLOADING
+                        if (audio == Download.STATE_REMOVING || video == Download.STATE_REMOVING) {
+                            // A removal reports REMOVING before the files go. The pairs below
+                            // would read it as downloading and write that over the
+                            // NOT_DOWNLOADED the caller has just set.
+                            DownloadState.STATE_NOT_DOWNLOADED
+                        } else {
+                            when (audio to video) {
+                                Download.STATE_COMPLETED to Download.STATE_COMPLETED -> DownloadState.STATE_DOWNLOADED
+                                Download.STATE_FAILED to Download.STATE_FAILED -> DownloadState.STATE_NOT_DOWNLOADED
+                                Download.STATE_QUEUED to Download.STATE_QUEUED -> DownloadState.STATE_PREPARING
+                                Download.STATE_COMPLETED to null -> DownloadState.STATE_DOWNLOADED
+                                Download.STATE_FAILED to null -> DownloadState.STATE_NOT_DOWNLOADED
+                                Download.STATE_QUEUED to null -> DownloadState.STATE_PREPARING
+                                null to Download.STATE_COMPLETED -> DownloadState.STATE_DOWNLOADING
+                                null to Download.STATE_QUEUED -> DownloadState.STATE_PREPARING
+                                null to Download.STATE_FAILED -> DownloadState.STATE_NOT_DOWNLOADED
+                                else -> DownloadState.STATE_DOWNLOADING
+                            }
                         }
                     _downloadTask.update {
                         it.toMutableMap().apply {
@@ -413,6 +434,27 @@ internal class DownloadUtils(
                             }
                             else -> {
                             }
+                        }
+                    }
+                }
+
+                // Without this a removed track stayed in the map at REMOVING for good, and the
+                // collector above rewrote its song's row on every later emission. Once both
+                // tracks are gone the song leaves the map, which the collector reads as removed.
+                override fun onDownloadRemoved(
+                    downloadManager: DownloadManager,
+                    download: Download,
+                ) {
+                    val id = download.request.id
+                    val isVideo = id.contains(MERGING_DATA_TYPE.VIDEO)
+                    val songId = if (isVideo) id.removePrefix(MERGING_DATA_TYPE.VIDEO) else id
+                    _downloads.update { map ->
+                        val current = map[songId] ?: return@update map
+                        val remaining = if (isVideo) current.copy(second = null) else current.copy(first = null)
+                        if (remaining.first == null && remaining.second == null) {
+                            map - songId
+                        } else {
+                            map + (songId to remaining)
                         }
                     }
                 }
