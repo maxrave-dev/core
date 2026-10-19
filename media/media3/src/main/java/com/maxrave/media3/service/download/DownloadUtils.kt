@@ -343,6 +343,11 @@ internal class DownloadUtils(
                             songRepository.updateDownloadState(videoId, DownloadState.STATE_DOWNLOADED)
                         }
                         DownloadState.STATE_DOWNLOADING -> {
+                            downloadingVideoIds.update {
+                                it.apply {
+                                    add(videoId)
+                                }
+                            }
                             songRepository.updateDownloadState(videoId, DownloadState.STATE_DOWNLOADING)
                         }
                         DownloadState.STATE_NOT_DOWNLOADED -> {
@@ -417,21 +422,15 @@ internal class DownloadUtils(
                                 }
                             }
                         }
+                        // The song's stored state is written by the collector alone. A write of
+                        // its own here, on a coroutine of its own, could land after a removal had
+                        // already reset the song, and nothing would correct it once the song left
+                        // the map.
                         when (download.state) {
                             Download.STATE_COMPLETED -> {
                                 playerCache.removeResource(id)
                             }
 
-                            Download.STATE_DOWNLOADING -> {
-                                coroutineScope.launch {
-                                    downloadingVideoIds.update {
-                                        it.apply {
-                                            add(songId)
-                                        }
-                                    }
-                                    songRepository.updateDownloadState(songId, DownloadState.STATE_DOWNLOADING)
-                                }
-                            }
                             else -> {
                             }
                         }
