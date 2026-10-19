@@ -172,6 +172,7 @@ class Ytmusic {
             expectSuccess = true
             install(CurlLogger) {
                 logger = { Logger.d(TAG, it) }
+                redactHeaders = setOf("Cookie", "Authorization")
             }
             // Every rejected sign-in on this client lands in the app log in one place. Host and path
             // only: the query and headers carry the cookie and the account.
@@ -192,6 +193,7 @@ class Ytmusic {
             install(Logging) {
                 logger = io.ktor.client.plugins.logging.Logger.DEFAULT
                 level = LogLevel.ALL
+                sanitizeHeader { header -> header.equals("Cookie", ignoreCase = true) || header.equals("Authorization", ignoreCase = true) }
             }
             install(ContentNegotiation) {
                 protobuf()
