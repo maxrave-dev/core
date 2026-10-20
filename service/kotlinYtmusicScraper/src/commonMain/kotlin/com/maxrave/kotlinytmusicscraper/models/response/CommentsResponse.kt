@@ -7,7 +7,7 @@ import kotlinx.serialization.json.JsonElement
 
 /**
  * What `next` answers to a comments token (the Comments tab of the watch page, the next page, a
- * sort, a thread's replies), and what `comment/create_comment*` answers with.
+ * thread's replies), and what `comment/create_comment*` answers with.
  *
  * A thread carries only keys. The comment itself (text, author, counts) and its toolbar (like
  * state; the like, dislike and reply commands) arrive as [frameworkUpdates] mutations under those
@@ -45,24 +45,7 @@ data class CommentsResponse(
     data class HeaderRenderer(
         val countText: Runs? = null,
         val commentsCount: Runs? = null,
-        val sortMenu: SortMenu? = null,
         val createRenderer: CreateRenderer? = null,
-    )
-
-    @Serializable
-    data class SortMenu(
-        val sortFilterSubMenuRenderer: SortFilterSubMenuRenderer? = null,
-    )
-
-    @Serializable
-    data class SortFilterSubMenuRenderer(
-        val subMenuItems: List<SubMenuItem>? = null,
-    )
-
-    @Serializable
-    data class SubMenuItem(
-        val title: String? = null,
-        val serviceEndpoint: JsonElement? = null,
     )
 
     @Serializable

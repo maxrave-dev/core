@@ -5,7 +5,7 @@ import com.maxrave.domain.data.model.mood.Mood
 import com.maxrave.domain.utils.Resource
 
 data class HomeDataCombine(
-    val home: Resource<Pair<String?, List<HomeItem>>>,
+    val home: Resource<Triple<String?, List<HomeItem>, String?>>,
     val mood: Resource<Mood>,
     val chart: Resource<Chart>,
     val newRelease: Resource<List<HomeItem>>,

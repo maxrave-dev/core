@@ -40,9 +40,6 @@ private const val FIRST_PAGE = """
   {"commentsHeaderRenderer":{
    "countText":{"runs":[{"text":"1,234"},{"text":" Comments"}]},
    "commentsCount":{"runs":[{"text":"1.2K"}]},
-   "sortMenu":{"sortFilterSubMenuRenderer":{"subMenuItems":[
-    {"title":"Top","serviceEndpoint":{"clickTrackingParams":"x","continuationCommand":{"token":"SORT_TOP"}}},
-    {"title":"Newest","serviceEndpoint":{"continuationCommand":{"token":"SORT_NEWEST"}}}]}},
    "createRenderer":{"commentSimpleboxRenderer":{"placeholderText":{"runs":[{"text":"Add a comment..."}]},"prepareAccountEndpoint":{"modalEndpoint":{}}}}}}]}},
  {"reloadContinuationItemsCommand":{"slot":"RELOAD_CONTINUATION_SLOT_BODY","continuationItems":[
   {"commentThreadRenderer":{
@@ -120,10 +117,6 @@ class CommentsPageParserTest {
         val header = assertNotNull(page.header)
         assertEquals("1,234 Comments", header.countText)
         assertEquals("1.2K", header.countShort)
-        assertEquals("Top", header.topLabel)
-        assertEquals("SORT_TOP", header.topToken)
-        assertEquals("Newest", header.newestLabel)
-        assertEquals("SORT_NEWEST", header.newestToken)
         assertEquals("Add a comment...", header.placeholder)
         // Signed out: no comment box to post with.
         assertNull(header.createParams)

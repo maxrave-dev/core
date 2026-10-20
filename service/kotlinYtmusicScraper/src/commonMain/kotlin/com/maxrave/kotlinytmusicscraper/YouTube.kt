@@ -1266,7 +1266,7 @@ class YouTube {
                 .takeIf { it.header != null || it.comments.isNotEmpty() }
         }
 
-    /** Whatever a comments token loads: the next page, a sort, a thread's replies, or more of them. */
+    /** Whatever a comments token loads: the next page, a thread's replies, or more of them. */
     suspend fun commentsPage(token: String): Result<CommentsPage> =
         runCatching {
             CommentsPageParser.parse(ytMusic.next(WEB_REMIX, null, null, null, null, null, token).body<CommentsResponse>())

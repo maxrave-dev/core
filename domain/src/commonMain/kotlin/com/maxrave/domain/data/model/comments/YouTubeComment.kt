@@ -39,10 +39,6 @@ data class YouTubeCommentsHeader(
     val countText: String?,
     /** "24K" */
     val countShort: String?,
-    val topLabel: String?,
-    val topToken: String?,
-    val newestLabel: String?,
-    val newestToken: String?,
     /** Null when YouTube offers this request no comment box: signed out, or no channel. */
     val createParams: String?,
     val placeholder: String?,
@@ -51,7 +47,7 @@ data class YouTubeCommentsHeader(
 )
 
 /**
- * A page of comments or of replies. [header] comes with the first page and with a sort. [nextToken]
+ * A page of comments or of replies. [header] comes with the first page. [nextToken]
  * loads the next page; on a replies page it is "Show more replies", labelled [nextLabel].
  */
 data class YouTubeCommentsPage(

@@ -637,10 +637,6 @@ internal fun CommentsPage.toYouTubeCommentsPage(): YouTubeCommentsPage =
                 YouTubeCommentsHeader(
                     countText = it.countText,
                     countShort = it.countShort,
-                    topLabel = it.topLabel,
-                    topToken = it.topToken,
-                    newestLabel = it.newestLabel,
-                    newestToken = it.newestToken,
                     createParams = it.createParams,
                     placeholder = it.placeholder,
                     userAvatar = it.userAvatar,

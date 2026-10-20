@@ -160,7 +160,7 @@ interface SongRepository {
      */
     fun getComments(videoId: String): Flow<Resource<YouTubeCommentsPage?>>
 
-    /** Whatever a comments token loads: the next page, a sort, a thread's replies, or more of them. */
+    /** Whatever a comments token loads: the next page, a thread's replies, or more of them. */
     fun getCommentsPage(token: String): Flow<Resource<YouTubeCommentsPage>>
 
     /** Success with null when YouTube's answer did not carry the new comment back. */

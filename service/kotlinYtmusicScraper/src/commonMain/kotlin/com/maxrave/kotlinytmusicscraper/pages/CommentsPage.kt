@@ -45,10 +45,6 @@ data class CommentsHeader(
     val countText: String?,
     /** "24K" */
     val countShort: String?,
-    val topLabel: String?,
-    val topToken: String?,
-    val newestLabel: String?,
-    val newestToken: String?,
     /** Null when YouTube offers this request no comment box: signed out, or no channel. */
     val createParams: String?,
     val placeholder: String?,
@@ -57,7 +53,7 @@ data class CommentsHeader(
 )
 
 /**
- * A page of comments or of replies. [header] comes with the first page and with a sort. [nextToken]
+ * A page of comments or of replies. [header] comes with the first page. [nextToken]
  * loads the next page; on a replies page it is "Show more replies", labelled [nextLabel].
  */
 data class CommentsPage(
@@ -149,15 +145,10 @@ object CommentsPageParser {
             .toMap()
 
     private fun CommentsResponse.HeaderRenderer.toHeader(): CommentsHeader {
-        val sorts = sortMenu?.sortFilterSubMenuRenderer?.subMenuItems.orEmpty()
         val box = createRenderer?.commentSimpleboxRenderer
         return CommentsHeader(
             countText = countText?.runs?.joinToString("") { it.text }?.takeIf { it.isNotBlank() },
             countShort = commentsCount?.runs?.joinToString("") { it.text }?.takeIf { it.isNotBlank() },
-            topLabel = sorts.getOrNull(0)?.title,
-            topToken = sorts.getOrNull(0)?.serviceEndpoint.findString("token"),
-            newestLabel = sorts.getOrNull(1)?.title,
-            newestToken = sorts.getOrNull(1)?.serviceEndpoint.findString("token"),
             createParams = box?.submitButton.findString("createCommentParams"),
             placeholder = box?.placeholderText?.runs?.joinToString("") { it.text }?.takeIf { it.isNotBlank() },
             userAvatar = box?.authorThumbnail?.thumbnails?.lastOrNull()?.url,
