@@ -48,9 +48,13 @@ interface HomeRepository {
 
     fun getMoodData(params: String): Flow<Resource<MoodsMomentObject>>
 
-    /** The page a home section's "More" endpoint points to — see [BrowsePage]. */
+    /**
+     * The page a home section's "More" endpoint points to — see [BrowsePage]. [songString] is the
+     * localized "Song" label, the same one the Home shelves are parsed with.
+     */
     fun getBrowsePage(
         browseId: String,
         params: String?,
+        songString: String,
     ): Flow<Resource<BrowsePage>>
 }

@@ -408,10 +408,11 @@ internal class HomeRepositoryImpl(
     override fun getBrowsePage(
         browseId: String,
         params: String?,
+        songString: String,
     ): Flow<Resource<BrowsePage>> =
         flow {
             youTube
-                .browse(browseId = browseId, params = params)
+                .browse(browseId = browseId, params = params, songString = songString)
                 .onSuccess { result ->
                     emit(
                         Resource.Success(

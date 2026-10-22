@@ -1023,6 +1023,9 @@ class YouTube {
     suspend fun browse(
         browseId: String,
         params: String?,
+        // The localized label YouTube puts ahead of a song's artists on mixed shelves ("Bài hát"
+        // in Vietnamese). Left at its English default, every other language reads it as the artist.
+        songString: String = "Song",
     ): Result<BrowseResult> =
         runCatching {
             val response = ytMusic.browse(WEB_REMIX, browseId = browseId, params = params).body<BrowseResponse>()
@@ -1043,7 +1046,7 @@ class YouTube {
                         ?.content
                         ?.sectionListRenderer
                         ?.contents
-                        ?.mapNotNull(::browseSection)
+                        ?.mapNotNull { browseSection(it, songString) }
                         .orEmpty(),
             )
         }
@@ -1051,7 +1054,10 @@ class YouTube {
     // The shelf kinds Metrolist's YouTube.browse() reads — grid, carousel (immersive carousels land
     // here too, via @JsonNames), music shelf and playlist shelf — plus the mood buttons of the
     // FEmusic_moods_and_genres page. Anything else carries nothing a "More" page shows.
-    private fun browseSection(content: SectionListRenderer.Content): BrowseResult.Item? =
+    private fun browseSection(
+        content: SectionListRenderer.Content,
+        songString: String,
+    ): BrowseResult.Item? =
         when {
             content.gridRenderer != null -> {
                 BrowseResult.Item(
@@ -1065,7 +1071,7 @@ class YouTube {
                     items =
                         content.gridRenderer.items
                             .mapNotNull(GridRenderer.Item::musicTwoRowItemRenderer)
-                            .mapNotNull(RelatedPage.Companion::fromMusicTwoRowItemRenderer),
+                            .mapNotNull { RelatedPage.fromMusicTwoRowItemRenderer(it, songString) },
                     moods =
                         content.gridRenderer.items
                             .mapNotNull(GridRenderer.Item::musicNavigationButtonRenderer)
@@ -1084,7 +1090,7 @@ class YouTube {
                             ?.text,
                     items =
                         content.musicCarouselShelfRenderer.contents.mapNotNull { item ->
-                            item.musicTwoRowItemRenderer?.let(RelatedPage.Companion::fromMusicTwoRowItemRenderer)
+                            item.musicTwoRowItemRenderer?.let { RelatedPage.fromMusicTwoRowItemRenderer(it, songString) }
                                 ?: item.musicResponsiveListItemRenderer?.let(::browseListItem)
                                 ?: item.musicMultiRowListItemRenderer?.let(::browseEpisode)
                         },
