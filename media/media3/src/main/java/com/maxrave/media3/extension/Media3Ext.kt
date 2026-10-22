@@ -195,8 +195,16 @@ fun GenericCommandButton.toCommandButton(context: Context): CommandButton =
                         CommandButton.ICON_SHUFFLE_OFF
                     },
                     // Resource fallback for hosts that don't map the media3 icon
-                    // constants (AA templated surface renders a gear otherwise)
-                ).setCustomIconResId(R.drawable.baseline_shuffle_24)
+                    // constants (AA templated surface renders a gear otherwise).
+                    // One drawable per state: media3's own shuffle_on/off are the
+                    // same glyph, so AA would draw both states identically (#2618).
+                ).setCustomIconResId(
+                    if (this.isShuffled) {
+                        R.drawable.baseline_shuffle_on_24
+                    } else {
+                        R.drawable.baseline_shuffle_24
+                    },
+                )
                 .setDisplayName(context.getString(R.string.shuffle))
                 .setSessionCommand(
                     SessionCommand(
