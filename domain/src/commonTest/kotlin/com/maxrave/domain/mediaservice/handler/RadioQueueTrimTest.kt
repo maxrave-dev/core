@@ -1,5 +1,6 @@
 package com.maxrave.domain.mediaservice.handler
 
+import com.maxrave.domain.data.model.browse.album.Track
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -67,10 +68,28 @@ class RadioQueueTrimTest {
 
     @Test
     fun `blocks Add to queue only for queues that never end`() {
+        val track =
+            Track(
+                album = null,
+                artists = null,
+                duration = null,
+                durationSeconds = null,
+                isAvailable = true,
+                isExplicit = false,
+                likeStatus = null,
+                thumbnails = null,
+                title = "t",
+                videoId = "v",
+                videoType = null,
+                category = null,
+                feedbackTokens = null,
+                resultType = null,
+            )
+
         fun queue(
             type: PlaylistType?,
             id: String?,
-        ) = QueueData(data = QueueData.Data(playlistId = id, playlistType = type))
+        ) = QueueData(data = QueueData.Data(listTracks = listOf(track), playlistId = id, playlistType = type))
 
         assertEquals(AddToQueueBlock.RADIO, queue(PlaylistType.RADIO, "RDAMVMabc").addToQueueBlock(false))
         // A mix opened from its playlist page is queued as PLAYLIST and still never ends.
@@ -80,7 +99,10 @@ class RadioQueueTrimTest {
         // Turning Endless queue off would not lift this one, so radio is the reason given.
         assertEquals(AddToQueueBlock.RADIO, queue(PlaylistType.RADIO, "RDAMVMabc").addToQueueBlock(true))
         assertEquals(AddToQueueBlock.ENDLESS_QUEUE, queue(PlaylistType.PLAYLIST, "PLabc").addToQueueBlock(true))
-        assertEquals(AddToQueueBlock.ENDLESS_QUEUE, null.addToQueueBlock(true))
+        // Nothing queued yet: Add to queue starts the queue and plays it (#2596).
+        assertNull(null.addToQueueBlock(true))
+        assertNull(QueueData().addToQueueBlock(true))
+        assertNull(QueueData(data = QueueData.Data(playlistId = "RDAMVMabc", playlistType = PlaylistType.RADIO)).addToQueueBlock(true))
         // Finite lists: a curated playlist, a plain one, Favorites and friends, nothing playing yet.
         assertNull(queue(PlaylistType.PLAYLIST, "RDCLAK5uy_abc").addToQueueBlock(false))
         assertNull(queue(PlaylistType.PLAYLIST, "VLRDCLAK5uy_abc").addToQueueBlock(false))

@@ -375,9 +375,13 @@ enum class AddToQueueBlock {
  * Decided by the id alone, not the type: a mix opened from its playlist page is queued as
  * [PlaylistType.PLAYLIST] and still never ends. [AddToQueueBlock.RADIO] wins when both apply, since
  * turning Endless queue off would not lift the block then.
+ *
+ * An empty queue is never blocked: nothing is playing yet, and Add to queue there starts the queue
+ * and plays it (#2596).
  */
 fun QueueData?.addToQueueBlock(endlessQueue: Boolean): AddToQueueBlock? =
     when {
+        this == null || data.listTracks.isEmpty() -> null
         this?.data?.playlistId?.isEndlessQueueId() == true -> AddToQueueBlock.RADIO
         endlessQueue -> AddToQueueBlock.ENDLESS_QUEUE
         else -> null
