@@ -748,6 +748,20 @@ class MpvPlayer private constructor(
     }
 
     /**
+     * Stop or resume decoding this handle's video while no window can show it. `vid=no` drops the
+     * video track outright — no decoding, no software render — while the audio plays on, and `auto`
+     * selects it again. Simply not rendering frames would not work: vo_libmpv waits up to 200 ms
+     * for each frame to be rendered (`flip_page`), which stalls video playback instead of idling it.
+     *
+     * Only for handles that also carry audio. A video-only handle (a canvas) left with no track
+     * would have nothing to play and end the file — pause those instead.
+     */
+    fun setVideoSuspended(suspended: Boolean) {
+        if (isReleased || videoFrames == null) return
+        setPropertyString("vid", if (suspended) "no" else "auto")
+    }
+
+    /**
      * Send this handle's audio to the mpv device [name] — `"auto"` for the system default. mpv
      * reopens its audio output on the spot, so this can change mid-track.
      */

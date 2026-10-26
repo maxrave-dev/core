@@ -41,6 +41,7 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.streams.TimeLine
+import com.maxrave.domain.data.player.AppOnScreen
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.simpmusic.media_jvm.mpv.MpvPlayer
@@ -75,7 +76,7 @@ fun MediaPlayerViewWithUrl(
                 // mpv loops natively, so no end-of-file listener is needed.
                 player.setLooping(true)
                 frameSource = player.videoFrames
-                player.loadFile(url, startPaused = false)
+                player.loadFile(url, startPaused = !AppOnScreen.onScreen.value)
             }
         }
         onDispose {
@@ -89,6 +90,13 @@ fun MediaPlayerViewWithUrl(
     // instead of tearing down and re-creating the mpv handle.
     LaunchedEffect(mpvPlayer, cropToBounds) {
         mpvPlayer?.setPanscan(if (cropToBounds) 1.0 else 0.0)
+    }
+
+    // No window on screen: pause the loop instead of decoding frames nobody sees. A canvas has no
+    // audio, so MpvPlayer.setVideoSuspended would leave mpv nothing to play and it would end the file.
+    LaunchedEffect(mpvPlayer) {
+        val player = mpvPlayer ?: return@LaunchedEffect
+        AppOnScreen.onScreen.collect { onScreen -> if (onScreen) player.play() else player.pause() }
     }
 
     Box(

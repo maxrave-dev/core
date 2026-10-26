@@ -28,6 +28,7 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
+import com.maxrave.domain.data.player.AppOnScreen
 import com.maxrave.domain.data.player.AudioEffects
 import com.maxrave.domain.data.player.DelayEffect
 import com.maxrave.domain.data.player.GenericCastState
@@ -113,6 +114,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.pow
+import kotlin.time.Duration.Companion.milliseconds
 
 private val TAG = "JvmMediaPlayerHandler"
 
@@ -124,6 +126,12 @@ private const val SMOOTH_MAX_LEAD_MS = 600L
 // A jump wider than this is a seek or a track change, not the staircase — take the real value
 // immediately instead of easing towards it.
 private const val SMOOTH_SNAP_MS = 1_000L
+
+// Position tick while no window is on screen (AppOnScreen). Nothing draws the position then, and a
+// minimized window still renders on Windows and Linux, so 50 ms ticks were 20 frames a second of
+// it. A second still serves what reads the ticks off screen: SponsorBlock (a skip can now land up to
+// a second late), the watch-time pings, the 5 s position save and the scrobbler.
+private const val OFF_SCREEN_TICK_MS = 1_000L
 
 class JvmMediaPlayerHandlerImpl(
     private val dataStoreManager: DataStoreManager,
@@ -666,7 +674,14 @@ class JvmMediaPlayerHandlerImpl(
                                                 if (!controlState.value.isPlaying) return@collectLatest
                                                 discordRPC
                                                     ?.updateSong(snap.progressMs, snap.durationMs, snap.speed, snap.song)
-                                                    ?.onFailure { if (it !is CancellationException) Logger.e(TAG, "Discord RPC update failed: ${it.message}") }
+                                                    ?.onFailure {
+                                                        if (it !is CancellationException) {
+                                                            Logger.e(
+                                                                TAG,
+                                                                "Discord RPC update failed: ${it.message}",
+                                                            )
+                                                        }
+                                                    }
                                             }
                                         }
                                     nowPlayingState.value.songEntity?.let { song ->
@@ -1053,10 +1068,11 @@ class JvmMediaPlayerHandlerImpl(
                 val tickIntervalMs = 50L
                 var sinceLastPositionSaveMs = 0L
                 while (true) {
-                    delay(tickIntervalMs)
+                    val intervalMs = if (AppOnScreen.onScreen.value) tickIntervalMs else OFF_SCREEN_TICK_MS
+                    delay(intervalMs.milliseconds)
                     _simpleMediaState.value = SimpleMediaState.Progress(smoothedPosition(player.currentPosition))
                     updateMacOSElapsedTime()
-                    sinceLastPositionSaveMs += tickIntervalMs
+                    sinceLastPositionSaveMs += intervalMs
                     if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
                         sinceLastPositionSaveMs = 0
                         mayBeSaveRecentPosition()
