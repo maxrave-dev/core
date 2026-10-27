@@ -119,10 +119,12 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okio.Path
+import kotlin.concurrent.Volatile
 import kotlin.jvm.JvmInline
 import kotlin.math.abs
 import kotlin.math.round
@@ -1371,10 +1373,15 @@ class YouTube {
         }
     }
 
+    /**
+     * @param streams (itag, url) pairs already resolved elsewhere — the fast path's — or null to run
+     * the extractor tiers for them.
+     */
     suspend fun newPipePlayer(
         videoId: String,
         tempRes: PlayerResponse,
         preferredAudioLanguage: String? = null,
+        streams: List<Pair<Int, String>>? = null,
     ): PlayerResponse? {
         val listUrlSig = mutableListOf<String>()
         var decodedSigResponse: PlayerResponse?
@@ -1385,7 +1392,7 @@ class YouTube {
         } else {
             sigResponse = tempRes
         }
-        val streamsList = ytMusic.getNewPipePlayer(videoId).orderByAudioTrack(preferredAudioLanguage)
+        val streamsList = (streams ?: ytMusic.getNewPipePlayer(videoId)).orderByAudioTrack(preferredAudioLanguage)
         if (streamsList.isEmpty()) return null
 
         decodedSigResponse =
@@ -1477,6 +1484,63 @@ class YouTube {
             return null
         }
     }
+
+    /**
+     * Anonymous visitor id for [fastStreams], fetched once per process: fetching it is a round trip
+     * of its own (sw.js_data), and the fast path exists to save round trips. Dropped when the
+     * request is bot-checked, so the next one starts from a fresh id.
+     */
+    @Volatile
+    private var fastStreamVisitorData: String? = null
+
+    /**
+     * Plain (itag, url) pairs for every adaptive format, from one request as the VISIONOS client —
+     * see [Ytmusic.fastStreamPlayer] for why that client. Null whenever there is any doubt, so the
+     * caller falls through to the extractor tiers and plays exactly as it did before this path.
+     *
+     * The URLs are checked by asking for the LAST byte of an audio file: a client whose URLs are
+     * cut off partway would otherwise look fine here and stop the song in the middle.
+     */
+    private suspend fun fastStreams(videoId: String): List<Pair<Int, String>>? =
+        runCatching {
+            val visitor =
+                fastStreamVisitorData ?: visitorData()?.also { fastStreamVisitorData = it }
+                    ?: return@runCatching null
+            val response = ytMusic.fastStreamPlayer(videoId, visitor).body<JsonObject>()
+            val status =
+                response["playabilityStatus"]
+                    ?.jsonObject
+                    ?.get("status")
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+            if (status != "OK") {
+                Logger.w(TAG, "Fast stream request for $videoId: $status")
+                if (status == "LOGIN_REQUIRED") fastStreamVisitorData = null
+                return@runCatching null
+            }
+            val streams =
+                response["streamingData"]
+                    ?.jsonObject
+                    ?.get("adaptiveFormats")
+                    ?.jsonArray
+                    .orEmpty()
+                    .mapNotNull { element ->
+                        val format = element.jsonObject
+                        val itag = format["itag"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+                        val url = format["url"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                        itag to url
+                    }
+            val probe = streams.firstOrNull { it.first in ITAG.AUDIO } ?: return@runCatching null
+            val length = contentLengthOf(probe.second) ?: return@runCatching null
+            if (!ytMusic.isByteServed(probe.second, length - 1)) {
+                Logger.w(TAG, "Fast stream for $videoId refused at its end, using the extractor")
+                return@runCatching null
+            }
+            ExtractSource.record(videoId, "VISIONOS")
+            streams
+        }.onFailure {
+            Logger.w(TAG, "Fast stream request failed for $videoId: ${it.message}")
+        }.getOrNull()
 
     fun isManifestUrl(url: String): Boolean = url.contains(".m3u8") || url.contains(".mpd") || url.contains("manifest")
 
@@ -1643,7 +1707,11 @@ class YouTube {
                 return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
             }
 
-            val response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
+            // The muxed path (noLogIn) wants an HLS manifest, which the fast client does not send.
+            val response =
+                (if (noLogIn) null else fastStreams(videoId))
+                    ?.let { newPipePlayer(videoId, tempRes, preferredAudioLanguage, streams = it) }
+                    ?: newPipePlayer(videoId, tempRes, preferredAudioLanguage)
             if (response != null) {
                 decodedSigResponse = response
                 Logger.d(TAG, "YouTube Player found URL")
