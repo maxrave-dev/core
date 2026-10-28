@@ -940,6 +940,12 @@ interface DatabaseDao {
     )
     suspend fun getAllPlaylistPairSongByPosition(playlistId: Long): List<PairSongLocalPlaylist>
 
+    /** How many rows of the playlist are whole albums rather than single songs. */
+    @Query(
+        "SELECT COUNT(*) FROM pair_song_local_playlist WHERE playlistId = :playlistId AND itemType = 1",
+    )
+    suspend fun getAlbumCountOfLocalPlaylist(playlistId: Long): Int
+
     @Query(
         "UPDATE pair_song_local_playlist SET position = position + 1 WHERE playlistId = :playlistId AND position >= :from AND position < :to",
     )

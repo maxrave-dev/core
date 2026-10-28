@@ -63,6 +63,9 @@ internal class LocalPlaylistRepositoryImpl(
             localDataSource.getLocalPlaylist(id)
         }
 
+    override suspend fun getAlbumCountOfLocalPlaylist(id: Long): Int =
+        localDataSource.getAlbumCountOfLocalPlaylist(id)
+
     override fun getAllLocalPlaylists(): Flow<List<LocalPlaylistEntity>> =
         flow {
             val list =

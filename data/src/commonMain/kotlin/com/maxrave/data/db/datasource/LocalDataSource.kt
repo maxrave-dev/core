@@ -637,6 +637,8 @@ internal class LocalDataSource(
 
     suspend fun deletePairSongLocalPlaylistById(id: Int) = databaseDao.deletePairSongLocalPlaylistById(id)
 
+    suspend fun getAlbumCountOfLocalPlaylist(playlistId: Long) = databaseDao.getAlbumCountOfLocalPlaylist(playlistId)
+
     suspend fun getGoogleAccounts() = databaseDao.getAllGoogleAccount()
 
     suspend fun insertGoogleAccount(googleAccountEntity: GoogleAccountEntity) = databaseDao.insertGoogleAccount(googleAccountEntity)

@@ -15,6 +15,9 @@ import kotlinx.datetime.LocalDateTime
 interface LocalPlaylistRepository {
     fun getLocalPlaylist(id: Long): Flow<LocalResource<LocalPlaylistEntity?>>
 
+    /** How many entries of the playlist are whole albums; [LocalPlaylistEntity.tracks] only holds songs. */
+    suspend fun getAlbumCountOfLocalPlaylist(id: Long): Int
+
     fun getAllLocalPlaylists(): Flow<List<LocalPlaylistEntity>>
 
     suspend fun updateLocalPlaylistTracks(
