@@ -17,15 +17,21 @@ internal const val ALBUM_ITEM_VIDEO_ID_PREFIX = "album:"
  * An album entry has no song, so it is given a synthetic one carrying only what its row draws.
  * The pair beside it is the source of truth — callers tell an album from a song with
  * [isAlbumItem], never by looking at this placeholder.
+ *
+ * [storedArtistName] is the album's artist from the local album table, used for entries added
+ * before the pair started storing it; the pair's own copy wins when it is there.
  */
-private fun synthesizedAlbumSong(pair: PairSongLocalPlaylist): SongEntity =
+private fun synthesizedAlbumSong(
+    pair: PairSongLocalPlaylist,
+    storedArtistName: List<String>? = null,
+): SongEntity =
     SongEntity(
         videoId = ALBUM_ITEM_VIDEO_ID_PREFIX + (pair.albumBrowseId ?: pair.id.toString()),
         albumId = pair.albumBrowseId,
         albumName = pair.title,
         title = pair.title ?: "",
         thumbnails = pair.thumbnail,
-        artistName = pair.artistName?.let { listOf(it) },
+        artistName = pair.artistName?.let { listOf(it) } ?: storedArtistName,
         duration = "",
         durationSeconds = 0,
         isAvailable = true,
@@ -36,12 +42,28 @@ private fun synthesizedAlbumSong(pair: PairSongLocalPlaylist): SongEntity =
         resultType = null,
     )
 
-private fun PairSongLocalPlaylist.toPagingItem(songsById: Map<String, SongEntity>): Pair<SongEntity, PairSongLocalPlaylist>? =
+private fun PairSongLocalPlaylist.toPagingItem(
+    songsById: Map<String, SongEntity>,
+    albumArtists: Map<String, List<String>> = emptyMap(),
+): Pair<SongEntity, PairSongLocalPlaylist>? =
     when {
-        isAlbumItem -> synthesizedAlbumSong(this) to this
+        isAlbumItem -> synthesizedAlbumSong(this, albumBrowseId?.let(albumArtists::get)) to this
         songId != null -> songsById[songId]?.let { it to this }
         else -> null
     }
+
+/** Artist names of the albums on a page, keyed by browse id, for rows that predate [PairSongLocalPlaylist.artistName]. */
+private suspend fun albumArtistNames(
+    pairs: List<PairSongLocalPlaylist>?,
+    localDataSource: LocalDataSource,
+): Map<String, List<String>> {
+    val browseIds = pairs.orEmpty().filter { it.isAlbumItem }.mapNotNull { it.albumBrowseId }.distinct()
+    val names = mutableMapOf<String, List<String>>()
+    for (browseId in browseIds) {
+        localDataSource.getAlbum(browseId)?.artistName?.let { names[browseId] = it }
+    }
+    return names
+}
 
 internal class LocalPlaylistPagingSource(
     private val playlistId: Long,
@@ -66,7 +88,8 @@ internal class LocalPlaylistPagingSource(
                         pairs?.mapNotNull { it.songId } ?: emptyList(),
                     )
             val idValue = songs.associateBy { it.videoId }
-            val sorted = (pairs ?: emptyList()).mapNotNull { it.toPagingItem(idValue) }
+            val albumArtists = albumArtistNames(pairs, localDataSource)
+            val sorted = (pairs ?: emptyList()).mapNotNull { it.toPagingItem(idValue, albumArtists) }
             Logger.d("LocalPlaylistPagingSource", "load: $songs")
             return LoadResult.Page(
                 data = sorted,
@@ -129,7 +152,8 @@ internal class LocalPlaylistTimeBasedPagingSource(
                         pairs?.mapNotNull { it.songId } ?: emptyList(),
                     )
             val idValue = songs.associateBy { it.videoId }
-            val sorted = (pairs ?: emptyList()).mapNotNull { it.toPagingItem(idValue) }
+            val albumArtists = albumArtistNames(pairs, localDataSource)
+            val sorted = (pairs ?: emptyList()).mapNotNull { it.toPagingItem(idValue, albumArtists) }
             Logger.d("LocalPlaylistPagingSource", "load: $songs")
             val nextKey =
                 pairs?.lastOrNull()?.inPlaylist.let {
