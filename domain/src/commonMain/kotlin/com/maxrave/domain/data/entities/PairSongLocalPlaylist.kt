@@ -14,7 +14,7 @@ import kotlinx.datetime.LocalDateTime
  * ([ITEM_SONG], the only kind that existed before) from an album added as a single entry
  * ([ITEM_ALBUM]). An album row carries no [songId] — the album is resolved from
  * [albumBrowseId] at play/navigation time — and stores only what is needed to draw its row
- * ([title], [thumbnail]).
+ * ([title], [thumbnail], [artistName]).
  */
 @Entity(
     tableName = "pair_song_local_playlist",
@@ -43,6 +43,7 @@ data class PairSongLocalPlaylist(
     val albumBrowseId: String? = null,
     val title: String? = null,
     val thumbnail: String? = null,
+    val artistName: String? = null,
 ) {
     companion object {
         const val ITEM_SONG = 0

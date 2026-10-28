@@ -114,6 +114,7 @@ actual fun getDatabaseBuilder(converters: Converters) : RoomDatabase.Builder<Mus
                 }
             },
             Migration27_28,
+            Migration28_29,
         ).addCallback(
             object : RoomDatabase.Callback() {
                 override fun onOpen(connection: SQLiteConnection) {

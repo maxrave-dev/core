@@ -12,7 +12,7 @@ actual fun getDatabaseBuilder(
     return Room.databaseBuilder<MusicDatabase>(
         name = getDatabasePath()
     ).addTypeConverter(converters)
-        .addMigrations(Migration27_28)
+        .addMigrations(Migration27_28, Migration28_29)
 }
 
 actual fun getDatabasePath(): String {

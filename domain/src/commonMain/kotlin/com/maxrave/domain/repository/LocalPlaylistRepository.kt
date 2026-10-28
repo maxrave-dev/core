@@ -198,14 +198,16 @@ interface LocalPlaylistRepository {
 
     /**
      * Add a whole album to a local playlist as ONE entry, kept in sync with no YouTube playlist
-     * (the album is not expanded to its tracks). Its artwork and title ride along so the row can be
-     * drawn without a network call; the tracks are resolved from [albumBrowseId] when it is played.
+     * (the album is not expanded to its tracks). Its artwork, title and artist ride along so the
+     * row can be drawn without a network call; the tracks are resolved from [albumBrowseId] when
+     * it is played.
      */
     fun addAlbumToLocalPlaylist(
         id: Long,
         albumBrowseId: String,
         title: String?,
         thumbnail: String?,
+        artistName: String?,
         successMessage: String,
     ): Flow<LocalResource<String>>
 

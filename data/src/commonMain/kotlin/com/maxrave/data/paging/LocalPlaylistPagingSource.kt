@@ -25,6 +25,7 @@ private fun synthesizedAlbumSong(pair: PairSongLocalPlaylist): SongEntity =
         albumName = pair.title,
         title = pair.title ?: "",
         thumbnails = pair.thumbnail,
+        artistName = pair.artistName?.let { listOf(it) },
         duration = "",
         durationSeconds = 0,
         isAvailable = true,

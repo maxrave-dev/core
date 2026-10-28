@@ -627,6 +627,7 @@ internal class LocalPlaylistRepositoryImpl(
         albumBrowseId: String,
         title: String?,
         thumbnail: String?,
+        artistName: String?,
         successMessage: String,
     ): Flow<LocalResource<String>> =
         flow {
@@ -643,6 +644,7 @@ internal class LocalPlaylistRepositoryImpl(
                     albumBrowseId = albumBrowseId,
                     title = title,
                     thumbnail = thumbnail,
+                    artistName = artistName,
                 ),
             )
             emit(LocalResource.Success(successMessage))
