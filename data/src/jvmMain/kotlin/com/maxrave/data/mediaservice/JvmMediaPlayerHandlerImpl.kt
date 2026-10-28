@@ -1566,7 +1566,7 @@ class JvmMediaPlayerHandlerImpl(
                             ).singleOrNull()
                             ?.let { pair ->
                                 Logger.w("Check loadMore response", pair.size.toString())
-                                songRepository.getSongsByListVideoId(pair.map { it.songId }).lastOrNull()?.let { songs ->
+                                songRepository.getSongsByListVideoId(pair.mapNotNull { it.songId }).lastOrNull()?.let { songs ->
                                     if (songs.isNotEmpty()) {
                                         delay(300)
                                         loadMoreCatalog(songs.toArrayListTrack())
@@ -1630,7 +1630,7 @@ class JvmMediaPlayerHandlerImpl(
                                     ).lastOrNull()
                                     ?.let { pair ->
                                         Logger.w("Check loadMore response", pair.size.toString())
-                                        songRepository.getSongsByListVideoId(pair.map { it.songId }).single().let { songs ->
+                                        songRepository.getSongsByListVideoId(pair.mapNotNull { it.songId }).single().let { songs ->
                                             if (songs.isNotEmpty()) {
                                                 delay(300)
                                                 loadMoreCatalog(songs.toArrayListTrack())
@@ -1682,7 +1682,7 @@ class JvmMediaPlayerHandlerImpl(
                                     ).lastOrNull()
                                     ?.let { pair ->
                                         Logger.w("Check loadMore response", pair.size.toString())
-                                        songRepository.getSongsByListVideoId(pair.map { it.songId }).single().let { songs ->
+                                        songRepository.getSongsByListVideoId(pair.mapNotNull { it.songId }).single().let { songs ->
                                             if (songs.isNotEmpty()) {
                                                 delay(300)
                                                 loadMoreCatalog(songs.toArrayListTrack())
