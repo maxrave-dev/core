@@ -32,6 +32,7 @@ import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
+import com.maxrave.domain.repository.CacheRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.audio.BiquadFilter
@@ -90,6 +91,7 @@ internal class CrossfadeExoPlayerAdapter(
     private val mediaSourceFactory: MergingMediaSourceFactory,
     private val audioAttributes: AudioAttributes,
     private val streamRepository: StreamRepository,
+    private val cacheRepository: CacheRepository,
 ) : MediaPlayerInterface {
     // ========== Internal State Enum (same as GstreamerPlayerAdapter) ==========
 
@@ -1875,10 +1877,23 @@ internal class CrossfadeExoPlayerAdapter(
                     //   lists FileNotFoundException as non-retriable, so this layer is the only chance
                     //   to recover; reloading re-runs the resolver, which now sees an incomplete cache
                     //   and resolves a real URL.
+                    // ERROR_CODE_IO_UNSPECIFIED (2000) = a container parser failure. Media3 wraps an
+                    //   IllegalStateException (e.g. Matroska "No valid varint length mask found") or
+                    //   an EOFException from the extractor as an unexpected loader error, which lands
+                    //   here — not as PARSING_CONTAINER_MALFORMED. When the stream was served from the
+                    //   player cache this means the cached bytes are damaged (a span whose file is
+                    //   shorter than its journal entry, usually after the app was killed mid-write),
+                    //   so the cache entry has to be dropped, not just the URL refreshed.
+                    val isCorruptCacheError =
+                        error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED &&
+                            generateSequence<Throwable>(error) { it.cause }
+                                .take(8)
+                                .any { it is IllegalStateException || it is java.io.EOFException }
                     val isRetryableSourceError =
                         error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
                             error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-                            error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+                            error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+                            isCorruptCacheError
 
                     val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
                     // The progressive resolver found this track to be a live broadcast. Loading it
@@ -1915,6 +1930,12 @@ internal class CrossfadeExoPlayerAdapter(
                             val resumePositionMs = cachedPosition.coerceAtLeast(0L)
                             coroutineScope.launch {
                                 try {
+                                    if (isCorruptCacheError) {
+                                        // The bytes on disk are what broke the parser; a fresh URL
+                                        // would be read through the same damaged span.
+                                        Logger.w(TAG, "Dropping corrupt cache entry for $currentVideoId")
+                                        cacheRepository.removeCachedSong(currentVideoId)
+                                    }
                                     // Invalidate cached format so ResolvingDataSource fetches a fresh URL
                                     streamRepository.invalidateFormat(currentVideoId)
                                     streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$currentVideoId")
