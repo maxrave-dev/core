@@ -526,7 +526,7 @@ class MpvPlayerAdapter(
                 Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms <= ${positionThresholdMs}ms — going to previous track")
                 val prevIndex = getPreviousMediaItemIndex()
                 seekTo(prevIndex, 0)
-            } else {
+            } else if (!isCurrentTrackLive()) {
                 Logger.d(TAG, "seekToPrevious: No previous item, seeking to start")
                 currentPlayer?.seekTo(0)
                 cachedPosition = 0
@@ -926,9 +926,10 @@ class MpvPlayerAdapter(
 
     // ========== Navigation ==========
 
+    // Repeat One only loops a track that ends on its own (handleTrackEndInternal);
+    // Next and Previous move through the queue as they do with repeat off.
     override fun hasNextMediaItem(): Boolean =
         when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> true
             PlayerConstants.REPEAT_MODE_ALL -> true
             else ->
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
@@ -942,7 +943,6 @@ class MpvPlayerAdapter(
 
     override fun hasPreviousMediaItem(): Boolean =
         when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> true
             PlayerConstants.REPEAT_MODE_ALL -> true
             else ->
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
@@ -956,9 +956,6 @@ class MpvPlayerAdapter(
 
     private fun getNextMediaItemIndex(): Int =
         when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> {
-                localCurrentMediaItemIndex
-            }
             PlayerConstants.REPEAT_MODE_ALL -> {
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
                     val currentShufflePos = shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: 0
@@ -989,9 +986,6 @@ class MpvPlayerAdapter(
 
     private fun getPreviousMediaItemIndex(): Int =
         when (internalRepeatMode) {
-            PlayerConstants.REPEAT_MODE_ONE -> {
-                localCurrentMediaItemIndex
-            }
             PlayerConstants.REPEAT_MODE_ALL -> {
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
                     val currentShufflePos = shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: 0
@@ -1917,6 +1911,8 @@ class MpvPlayerAdapter(
         val shouldCrossfade =
             crossfadeEnabled &&
                 !crossfadeSuppressed &&
+                // Repeat One loops this track through the branch below instead of fading into the next.
+                internalRepeatMode != PlayerConstants.REPEAT_MODE_ONE &&
                 hasNextMediaItem() &&
                 !isCurrentTrackVideo() &&
                 !isNextTrackVideo() &&
@@ -2805,6 +2801,7 @@ class MpvPlayerAdapter(
                             // crossfade during queue restore.
                             if (crossfadeEnabled &&
                                 !crossfadeSuppressed &&
+                                internalRepeatMode != PlayerConstants.REPEAT_MODE_ONE &&
                                 !isCrossfading &&
                                 internalPlayWhenReady &&
                                 !isCurrentTrackVideo() &&

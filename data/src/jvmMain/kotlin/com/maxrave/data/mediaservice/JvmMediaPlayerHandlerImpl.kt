@@ -69,6 +69,7 @@ import com.maxrave.domain.utils.FilterState
 import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.connectArtists
+import com.maxrave.domain.utils.isEndlessQueueId
 import com.maxrave.domain.utils.toArrayListTrack
 import com.maxrave.domain.utils.toListName
 import com.maxrave.domain.utils.toSongEntity
@@ -969,7 +970,16 @@ class JvmMediaPlayerHandlerImpl(
         _controlState.value =
             _controlState.value.copy(
                 isNextAvailable = player.hasNextMediaItem(),
-                isPreviousAvailable = player.hasPreviousMediaItem(),
+                // On the first track of the queue Previous restarts it, so the button stays usable there,
+                // except under Repeat All in a radio or a mix, where it would wrap round to the end of a
+                // queue that keeps loading more.
+                isPreviousAvailable =
+                    (player.hasPreviousMediaItem() || currentOrderIndex() == 0) &&
+                        !(
+                            player.repeatMode == PlayerConstants.REPEAT_MODE_ALL &&
+                                currentOrderIndex() == 0 &&
+                                queueData.value.data.playlistId?.isEndlessQueueId() == true
+                        ),
             )
         coroutineScope.launch {
             nypc?.setButtonEnabled(
