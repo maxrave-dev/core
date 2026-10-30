@@ -537,7 +537,9 @@ internal class LyricsCanvasRepositoryImpl(
             simpMusicLyrics
                 .searchLrclibLyrics(qtrack, qartist, duration)
                 .onSuccess {
-                    it?.let { emit(Resource.Success<Lyrics>(it.toLyrics())) }
+                    // A search with no match must still answer: the caller falls back to the
+                    // offline cache only on an emitted error, and an empty flow skips it.
+                    if (it != null) emit(Resource.Success<Lyrics>(it.toLyrics())) else emit(Resource.Error<Lyrics>("Not found"))
                 }.onFailure {
                     it.printStackTrace()
                     emit(Resource.Error<Lyrics>("Not found"))
