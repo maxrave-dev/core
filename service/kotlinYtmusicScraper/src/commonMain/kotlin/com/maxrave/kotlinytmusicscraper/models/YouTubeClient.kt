@@ -75,6 +75,24 @@ data class YouTubeClient(
                 xClientName = 3,
             )
 
+        /**
+         * The Apple Vision Pro client — used for the fast stream path, see Ytmusic.fastStreamPlayer.
+         * Values follow AuraMusic's YouTubeClient.VISIONOS (TeamAuraMusic/AuraMusic, 2026-10).
+         */
+        val VISIONOS =
+            YouTubeClient(
+                clientName = "VISIONOS",
+                clientVersion = "0.1",
+                api_key = "",
+                userAgent =
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+                osName = "visionOS",
+                osVersion = "1.3.21O771",
+                deviceMake = "Apple",
+                deviceModel = "RealityDevice14,1",
+                xClientName = 101,
+            )
+
         val WEB =
             YouTubeClient(
                 clientName = "WEB",
