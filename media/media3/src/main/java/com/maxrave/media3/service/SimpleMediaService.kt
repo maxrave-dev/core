@@ -11,7 +11,6 @@ import android.os.Binder
 import android.os.IBinder
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
@@ -77,14 +76,12 @@ internal class SimpleMediaService :
         Logger.w("Service", "Simple Media Service Created")
 
         setMediaNotificationProvider(
-            DefaultMediaNotificationProvider(
+            SimpMediaNotificationProvider(
                 this,
                 { MEDIA_NOTIFICATION.NOTIFICATION_ID },
                 MEDIA_NOTIFICATION.NOTIFICATION_CHANNEL_ID,
                 R.string.notification_channel_name,
-            ).apply {
-                setSmallIcon(R.drawable.mono)
-            },
+            ),
         )
 
         if (mediaSession == null) {
@@ -106,13 +103,6 @@ internal class SimpleMediaService :
         val sessionToken = SessionToken(this, ComponentName(this, SimpleMediaService::class.java))
         val controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
         controllerFuture.addListener({ controllerFuture.get() }, MoreExecutors.directExecutor())
-
-        simpleMediaServiceHandler.onUpdateNotification = { list ->
-            val commandButtonList = list.map { it.toCommandButton(this) }
-            mediaSession?.setMediaButtonPreferences(
-                commandButtonList,
-            )
-        }
     }
 
     @UnstableApi
