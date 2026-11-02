@@ -422,6 +422,11 @@ internal class DelegatingForwardingPlayer(
      * Also dispatches [Player.Listener.onAvailableCommandsChanged] so MediaSession
      * re-evaluates which notification buttons to show (next/previous).
      *
+     * Also replays [Player.Listener.onPlaybackStateChanged]. A session holding this player
+     * directly (FOSS) stores the state an event carries rather than calling [getPlaybackState],
+     * so after a swap to an already-READY precached player it kept the outgoing ENDED, and
+     * Media3's 10-minute user-engaged timeout dropped the foreground service mid-playback (#2233).
+     *
      * Primary use case: crossfade transitions, where the secondary player is prepared
      * (with MediaItem + prepare()) before the ForwardingPlayer is swapped to it.
      * MediaSession uses these events to update the system notification metadata.
@@ -431,6 +436,7 @@ internal class DelegatingForwardingPlayer(
         val mediaItem = player.currentMediaItem ?: MediaItem.EMPTY
         val metadata = player.mediaMetadata
         val commands = getAvailableCommands()
+        val state = getPlaybackState()
 
         Logger.d(TAG, "Manually notifying ${trackedListeners.size} listeners about media item change: ${metadata.title}")
 
@@ -439,6 +445,7 @@ internal class DelegatingForwardingPlayer(
                 listener.onMediaItemTransition(mediaItem, Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
                 listener.onMediaMetadataChanged(metadata)
                 listener.onAvailableCommandsChanged(commands)
+                listener.onPlaybackStateChanged(state)
             } catch (e: Exception) {
                 Logger.w(TAG, "Error notifying listener about media item change: ${e.message}")
             }
