@@ -9,6 +9,7 @@ import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.IOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.VISIONOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB_REMIX
 import com.maxrave.kotlinytmusicscraper.models.YouTubeLocale
 import com.maxrave.kotlinytmusicscraper.models.body.AccountMenuBody
@@ -421,6 +422,52 @@ class Ytmusic {
                 ),
             )
             parameter("prettyPrint", false)
+        }
+
+    /**
+     * The player request the fast stream path is resolved with, made as the Apple Vision Pro client:
+     * it answers with plain stream URLs — no signature or `n` challenge to solve — so one request
+     * replaces the whole extractor run. Measured 2026-10-27 on Windows, same songs and connection:
+     *  - extractor tiers (PipePipe local → pipepipe.dev → BravePipe): 10–21 s per song.
+     *  - VISIONOS: ~0.4–1.3 s for the request, URLs served to the last byte.
+     *  - ANDROID_VR 1.65.10 (what AuraMusic asks second): ~1 s, but the end of every file is
+     *    refused (403), so a song would stop partway — the same cut-off [liveStreamPlayer] saw.
+     * Like [liveStreamPlayer] it carries no cookie and an anonymous visitor id: without one the
+     * request is bot-checked (LOGIN_REQUIRED).
+     */
+    suspend fun fastStreamPlayer(
+        videoId: String,
+        anonymousVisitorData: String,
+    ) = httpClient.post("https://www.youtube.com/youtubei/v1/player") {
+        contentType(ContentType.Application.Json)
+        header(HttpHeaders.UserAgent, VISIONOS.userAgent)
+        header("X-YouTube-Client-Name", "${VISIONOS.xClientName}")
+        header("X-YouTube-Client-Version", VISIONOS.clientVersion)
+        header("X-Goog-Visitor-Id", anonymousVisitorData)
+        setBody(
+            PlayerBody(
+                context = VISIONOS.toContext(locale, anonymousVisitorData),
+                videoId = videoId,
+                playlistId = null,
+                cpn = null,
+            ),
+        )
+        parameter("prettyPrint", false)
+    }
+
+    /**
+     * Whether a stream URL serves the byte at [offset]. Asked of a file's LAST byte: some clients'
+     * URLs start fine and are refused further in, which a HEAD or a first-byte check cannot see.
+     */
+    suspend fun isByteServed(
+        url: String,
+        offset: Long,
+    ): Boolean =
+        try {
+            httpClient.get(url) { header(HttpHeaders.Range, "bytes=$offset-$offset") }.status.value in 200..299
+        } catch (e: Exception) {
+            Logger.w(TAG, "Range probe failed: ${e.message}")
+            false
         }
 
     suspend fun noLogInPlayer(
