@@ -45,6 +45,9 @@ internal class NowPlayingCarScreen(
         screenScope.launch {
             handler.queueData.collect { invalidate() }
         }
+        screenScope.launch {
+            handler.controlState.collect { invalidate() }
+        }
     }
 
     override fun onGetTemplate(): Template {
@@ -53,6 +56,8 @@ internal class NowPlayingCarScreen(
                 ?.data
                 ?.playlistName
                 ?.takeIf { it.isNotBlank() }
+        val isLiked = handler.controlState.value.isLiked
+        val likeIconRes = if (isLiked) R.drawable.baseline_favorite_24 else R.drawable.baseline_favorite_border_24
         return MediaPlaybackTemplate
             .Builder()
             .setHeader(
@@ -60,6 +65,17 @@ internal class NowPlayingCarScreen(
                     .Builder()
                     .setTitle(queueTitle ?: "Queue")
                     .addEndHeaderAction(
+                        Action
+                            .Builder()
+                            .setIcon(
+                                CarIcon
+                                    .Builder(
+                                        IconCompat.createWithResource(carContext, likeIconRes),
+                                    ).build(),
+                            ).setOnClickListener {
+                                handler.toggleLike()
+                            }.build(),
+                    ).addEndHeaderAction(
                         Action
                             .Builder()
                             .setIcon(
