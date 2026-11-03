@@ -1,12 +1,15 @@
 package com.maxrave.domain.data.model.loginsync
 
-/** A sign-in the phone can hand to the desktop. Only sign-ins travel — never settings or API keys. */
+/**
+ * A sign-in the phone can hand to the desktop. Only sign-ins travel — never settings or API keys.
+ * Discord is not one: the desktop logs in to Discord through its own browser, and a token the phone's
+ * build uses would not work there anyway.
+ */
 enum class LoginSyncService(
     val label: String,
 ) {
     YOUTUBE("YouTube Music"),
     SPOTIFY("Spotify"),
-    DISCORD("Discord"),
     LASTFM("Last.fm"),
 }
 

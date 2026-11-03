@@ -1,5 +1,6 @@
 package com.maxrave.domain.manager
 
+import com.maxrave.domain.data.model.discord.DiscordSession
 import com.maxrave.domain.data.model.network.ProxyConfiguration
 import com.maxrave.domain.data.player.ReverbPreset
 import kotlinx.coroutines.flow.Flow
@@ -582,6 +583,11 @@ interface DataStoreManager {
     val discordToken: Flow<String>
 
     suspend fun setDiscordToken(token: String)
+
+    /** The OAuth login used by Full builds; null when logged out. */
+    val discordSession: Flow<DiscordSession?>
+
+    suspend fun setDiscordSession(session: DiscordSession?)
 
     val richPresenceEnabled: Flow<String>
 
