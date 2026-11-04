@@ -15,6 +15,9 @@ import kotlinx.datetime.LocalDateTime
 interface LocalPlaylistRepository {
     fun getLocalPlaylist(id: Long): Flow<LocalResource<LocalPlaylistEntity?>>
 
+    /** How many entries of the playlist are whole albums; [LocalPlaylistEntity.tracks] only holds songs. */
+    suspend fun getAlbumCountOfLocalPlaylist(id: Long): Int
+
     fun getAllLocalPlaylists(): Flow<List<LocalPlaylistEntity>>
 
     suspend fun updateLocalPlaylistTracks(
@@ -118,6 +121,14 @@ interface LocalPlaylistRepository {
 
     suspend fun getListTrackVideoId(id: Long): List<String>
 
+    /**
+     * Every entry of the playlist in CustomOrder, songs and album entries alike. Playback reads the
+     * whole list through this rather than through the paged reader: an album entry expands to
+     * several tracks, so a page boundary can fall in the middle of an album and the queue would
+     * have to be stitched together again on every continuation.
+     */
+    suspend fun getAllPlaylistPairSongByPosition(id: Long): List<PairSongLocalPlaylist>
+
     fun insertLocalPlaylist(
         localPlaylist: LocalPlaylistEntity,
         successMessage: String,
@@ -188,12 +199,38 @@ interface LocalPlaylistRepository {
         errorMessage: String,
     ): Flow<LocalResource<String>>
 
+    /**
+     * Add a whole album to a local playlist as ONE entry, kept in sync with no YouTube playlist
+     * (the album is not expanded to its tracks). Its artwork, title and artist ride along so the
+     * row can be drawn without a network call; the tracks are resolved from [albumBrowseId] when
+     * it is played.
+     */
+    fun addAlbumToLocalPlaylist(
+        id: Long,
+        albumBrowseId: String,
+        title: String?,
+        thumbnail: String?,
+        artistName: String?,
+        successMessage: String,
+    ): Flow<LocalResource<String>>
+
     fun removeTrackFromLocalPlaylist(
         id: Long,
         song: SongEntity,
         successMessage: String,
         updatedYtMessage: String,
         errorMessage: String,
+    ): Flow<LocalResource<String>>
+
+    /**
+     * Remove the entry whose own id is [pairId]. Unlike [removeTrackFromLocalPlaylist] this needs no
+     * song, so it is the path an album entry takes — an album exists only in this playlist, there is
+     * nothing on YouTube to delete, and a song's `songId` is NULL here and would never match.
+     */
+    fun removeAlbumFromLocalPlaylist(
+        id: Long,
+        pairId: Int,
+        successMessage: String,
     ): Flow<LocalResource<String>>
 
     fun getSuggestionsTrackForPlaylist(id: Long): Flow<LocalResource<Pair<String?, List<Track>>>>

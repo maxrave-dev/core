@@ -43,7 +43,7 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         AutoEqEntryEntity::class, AutoEqIndexMetaEntity::class, AutoEqCurveEntity::class,
         ArtistMotionEntity::class
     ],
-    version = 27,
+    version = 29,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3), AutoMigration(
@@ -98,6 +98,13 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         AutoMigration(26, 27),
         AutoMigration(25, 27),
         AutoMigration(24, 27),
+        // 28 makes pair_song_local_playlist.songId nullable and adds itemType/albumBrowseId/
+        // title/thumbnail, so a playlist can hold an album as a single entry. Nullability cannot
+        // be changed by an auto-migration, so it is hand-written (Migration27_28) and registered
+        // on every platform's builder rather than listed here. Older versions chain up through
+        // the entries above to 27 and then cross there.
+        // 29 adds pair_song_local_playlist.artistName (nullable) for the album row's subtitle;
+        // it is hand-written too (Migration28_29) and chained on the same builders.
     ],
 )
 @TypeConverters(Converters::class)

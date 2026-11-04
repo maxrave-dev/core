@@ -515,7 +515,7 @@ interface DataStoreManager {
 
     suspend fun setEnableLiquidGlass(enable: Boolean)
 
-    /** One of [THEME_MODE_SYSTEM], [THEME_MODE_DARK], [THEME_MODE_LIGHT]. */
+    /** One of [THEME_MODE_SYSTEM], [THEME_MODE_DARK], [THEME_MODE_AMOLED], [THEME_MODE_LIGHT]. */
     val themeMode: Flow<String>
 
     suspend fun setThemeMode(mode: String)
@@ -651,6 +651,7 @@ interface DataStoreManager {
 
         const val THEME_MODE_SYSTEM = "SYSTEM"
         const val THEME_MODE_DARK = "DARK"
+        const val THEME_MODE_AMOLED = "AMOLED"
         const val THEME_MODE_LIGHT = "LIGHT"
 
         const val THEME_COLOR_DEFAULT = "DEFAULT"

@@ -198,6 +198,7 @@ private val mediaServiceModule =
                 mediaSourceFactory = get(),
                 audioAttributes = get(),
                 streamRepository = get(),
+                cacheRepository = get(),
             )
         }
 
