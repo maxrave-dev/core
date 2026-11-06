@@ -1,12 +1,18 @@
 package com.simpmusic.media_jvm.mpv
 
+import com.maxrave.domain.mediaservice.automix.TrackStructure
+import com.maxrave.domain.mediaservice.automix.TrackStructureAnalyzer
 import com.maxrave.domain.mediaservice.player.WAVEFORM_BARS_PER_SECOND
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
@@ -15,9 +21,12 @@ import kotlin.math.roundToInt
  * 1 / [WAVEFORM_BARS_PER_SECOND] s, each 0..1 against the loudest bar, kept under ~/.simpmusic/waveforms.
  *
  * mpv shares no cache between handles, so the track's audio is played once more through a second,
- * silent handle: `ao=null` with `ao-null-untimed` decodes as fast as the stream arrives. A lavfi chain
- * resamples it to 8 kHz mono, cuts it into one frame per bar, measures each frame's RMS with `astats`,
- * and `ametadata` prints the values to a file that is read back once the file has ended.
+ * silent handle. A lavfi chain resamples it to 8 kHz mono 16-bit, cuts it into one frame per bar,
+ * measures each frame's RMS with `astats`, and `ametadata` prints the values to a file that is read
+ * back once the file has ended. The audio that comes out of the chain goes to `ao=pcm`, which writes
+ * it raw to a second file as fast as it decodes (a 4-minute track in under a second): that copy is
+ * what AutoMix's [TrackStructureAnalyzer] reads, and its result is kept beside the waveform as
+ * `<id>.mix`. Every bundled slice carries ao_pcm.
  *
  * The chain needs `asetnsamples`, `astats` and `ametadata`. The macOS and Windows slices carry every
  * FFmpeg filter; the Linux slice carries only its whitelist (scripts/mpv-linux/Dockerfile). On a slice
@@ -25,7 +34,7 @@ import kotlin.math.roundToInt
  */
 internal object MpvWaveformReader {
     private const val TAG = "Waveform"
-    private const val SAMPLE_RATE = 8_000
+    private const val SAMPLE_RATE = TrackStructureAnalyzer.SAMPLE_RATE
     private val SAMPLES_PER_BAR = (SAMPLE_RATE / WAVEFORM_BARS_PER_SECOND).roundToInt()
 
     // A stream that has not ended in this long is not worth holding a decoder for.
@@ -33,6 +42,12 @@ internal object MpvWaveformReader {
 
     // Silence still draws a sliver, as on Android, so the line never breaks.
     private const val MIN_LEVEL = 0.04f
+
+    // AutoMix analyses songs; past this a track is a mix or an episode (see WaveformReader).
+    private const val MAX_ANALYSIS_BYTES = 15L * 60 * SAMPLE_RATE * 2
+
+    // One decode at a time: the waveform and AutoMix ask for the same tracks, into the same files.
+    private val decodeLock = Mutex()
     private val UNSAFE_FILE_CHARS = Regex("[^A-Za-z0-9_-]")
 
     private val dir: File by lazy {
@@ -49,36 +64,93 @@ internal object MpvWaveformReader {
     ): FloatArray? =
         withContext(Dispatchers.IO) {
             val name = mediaId.replace(UNSAFE_FILE_CHARS, "_")
-            val stored = File(dir, "$name.wf")
-            if (stored.isFile && stored.length() > 0) {
-                val bytes = stored.readBytes()
-                return@withContext FloatArray(bytes.size) { (bytes[it].toInt() and 0xFF) / 255f }
-            }
-            val url = sourceUrl()
-            if (url == null) {
-                Logger.d(TAG, "No playable audio URL for $mediaId yet")
-                return@withContext null
-            }
-            val levels = File(dir, "$name.levels")
-            try {
-                levels.delete()
-                if (!measure(url, levels)) return@withContext null
-                val bars = parse(levels)
-                if (bars == null) {
-                    Logger.w(TAG, "Measured $mediaId but read no levels back")
-                    return@withContext null
-                }
-                stored.writeBytes(ByteArray(bars.size) { (bars[it] * 255f).toInt().coerceIn(0, 255).toByte() })
-                bars
-            } finally {
-                levels.delete()
+            storedBars(name) ?: decodeLock.withLock { storedBars(name) ?: measure(mediaId, name, sourceUrl)?.bars }
+        }
+
+    /** AutoMix's measurements of the track, from the same decode as the waveform; null when it has none. */
+    suspend fun structure(
+        mediaId: String,
+        sourceUrl: suspend () -> String?,
+    ): TrackStructure? =
+        withContext(Dispatchers.IO) {
+            val name = mediaId.replace(UNSAFE_FILE_CHARS, "_")
+            val stored = File(dir, "$name.mix")
+            dropOutdated(stored)
+            if (stored.isFile) return@withContext TrackStructure.decode(stored.readText())
+            decodeLock.withLock {
+                if (stored.isFile) TrackStructure.decode(stored.readText()) else measure(mediaId, name, sourceUrl)?.structure
             }
         }
 
-    /** Plays [url] through a silent handle that writes one RMS line per bar to [levels]. */
+    /** A `.mix` written by an older analysis is deleted so the track is measured again; an empty one stays. */
+    private fun dropOutdated(stored: File) {
+        if (stored.isFile && stored.length() > 0 && TrackStructure.decode(stored.readText()) == null) stored.delete()
+    }
+
+    private fun storedBars(name: String): FloatArray? {
+        val stored = File(dir, "$name.wf")
+        if (!stored.isFile || stored.length() == 0L) return null
+        val bytes = stored.readBytes()
+        return FloatArray(bytes.size) { (bytes[it].toInt() and 0xFF) / 255f }
+    }
+
+    private class Measured(
+        val bars: FloatArray,
+        val structure: TrackStructure?,
+    )
+
     private suspend fun measure(
+        mediaId: String,
+        name: String,
+        sourceUrl: suspend () -> String?,
+    ): Measured? {
+        val url = sourceUrl()
+        if (url == null) {
+            Logger.d(TAG, "No playable audio URL for $mediaId yet")
+            return null
+        }
+        val levels = File(dir, "$name.levels")
+        val pcm = File(dir, "$name.pcm")
+        try {
+            levels.delete()
+            pcm.delete()
+            if (!decode(url, levels, pcm)) return null
+            val bars = parse(levels)
+            if (bars == null) {
+                Logger.w(TAG, "Measured $mediaId but read no levels back")
+                return null
+            }
+            File(dir, "$name.wf").writeBytes(ByteArray(bars.size) { (bars[it] * 255f).toInt().coerceIn(0, 255).toByte() })
+            val structure =
+                pcm
+                    .takeIf { it.isFile && it.length() in 2..MAX_ANALYSIS_BYTES }
+                    // Kept apart from the waveform: a failure here must not cost the bars already measured.
+                    ?.let { runCatching { TrackStructureAnalyzer.analyze(readPcm(it)) }.getOrNull() }
+            // Written even when empty, so a track found unusable is not decoded again for AutoMix.
+            File(dir, "$name.mix").writeText(structure?.encode().orEmpty())
+            Logger.d(
+                TAG,
+                "AutoMix measured $mediaId: " +
+                    (structure?.let { "${it.bpm} BPM, intro ends ${it.introEndMs} ms, last chorus ends ${it.lastChorusEndMs} ms, music ends ${it.musicEndMs} ms" } ?: "nothing usable"),
+            )
+            return Measured(bars, structure)
+        } finally {
+            levels.delete()
+            pcm.delete()
+        }
+    }
+
+    /** ao_pcm's output: raw 16-bit little-endian samples, no header (`ao-pcm-waveheader=no`). */
+    private fun readPcm(file: File): ShortArray {
+        val buffer = ByteBuffer.wrap(file.readBytes()).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+        return ShortArray(buffer.remaining()).also { buffer.get(it) }
+    }
+
+    /** Plays [url] through a silent handle that writes one RMS line per bar to [levels] and the audio to [pcm]. */
+    private suspend fun decode(
         url: String,
         levels: File,
+        pcm: File,
     ): Boolean {
         val lib = MpvLibrary.INSTANCE ?: return false
         val ctx = lib.mpv_create() ?: return false
@@ -96,12 +168,13 @@ internal object MpvWaveformReader {
             lib.mpv_set_option_string(ctx, "ytdl", "no")
             option("vid", "no")
             option("vo", "null")
-            option("ao", "null")
-            option("ao-null-untimed", "yes")
+            if (!option("ao", "pcm")) return false
+            if (!option("ao-pcm-file", pcm.absolutePath)) return false
+            option("ao-pcm-waveheader", "no")
             // Same reconnect behaviour as the playing handles (see MpvPlayer.create).
             option("stream-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_delay_max=30")
             val graph =
-                "lavfi=[aresample=$SAMPLE_RATE,aformat=channel_layouts=mono," +
+                "lavfi=[aresample=$SAMPLE_RATE,aformat=sample_fmts=s16:channel_layouts=mono," +
                     "asetnsamples=n=$SAMPLES_PER_BAR:p=0,astats=metadata=1:reset=1," +
                     "ametadata=mode=print:key=lavfi.astats.1.RMS_level:file=${lavfiEscapePath(levels.absolutePath)}]"
             if (!option("af", graph)) return false

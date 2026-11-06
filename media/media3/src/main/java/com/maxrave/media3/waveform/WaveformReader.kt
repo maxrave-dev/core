@@ -11,6 +11,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import com.maxrave.domain.data.player.LiveStreamRegistry
+import com.maxrave.domain.mediaservice.automix.TrackStructure
+import com.maxrave.domain.mediaservice.automix.TrackStructureAnalyzer
 import com.maxrave.domain.mediaservice.player.WAVEFORM_BARS_PER_SECOND
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
@@ -19,6 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.ByteBuffer
@@ -33,6 +37,9 @@ import kotlin.math.sqrt
  * player cache for the player. They are decoded with MediaExtractor + MediaCodec and reduced to one
  * RMS value per 1 / [WAVEFORM_BARS_PER_SECOND] seconds. A finished waveform is a few hundred bytes
  * kept under the cache directory, so a track is decoded once.
+ *
+ * The same decode feeds AutoMix: the audio is also averaged down to 8 kHz mono and handed to
+ * [TrackStructureAnalyzer], whose result is kept beside the waveform as `<id>.mix`.
  */
 @OptIn(UnstableApi::class)
 internal class WaveformReader(
@@ -42,38 +49,84 @@ internal class WaveformReader(
 ) {
     private val dir by lazy { File(context.cacheDir, "waveforms").apply { mkdirs() } }
 
+    // One decode at a time: the waveform and AutoMix ask for the same tracks, into the same .part file.
+    private val decodeLock = Mutex()
+
     suspend fun read(mediaId: String): FloatArray? =
         withContext(Dispatchers.IO) {
             if (mediaId.isBlank() || LiveStreamRegistry.isLive(mediaId)) return@withContext null
             val name = mediaId.replace(UNSAFE_FILE_CHARS, "_")
-            val stored = File(dir, "$name.wf")
-            if (stored.isFile && stored.length() > 0) {
-                val bytes = stored.readBytes()
-                return@withContext FloatArray(bytes.size) { (bytes[it].toInt() and 0xFF) / 255f }
-            }
-            val audio = File(dir, "$name.part")
-            try {
-                if (!download(mediaId, audio)) {
-                    // Usually the format is not stored yet; the caller asks again shortly.
-                    Logger.d(TAG, "No audio for $mediaId yet")
-                    return@withContext null
-                }
-                val bars = decode(audio)
-                if (bars == null) {
-                    Logger.w(TAG, "Could not decode $mediaId into a waveform")
-                    return@withContext null
-                }
-                stored.writeBytes(ByteArray(bars.size) { (bars[it] * 255f).toInt().coerceIn(0, 255).toByte() })
-                bars
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Logger.w(TAG, "No waveform for $mediaId: ${e.message}")
-                null
-            } finally {
-                audio.delete()
+            storedBars(name) ?: decodeLock.withLock { storedBars(name) ?: measure(mediaId, name)?.bars }
+        }
+
+    /** AutoMix's measurements of the track; null when it has none (yet, or ever). */
+    suspend fun structure(mediaId: String): TrackStructure? =
+        withContext(Dispatchers.IO) {
+            if (mediaId.isBlank() || LiveStreamRegistry.isLive(mediaId)) return@withContext null
+            val name = mediaId.replace(UNSAFE_FILE_CHARS, "_")
+            val stored = File(dir, "$name.mix")
+            dropOutdated(stored)
+            if (stored.isFile) return@withContext TrackStructure.decode(stored.readText())
+            decodeLock.withLock {
+                if (stored.isFile) TrackStructure.decode(stored.readText()) else measure(mediaId, name)?.structure
             }
         }
+
+    /** A `.mix` written by an older analysis is deleted so the track is measured again; an empty one stays. */
+    private fun dropOutdated(stored: File) {
+        if (stored.isFile && stored.length() > 0 && TrackStructure.decode(stored.readText()) == null) stored.delete()
+    }
+
+    private fun storedBars(name: String): FloatArray? {
+        val stored = File(dir, "$name.wf")
+        if (!stored.isFile || stored.length() == 0L) return null
+        val bytes = stored.readBytes()
+        return FloatArray(bytes.size) { (bytes[it].toInt() and 0xFF) / 255f }
+    }
+
+    private class Measured(
+        val bars: FloatArray,
+        val structure: TrackStructure?,
+    )
+
+    /** Downloads and decodes the track once, storing both its waveform and its AutoMix measurements. */
+    private suspend fun measure(
+        mediaId: String,
+        name: String,
+    ): Measured? {
+        val audio = File(dir, "$name.part")
+        return try {
+            if (!download(mediaId, audio)) {
+                // Usually the format is not stored yet; the caller asks again shortly.
+                Logger.d(TAG, "No audio for $mediaId yet")
+                return null
+            }
+            val decoded = decode(audio)
+            if (decoded == null) {
+                Logger.w(TAG, "Could not decode $mediaId into a waveform")
+                return null
+            }
+            val bars = decoded.bars
+            File(dir, "$name.wf").writeBytes(ByteArray(bars.size) { (bars[it] * 255f).toInt().coerceIn(0, 255).toByte() })
+            // Kept apart from the waveform: a failure here must not cost the bars already measured.
+            val structure = decoded.pcm?.let { runCatching { TrackStructureAnalyzer.analyze(it) }.getOrNull() }
+            // Written even when empty, so a track found unusable is not decoded again for AutoMix.
+            File(dir, "$name.mix").writeText(structure?.encode().orEmpty())
+            Logger.d(
+                TAG,
+                "AutoMix measured $mediaId: " +
+                    (structure?.let { "${it.bpm} BPM, intro ends ${it.introEndMs} ms, last chorus ends ${it.lastChorusEndMs} ms, music ends ${it.musicEndMs} ms" } ?: "nothing usable"),
+            )
+            Measured(bars, structure)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "No waveform for $mediaId: ${e.message}")
+            null
+        } finally {
+            audio.delete()
+        }
+    }
 
     /**
      * Copies the whole audio stream to [target]. The resolver serves at most one 5 MiB chunk per
@@ -130,7 +183,13 @@ internal class WaveformReader(
         return true
     }
 
-    private suspend fun decode(file: File): FloatArray? {
+    private class Decoded(
+        val bars: FloatArray,
+        /** Mono at [TrackStructureAnalyzer.SAMPLE_RATE]; null for a track too long to be worth analysing. */
+        val pcm: ShortArray?,
+    )
+
+    private suspend fun decode(file: File): Decoded? {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
@@ -147,6 +206,12 @@ internal class WaveformReader(
             val barCount = (durationUs / 1_000_000.0 * WAVEFORM_BARS_PER_SECOND).toInt().coerceAtLeast(1)
             val sums = DoubleArray(barCount)
             val counts = LongArray(barCount)
+            val downsampler =
+                if (durationUs <= MAX_ANALYSIS_US) {
+                    Downsampler((durationUs * TrackStructureAnalyzer.SAMPLE_RATE / 1_000_000).toInt() + TrackStructureAnalyzer.SAMPLE_RATE)
+                } else {
+                    null
+                }
 
             val decoder = MediaCodec.createDecoderByType(mime)
             codec = decoder
@@ -187,7 +252,7 @@ internal class WaveformReader(
                     if (output != null && info.size > 0) {
                         output.position(info.offset)
                         output.limit(info.offset + info.size)
-                        accumulate(output.order(ByteOrder.nativeOrder()), floatPcm, channels, sampleRate, info.presentationTimeUs, sums, counts)
+                        accumulate(output.order(ByteOrder.nativeOrder()), floatPcm, channels, sampleRate, info.presentationTimeUs, sums, counts, downsampler)
                     }
                     decoder.releaseOutputBuffer(outIndex, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
@@ -195,7 +260,7 @@ internal class WaveformReader(
             }
             val rms = FloatArray(barCount) { if (counts[it] > 0) sqrt(sums[it] / counts[it]).toFloat() else 0f }
             val loudest = rms.maxOrNull()?.takeIf { it > 0f } ?: return null
-            return FloatArray(barCount) { (rms[it] / loudest).coerceIn(MIN_LEVEL, 1f) }
+            return Decoded(FloatArray(barCount) { (rms[it] / loudest).coerceIn(MIN_LEVEL, 1f) }, downsampler?.finish())
         } finally {
             codec?.let {
                 runCatching { it.stop() }
@@ -205,7 +270,10 @@ internal class WaveformReader(
         }
     }
 
-    /** Adds one decoded buffer's mean square, per channel-averaged frame, to the bar its time falls in. */
+    /**
+     * Adds one decoded buffer's mean square, per channel-averaged frame, to the bar its time falls in,
+     * and its channel-averaged samples to [downsampler].
+     */
     private fun accumulate(
         buffer: ByteBuffer,
         floatPcm: Boolean,
@@ -214,6 +282,7 @@ internal class WaveformReader(
         startUs: Long,
         sums: DoubleArray,
         counts: LongArray,
+        downsampler: Downsampler?,
     ) {
         val channelCount = channels.coerceAtLeast(1)
         val bytesPerSample = if (floatPcm) 4 else 2
@@ -221,15 +290,61 @@ internal class WaveformReader(
         val startSeconds = startUs / 1_000_000.0
         for (frame in 0 until frames) {
             var squares = 0.0
+            var mono = 0.0
             repeat(channelCount) {
                 val sample = if (floatPcm) buffer.float.toDouble() else buffer.short / 32768.0
                 squares += sample * sample
+                mono += sample
             }
+            downsampler?.add(mono / channelCount, sampleRate)
             val bar = ((startSeconds + frame.toDouble() / sampleRate) * WAVEFORM_BARS_PER_SECOND).toInt()
             if (bar in sums.indices) {
                 sums[bar] += squares / channelCount
                 counts[bar]++
             }
+        }
+    }
+
+    /**
+     * Averages the decoded audio down to [TrackStructureAnalyzer.SAMPLE_RATE]: every input frame goes
+     * to the output sample its position falls in. The box average is the anti-alias filter, enough
+     * for what the analyzer reads (energy every 10 ms, pitches up to 1 kHz).
+     */
+    private class Downsampler(
+        capacity: Int,
+    ) {
+        private val pcm = ShortArray(capacity)
+        private var written = 0
+        private var inputFrames = 0L
+        private var current = 0L
+        private var sum = 0.0
+        private var count = 0
+
+        fun add(
+            sample: Double,
+            sampleRate: Int,
+        ) {
+            val index = inputFrames++ * TrackStructureAnalyzer.SAMPLE_RATE / sampleRate
+            if (index != current) {
+                emit()
+                current = index
+            }
+            sum += sample
+            count++
+        }
+
+        fun finish(): ShortArray {
+            emit()
+            return pcm.copyOf(written)
+        }
+
+        private fun emit() {
+            if (count > 0 && current < pcm.size) {
+                pcm[current.toInt()] = (sum / count * 32767).toInt().coerceIn(-32768, 32767).toShort()
+                written = maxOf(written, current.toInt() + 1)
+            }
+            sum = 0.0
+            count = 0
         }
     }
 
@@ -239,6 +354,10 @@ internal class WaveformReader(
 
         // A long mix or a podcast episode is not worth holding on disk to draw one line.
         const val MAX_AUDIO_BYTES = 64L * 1024 * 1024
+
+        // AutoMix analyses songs; past this a track is a mix or an episode, and its 8 kHz copy alone
+        // would take 14 MB of memory.
+        const val MAX_ANALYSIS_US = 15L * 60 * 1_000_000
 
         // Silence still draws a sliver, as SoundCloud's does, so the line never breaks.
         const val MIN_LEVEL = 0.04f
