@@ -63,6 +63,7 @@ import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.cast.CastHandoffManager
+import com.maxrave.media3.waveform.WaveformReader
 import com.maxrave.media3.cast.CastStreamResolver
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter
 import com.maxrave.media3.extension.isFullyCached
@@ -190,6 +191,24 @@ private val mediaServiceModule =
             provideCoilBitmapLoader(androidContext(), get(named(SERVICE_SCOPE)))
         }
 
+        // Reads a track's audio through the player's own resolving, cache-backed chain, so the
+        // waveform costs no second download of what the player streams anyway.
+        single<WaveformReader> {
+            WaveformReader(
+                context = androidContext(),
+                dataSourceFactory =
+                    provideResolvingDataSourceFactory(
+                        provideCacheDataSource(get(named(DOWNLOAD_CACHE)), get(named(PLAYER_CACHE)), androidContext(), provideProxy(get())),
+                        get(named(DOWNLOAD_CACHE)),
+                        get(named(PLAYER_CACHE)),
+                        get(),
+                        get(),
+                        get(named(SERVICE_SCOPE)),
+                    ),
+                streamRepository = get(),
+            )
+        }
+
         single<MediaPlayerInterface>(createdAtStart = true) {
             CrossfadeExoPlayerAdapter(
                 context = androidContext(),
@@ -198,6 +217,7 @@ private val mediaServiceModule =
                 mediaSourceFactory = get(),
                 audioAttributes = get(),
                 streamRepository = get(),
+                waveformReader = get(),
             )
         }
 

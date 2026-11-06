@@ -35,6 +35,7 @@ import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.audio.BiquadFilter
+import com.maxrave.media3.waveform.WaveformReader
 import com.maxrave.media3.audio.ConvolutionReverbAudioProcessor
 import com.maxrave.media3.audio.CrossfadeFilterAudioProcessor
 import com.maxrave.media3.audio.EchoAudioProcessor
@@ -90,6 +91,7 @@ internal class CrossfadeExoPlayerAdapter(
     private val mediaSourceFactory: MergingMediaSourceFactory,
     private val audioAttributes: AudioAttributes,
     private val streamRepository: StreamRepository,
+    private val waveformReader: WaveformReader,
 ) : MediaPlayerInterface {
     // ========== Internal State Enum (same as GstreamerPlayerAdapter) ==========
 
@@ -327,6 +329,8 @@ internal class CrossfadeExoPlayerAdapter(
         get() = outputRouter.outputs
 
     override fun selectAudioOutput(id: String?) = outputRouter.select(id)
+
+    override suspend fun loadWaveform(mediaId: String): FloatArray? = waveformReader.read(mediaId)
 
     override fun refreshAudioOutputs() = outputRouter.refresh()
 

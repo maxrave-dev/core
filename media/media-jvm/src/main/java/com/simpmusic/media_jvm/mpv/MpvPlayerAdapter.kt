@@ -1301,6 +1301,24 @@ class MpvPlayerAdapter(
     @Volatile
     private var preferredAudioDevice: String? = null
 
+    override suspend fun loadWaveform(mediaId: String): FloatArray? {
+        if (mediaId.isBlank() || LiveStreamRegistry.isLive(mediaId)) return null
+        return MpvWaveformReader.read(mediaId) { waveformSourceUrl(mediaId) }
+    }
+
+    /**
+     * The track's audio alone, found the way [extractPlayableUrl] finds it: a download first, then the
+     * format's own audio URL. No fallback extraction: a waveform is not worth another extraction.
+     */
+    private suspend fun waveformSourceUrl(videoId: String): String? {
+        File(getDownloadPath())
+            .listFiles()
+            ?.firstOrNull { it.name.contains(videoId) && !it.name.contains(MERGING_DATA_TYPE.VIDEO) && it.length() > 0 }
+            ?.let { return it.absolutePath }
+        val audioUrl = streamRepository.getNewFormat(videoId).lastOrNull()?.audioUrl?.takeIf { it.isNotEmpty() } ?: return null
+        return audioUrl.takeIf { streamRepository.is403Url(it).firstOrNull() == false }
+    }
+
     override fun selectAudioOutput(id: String?) {
         preferredAudioDevice = id?.takeIf { it != MPV_AUTO_DEVICE }
         // Same hop as setEqualizer: mpv properties are written on the player thread, and every live

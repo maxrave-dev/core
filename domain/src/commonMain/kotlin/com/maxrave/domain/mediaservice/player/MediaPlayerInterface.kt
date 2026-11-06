@@ -7,6 +7,9 @@ import com.maxrave.domain.data.player.GenericPlaybackParameters
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
+/** How many waveform bars [MediaPlayerInterface.loadWaveform] returns per second of audio. */
+const val WAVEFORM_BARS_PER_SECOND = 1.25f
+
 /**
  * Abstract interface for media player implementations
  */
@@ -233,6 +236,16 @@ interface MediaPlayerInterface {
      * that can only ask a live player what it sees. Called when the output list is opened.
      */
     fun refreshAudioOutputs() = Unit
+
+    /**
+     * The loudness outline of [mediaId]'s audio for the SoundCloud style's waveform: one value per
+     * 1 / [WAVEFORM_BARS_PER_SECOND] seconds of the track, each 0..1 against the track's loudest
+     * moment. Null when this backend cannot produce one (the default) or the audio could not be read.
+     *
+     * Suspends while the audio is fetched and decoded, which can take seconds on a first play;
+     * callers run it off the main thread and draw a flat line meanwhile.
+     */
+    suspend fun loadWaveform(mediaId: String): FloatArray? = null
 
     // Listener management
     fun addListener(listener: MediaPlayerListener)
