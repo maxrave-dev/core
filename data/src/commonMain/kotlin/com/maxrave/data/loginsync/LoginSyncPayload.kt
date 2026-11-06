@@ -14,7 +14,7 @@ internal val loginSyncJson = Json { ignoreUnknownKeys = true }
 internal data class LoginBundle(
     val youtube: YouTubeLogin? = null,
     val spotifySpDc: String? = null,
-    val discordToken: String? = null,
+    // A phone on an older version may still send `discordToken`; ignoreUnknownKeys drops it.
     val lastfm: LastfmLogin? = null,
 )
 

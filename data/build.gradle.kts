@@ -77,6 +77,9 @@ kotlin {
                 implementation(projects.spotify)
                 implementation(projects.kotlinYtmusicScraper)
                 implementation(projects.kizzy)
+                // Rich Presence over OAuth, used instead of kizzy when the build carries a Discord
+                // application id (only Full builds do).
+                implementation(projects.discord)
                 implementation(projects.listenTogether)
 
                 // Last.fm (gated: real scrobbler for full builds, no-op stub for FOSS builds)

@@ -20,7 +20,6 @@ internal class LoginSyncStore(
         buildList {
             if (dataStore.loggedIn.first() == TRUE && dataStore.cookie.first().isNotEmpty()) add(LoginSyncService.YOUTUBE)
             if (dataStore.spdc.first().isNotEmpty()) add(LoginSyncService.SPOTIFY)
-            if (dataStore.discordToken.first().isNotEmpty()) add(LoginSyncService.DISCORD)
             if (dataStore.lastfmSessionKey.first().isNotEmpty()) add(LoginSyncService.LASTFM)
         }
 
@@ -39,7 +38,6 @@ internal class LoginSyncStore(
                     null
                 },
             spotifySpDc = if (LoginSyncService.SPOTIFY in services) dataStore.spdc.first() else null,
-            discordToken = if (LoginSyncService.DISCORD in services) dataStore.discordToken.first() else null,
             lastfm =
                 if (LoginSyncService.LASTFM in services) {
                     LastfmLogin(dataStore.lastfmSessionKey.first(), dataStore.lastfmUsername.first())
@@ -62,10 +60,6 @@ internal class LoginSyncStore(
                 dataStore.setSpotifyPersonalToken("")
                 dataStore.setSpotifyPersonalTokenExpires(0)
                 add(LoginSyncService.SPOTIFY)
-            }
-            bundle.discordToken?.takeIf { it.isNotEmpty() }?.let {
-                dataStore.setDiscordToken(it)
-                add(LoginSyncService.DISCORD)
             }
             bundle.lastfm?.takeIf { it.sessionKey.isNotEmpty() }?.let {
                 dataStore.setLastfmSession(sessionKey = it.sessionKey, username = it.username)
