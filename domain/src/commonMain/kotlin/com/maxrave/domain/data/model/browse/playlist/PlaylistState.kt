@@ -13,4 +13,5 @@ data class PlaylistState(
     val trackCount: Int = 0,
     val radioEndpoint: YouTubeWatchEndpoint? = null,
     val shuffleEndpoint: YouTubeWatchEndpoint? = null,
+    val length: String
 )
