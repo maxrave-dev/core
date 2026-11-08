@@ -615,11 +615,21 @@ class MpvPlayerAdapter(
 
         notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
 
-        if (playlist.size - 1 - currentMediaItemIndex <= maxPrecacheCount) {
-            coroutineScope.launch {
-                clearPrecacheExceptCurrentInternal()
-                triggerPrecachingInternal()
+        // Re-precache only when the appended track is one of the next ones Next plays. Under shuffle that
+        // is its distance in the shuffled order, not in the playlist; re-triggering on every append of a
+        // batch would cancel an in-flight extraction each time. The trigger keeps the precaches Next still
+        // reaches and releases the rest, so it needs no clear first (that threw away the next player).
+        val landsInPrecache =
+            if (internalShuffleModeEnabled) {
+                val gap =
+                    (shuffleIndices.getOrNull(playlist.lastIndex) ?: -1) -
+                        (shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: -1)
+                gap in 1..maxPrecacheCount
+            } else {
+                playlist.size - 1 - currentMediaItemIndex <= maxPrecacheCount
             }
+        if (landsInPrecache) {
+            coroutineScope.launch { triggerPrecachingInternal() }
         }
     }
 
@@ -649,11 +659,9 @@ class MpvPlayerAdapter(
 
             notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
 
-            if (index - 1 - currentMediaItemIndex <= maxPrecacheCount) {
-                coroutineScope.launch {
-                    clearPrecacheExceptCurrentInternal()
-                    triggerPrecachingInternal()
-                }
+            // Same as the append above: under shuffle the insert may reorder what Next plays.
+            if (internalShuffleModeEnabled || index - 1 - currentMediaItemIndex <= maxPrecacheCount) {
+                coroutineScope.launch { triggerPrecachingInternal() }
             }
         }
     }
@@ -966,16 +974,18 @@ class MpvPlayerAdapter(
                 }
         }
 
-    private fun getNextMediaItemIndex(): Int =
+    /** The index Next plays after [from]; [from] itself when nothing follows it. [from] defaults to the
+     *  current track, and precaching walks it forward to reach the track after next. */
+    private fun getNextMediaItemIndex(from: Int = localCurrentMediaItemIndex): Int =
         when (internalRepeatMode) {
             PlayerConstants.REPEAT_MODE_ALL -> {
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
-                    val currentShufflePos = shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: 0
+                    val currentShufflePos = shuffleIndices.getOrNull(from) ?: 0
                     val nextShufflePos = (currentShufflePos + 1) % shuffleOrder.size
-                    shuffleOrder.getOrNull(nextShufflePos) ?: localCurrentMediaItemIndex
+                    shuffleOrder.getOrNull(nextShufflePos) ?: from
                 } else {
-                    if (localCurrentMediaItemIndex < playlist.size - 1) {
-                        localCurrentMediaItemIndex + 1
+                    if (from < playlist.size - 1) {
+                        from + 1
                     } else {
                         0
                     }
@@ -983,15 +993,15 @@ class MpvPlayerAdapter(
             }
             else -> {
                 if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
-                    val currentShufflePos = shuffleIndices.getOrNull(localCurrentMediaItemIndex) ?: 0
+                    val currentShufflePos = shuffleIndices.getOrNull(from) ?: 0
                     val nextShufflePos = currentShufflePos + 1
                     if (nextShufflePos < shuffleOrder.size) {
-                        shuffleOrder.getOrNull(nextShufflePos) ?: localCurrentMediaItemIndex
+                        shuffleOrder.getOrNull(nextShufflePos) ?: from
                     } else {
-                        localCurrentMediaItemIndex
+                        from
                     }
                 } else {
-                    (localCurrentMediaItemIndex + 1).coerceAtMost(playlist.size - 1)
+                    (from + 1).coerceAtMost(playlist.size - 1)
                 }
             }
         }
@@ -2984,36 +2994,40 @@ class MpvPlayerAdapter(
         precacheJob =
             coroutineScope.launch {
                 try {
-                    val indicesToPrecache = mutableListOf<Int>()
-
-                    val index = localCurrentMediaItemIndex
+                    // The tracks Next will actually play, in Next's own order: shuffle-aware, wrapping
+                    // under Repeat All. Picking `index + i` in playlist order precached tracks a shuffled
+                    // queue never reached, and nothing released them until the queue was edited (#2619).
+                    // Read before the job first suspends, so an edit landing meanwhile cannot shift them.
+                    val targets = mutableListOf<GenericMediaItem>()
+                    var from = localCurrentMediaItemIndex
                     for (i in 1..maxPrecacheCount) {
-                        val nextIndex =
-                            when (internalRepeatMode) {
-                                PlayerConstants.REPEAT_MODE_ALL -> {
-                                    (index + i) % playlist.size
-                                }
-                                else -> {
-                                    val next = index + i
-                                    if (next < playlist.size) next else break
-                                }
-                            }
-
-                        val nextVideoId = playlist.getOrNull(nextIndex)?.mediaId
-                        // A live broadcast is not precached: buffered ahead, it would start behind
-                        // the live edge by however long it waited in the queue.
-                        if (nextIndex != localCurrentMediaItemIndex &&
-                            !precachedPlayers.containsKey(nextVideoId) &&
-                            nextVideoId?.let(LiveStreamRegistry::isLive) != true
-                        ) {
-                            indicesToPrecache.add(nextIndex)
-                        }
+                        val next = getNextMediaItemIndex(from)
+                        if (next == from || next == localCurrentMediaItemIndex) break
+                        playlist.getOrNull(next)?.let { targets += it }
+                        from = next
                     }
 
-                    for (idx in indicesToPrecache) {
+                    // Release every precache Next no longer reaches: the shuffle picks it skipped, the
+                    // tracks ahead of a Previous or a jump. The current track's entry stays: a trigger
+                    // can run between the index moving and that track's load taking its entry.
+                    val targetIds = targets.mapTo(HashSet()) { it.mediaId }
+                    val currentId = currentMediaItem?.mediaId
+                    precachedPlayers.entries.removeIf { (id, cached) ->
+                        val stale = id !in targetIds && id != currentId
+                        if (stale) cleanupPlayerInternal(cached.player)
+                        stale
+                    }
+
+                    for (mediaItem in targets) {
                         if (!isActive) break
 
-                        val mediaItem = playlist.getOrNull(idx) ?: continue
+                        // Checked here, not when the targets were picked: one track can be both targets
+                        // (a radio repeats songs), and a second insert would overwrite the first player
+                        // without releasing it. A live broadcast is not precached: buffered ahead, it
+                        // would start behind the live edge by however long it waited in the queue.
+                        if (precachedPlayers.containsKey(mediaItem.mediaId) || LiveStreamRegistry.isLive(mediaItem.mediaId)) {
+                            continue
+                        }
 
                         // Network extraction on IO, mpv native calls on the service thread
                         val source = withContext(Dispatchers.IO) { extractPlayableUrl(mediaItem) }
@@ -3025,16 +3039,16 @@ class MpvPlayerAdapter(
                                 // and additionally warms the demuxer cache.
                                 val player = createMediaPlayerInternal(source)
                                 if (player == null) {
-                                    Logger.w(TAG, "Precaching skipped for $idx: could not create mpv player")
+                                    Logger.w(TAG, "Precaching skipped for ${mediaItem.mediaId}: could not create mpv player")
                                 } else {
                                     player.applyPlaybackLevels()
                                     player.loadFile(buildPlaybackUrl(source), startPaused = true)
                                     precachedPlayers[mediaItem.mediaId] =
                                         PrecachedPlayer(player, mediaItem, source)
-                                    Logger.d(TAG, "Precached player for index $idx")
+                                    Logger.d(TAG, "Precached player for ${mediaItem.mediaId}")
                                 }
                             } catch (e: Exception) {
-                                Logger.e(TAG, "Precaching error for $idx: ${e.message}")
+                                Logger.e(TAG, "Precaching error for ${mediaItem.mediaId}: ${e.message}")
                             }
                         }
 
