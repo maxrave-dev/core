@@ -20,6 +20,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
+import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.player.AudioEffects
 import com.maxrave.domain.data.player.AudioOutput
 import com.maxrave.domain.data.player.GenericCastState
@@ -313,6 +314,8 @@ internal class CrossfadeExoPlayerAdapter(
         val player: ExoPlayer,
         val mediaItem: GenericMediaItem,
         val filter: CrossfadeFilterAudioProcessor? = null,
+        /** Retries this player while it waits; taken off when it is promoted (see [precacheRetryListener]). */
+        val retryListener: Player.Listener? = null,
     )
 
     // VideoId -> PrecachedPlayer
@@ -1689,6 +1692,7 @@ internal class CrossfadeExoPlayerAdapter(
                     // the track is built afresh, which now gives it an HLS source.
                     val cachedPlayerEntry =
                         precachedPlayers.remove(videoId)?.let { cached ->
+                            cached.retryListener?.let { cached.player.removeListener(it) }
                             if (cached.player.playerError == null) {
                                 cached
                             } else {
@@ -1886,10 +1890,7 @@ internal class CrossfadeExoPlayerAdapter(
                     //   lists FileNotFoundException as non-retriable, so this layer is the only chance
                     //   to recover; reloading re-runs the resolver, which now sees an incomplete cache
                     //   and resolves a real URL.
-                    val isRetryableSourceError =
-                        error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
-                            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-                            error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+                    val isRetryableSourceError = error.isRetryableSourceError()
 
                     val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
                     // The progressive resolver found this track to be a live broadcast. Loading it
@@ -2239,7 +2240,10 @@ internal class CrossfadeExoPlayerAdapter(
                 val incomingStartMs = plan?.incomingStartMs ?: 0L
 
                 // Get or create secondary player
-                val cachedPlayerEntry = precachedPlayers.remove(nextVideoId)
+                val cachedPlayerEntry =
+                    precachedPlayers.remove(nextVideoId)?.also { cached ->
+                        cached.retryListener?.let { cached.player.removeListener(it) }
+                    }
                 val nextPlayer: ExoPlayer
                 val nextFilter: CrossfadeFilterAudioProcessor?
                 if (cachedPlayerEntry?.player != null) {
@@ -3238,8 +3242,11 @@ internal class CrossfadeExoPlayerAdapter(
                         try {
                             val pwf = createExoPlayerInstance()
                             pwf.player.setMediaItem(mediaItem.toMedia3MediaItem())
+                            val retryListener = precacheRetryListener(mediaItem.mediaId, pwf.player)
+                            pwf.player.addListener(retryListener)
                             pwf.player.prepare()
-                            precachedPlayers[mediaItem.mediaId] = PrecachedPlayer(pwf.player, mediaItem, pwf.filter)
+                            precachedPlayers[mediaItem.mediaId] =
+                                PrecachedPlayer(pwf.player, mediaItem, pwf.filter, retryListener)
                             Logger.d(TAG, "Precached player for index $idx")
                         } catch (e: Exception) {
                             Logger.e(TAG, "Precaching error for $idx: ${e.message}")
@@ -3259,6 +3266,44 @@ internal class CrossfadeExoPlayerAdapter(
         precacheJob?.cancel()
         precacheJob = null
     }
+
+    /**
+     * Retries a precached player the way the playing one is retried in [setupPlayerListenerInternal]:
+     * drop the stored format so the resolver fetches a fresh URL, then prepare the same player again.
+     * That listener only serves the playing player, so a precache that failed past Media3's own load
+     * retries used to stay failed until its turn (#2239). After [maxRetryCount] tries it is left as it is.
+     */
+    private fun precacheRetryListener(
+        videoId: String,
+        player: ExoPlayer,
+    ): Player.Listener =
+        object : Player.Listener {
+            private var attempts = 0
+
+            override fun onPlayerError(error: PlaybackException) {
+                if (!error.isRetryableSourceError() || attempts >= maxRetryCount) return
+                if (precachedPlayers[videoId]?.player !== player) return
+                attempts++
+                Logger.w(TAG, "Precache source error (attempt $attempts/$maxRetryCount) for $videoId: ${error.errorCodeName}")
+                coroutineScope.launch {
+                    try {
+                        streamRepository.invalidateFormat(videoId)
+                        streamRepository.invalidateFormat("${MERGING_DATA_TYPE.VIDEO}$videoId")
+                        // Promoted or released while the format was being dropped: nothing left to retry.
+                        if (precachedPlayers[videoId]?.player === player) player.prepare()
+                    } catch (e: Exception) {
+                        if (e is CancellationException) throw e
+                        Logger.e(TAG, "Precache retry failed for $videoId: ${e.message}")
+                    }
+                }
+            }
+        }
+
+    /** Source errors a fresh stream URL can fix; the codes are explained in [setupPlayerListenerInternal]. */
+    private fun PlaybackException.isRetryableSourceError(): Boolean =
+        errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+            errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+            errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
 
     private fun clearPrecacheExceptCurrentInternal() {
         Logger.d(TAG, "Clearing precache")
