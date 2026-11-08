@@ -81,18 +81,34 @@ fun BrowseResponse.fromPlaylistContinuationToTracks(): List<SongItem> =
         contents.toSongItem()
     } ?: emptyList()
 
-fun BrowseResponse.fromPlaylistContinuationToTrackWithSetVideoId(): List<Pair<SongItem, String>> =
-    (
-        this.continuationContents
+/**
+ * The rows of a playlist continuation page. YouTube now sends them as
+ * `onResponseReceivedActions` → `appendContinuationItemsAction.continuationItems`, with no
+ * `continuationContents` at all; the two `continuationContents` shapes are the older ones.
+ */
+fun BrowseResponse.playlistContinuationContents(): List<MusicShelfRenderer.Content>? =
+    this.onResponseReceivedActions
+        ?.firstNotNullOfOrNull { it.appendContinuationItemsAction }
+        ?.continuationItems
+        ?.map { item ->
+            MusicShelfRenderer.Content(
+                musicResponsiveListItemRenderer = item.musicResponsiveListItemRenderer,
+                musicMultiRowListItemRenderer = null,
+                continuationItemRenderer = item.continuationItemRenderer,
+            )
+        }
+        ?: this.continuationContents
             ?.musicPlaylistShelfContinuation
             ?.contents
-            ?: this.continuationContents
-                ?.sectionListContinuation
-                ?.contents
-                ?.firstOrNull()
-                ?.musicShelfRenderer
-                ?.contents
-    )?.mapNotNull { contents ->
+        ?: this.continuationContents
+            ?.sectionListContinuation
+            ?.contents
+            ?.firstOrNull()
+            ?.musicShelfRenderer
+            ?.contents
+
+fun BrowseResponse.fromPlaylistContinuationToTrackWithSetVideoId(): List<Pair<SongItem, String>> =
+    playlistContinuationContents()?.mapNotNull { contents ->
         Pair(
             contents.toSongItem() ?: return@mapNotNull null,
             contents.toPlaylistItemData()?.playlistSetVideoId ?: return@mapNotNull null,
@@ -399,6 +415,8 @@ fun MusicShelfRenderer.Content.toSongItem(): SongItem? {
                 ?.toLikeStatus()
                 ?: LikeStatus.INDIFFERENT,
         badges = this.musicResponsiveListItemRenderer?.badges?.toSongBadges(),
+        musicVideoType = this.musicResponsiveListItemRenderer?.musicVideoType,
+        isLive = this.musicResponsiveListItemRenderer?.isLive == true,
     )
 }
 

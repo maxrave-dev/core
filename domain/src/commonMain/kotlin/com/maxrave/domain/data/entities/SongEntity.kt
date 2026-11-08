@@ -22,6 +22,11 @@ data class SongEntity(
     val thumbnails: String? = null,
     val title: String,
     val videoType: String,
+    /**
+     * Read by nothing that decides anything; the mappers only copy it. Smart downloads use it as
+     * their marker: a downloaded song holding [SMART_DOWNLOAD] was fetched automatically and may be
+     * removed again, and one without it was downloaded by the user.
+     */
     val category: String?,
     val resultType: String?,
     val liked: Boolean = false,
@@ -34,4 +39,9 @@ data class SongEntity(
     val canvasThumbUrl: String? = null,
 ) : RecentlyType {
     override fun objectType(): RecentlyType.Type = RecentlyType.Type.SONG
+
+    companion object {
+        /** [category] of a song Smart downloads fetched on their own. */
+        const val SMART_DOWNLOAD = "SMART_DOWNLOAD"
+    }
 }

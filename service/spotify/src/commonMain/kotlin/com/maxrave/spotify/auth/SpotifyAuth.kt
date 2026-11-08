@@ -1,5 +1,6 @@
 package com.maxrave.spotify.auth
 
+import com.maxrave.logger.Logger
 import com.maxrave.spotify.SpotifyClient
 import com.maxrave.spotify.model.response.spotify.PersonalTokenResponse
 import io.ktor.client.call.body
@@ -7,6 +8,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlin.time.Clock
 
 /**
  * Handles advanced Spotify authentication with TOTP
@@ -103,6 +105,13 @@ class SpotifyAuth(
                 throw Exception("Unsuccessful token request")
             }
 
+            if (tokenData.isAnonymous) {
+                // An expired or revoked sp_dc is still answered, with a guest token that lyrics refuse.
+                Logger.e("Auth", "Spotify: sp_dc is no longer valid (anonymous token) — the user must log in to Spotify again")
+            } else {
+                val minutesLeft = (tokenData.accessTokenExpirationTimestampMs - Clock.System.now().toEpochMilliseconds()) / 60_000
+                Logger.i("Auth", "Spotify: token refreshed, valid for $minutesLeft min")
+            }
             tokenData
-        }
+        }.onFailure { Logger.e("Auth", "Spotify: token refresh failed: ${it.message}") }
 }

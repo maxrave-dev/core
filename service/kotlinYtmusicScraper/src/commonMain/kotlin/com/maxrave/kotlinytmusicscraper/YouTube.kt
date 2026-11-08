@@ -1,8 +1,12 @@
 package com.maxrave.kotlinytmusicscraper
 
 import com.eygraber.uri.toKmpUri
+import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
+import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
+import com.maxrave.kotlinytmusicscraper.extractor.contentLengthOf
+import com.maxrave.kotlinytmusicscraper.extractor.orderByAudioTrack
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
 import com.maxrave.kotlinytmusicscraper.models.AlbumItem
 import com.maxrave.kotlinytmusicscraper.models.Artist
@@ -11,17 +15,20 @@ import com.maxrave.kotlinytmusicscraper.models.BrowseEndpoint
 import com.maxrave.kotlinytmusicscraper.models.GridRenderer
 import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.MusicCarouselShelfRenderer
+import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicTwoRowItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.PlaylistItem
 import com.maxrave.kotlinytmusicscraper.models.ReturnYouTubeDislikeResponse
 import com.maxrave.kotlinytmusicscraper.models.Run
 import com.maxrave.kotlinytmusicscraper.models.SearchSuggestions
+import com.maxrave.kotlinytmusicscraper.models.SectionListRenderer
 import com.maxrave.kotlinytmusicscraper.models.SongInfo
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.TidalMetadataResult
 import com.maxrave.kotlinytmusicscraper.models.VideoItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
+import com.maxrave.kotlinytmusicscraper.models.YTItem
 import com.maxrave.kotlinytmusicscraper.models.YTItemType
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5
@@ -34,7 +41,9 @@ import com.maxrave.kotlinytmusicscraper.models.response.AccountMenuResponse
 import com.maxrave.kotlinytmusicscraper.models.response.AccountSwitcherEndpointResponse
 import com.maxrave.kotlinytmusicscraper.models.response.AddItemYouTubePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
+import com.maxrave.kotlinytmusicscraper.models.response.CommentsResponse
 import com.maxrave.kotlinytmusicscraper.models.response.CreatePlaylistResponse
+import com.maxrave.kotlinytmusicscraper.models.response.ImageUploadResponse
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
 import com.maxrave.kotlinytmusicscraper.models.response.GetQueueResponse
 import com.maxrave.kotlinytmusicscraper.models.response.GetSearchSuggestionsResponse
@@ -61,6 +70,9 @@ import com.maxrave.kotlinytmusicscraper.pages.AlbumPage
 import com.maxrave.kotlinytmusicscraper.pages.ArtistPage
 import com.maxrave.kotlinytmusicscraper.pages.ArtistSection
 import com.maxrave.kotlinytmusicscraper.pages.BrowseResult
+import com.maxrave.kotlinytmusicscraper.pages.CommentItem
+import com.maxrave.kotlinytmusicscraper.pages.CommentsPage
+import com.maxrave.kotlinytmusicscraper.pages.CommentsPageParser
 import com.maxrave.kotlinytmusicscraper.pages.ExplorePage
 import com.maxrave.kotlinytmusicscraper.pages.MoodAndGenres
 import com.maxrave.kotlinytmusicscraper.pages.NextPage
@@ -71,6 +83,7 @@ import com.maxrave.kotlinytmusicscraper.pages.RelatedPage
 import com.maxrave.kotlinytmusicscraper.pages.SearchPage
 import com.maxrave.kotlinytmusicscraper.pages.SearchResult
 import com.maxrave.kotlinytmusicscraper.pages.SearchSuggestionPage
+import com.maxrave.kotlinytmusicscraper.parser.fromPlaylistContinuationToTrackWithSetVideoId
 import com.maxrave.kotlinytmusicscraper.parser.fromPlaylistContinuationToTracks
 import com.maxrave.kotlinytmusicscraper.parser.fromPlaylistToTrack
 import com.maxrave.kotlinytmusicscraper.parser.fromPlaylistToTrackWithSetVideoId
@@ -103,8 +116,11 @@ import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.datetime.todayIn
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okio.Path
 import kotlin.jvm.JvmInline
@@ -176,6 +192,12 @@ class YouTube {
         get() = ytMusic.pageId
         set(value) {
             ytMusic.pageId = value
+        }
+
+    var authUser: Int
+        get() = ytMusic.authUser
+        set(value) {
+            ytMusic.authUser = value
         }
 
     /**
@@ -436,7 +458,7 @@ class YouTube {
                         emptyList()
                     },
                 description =
-                    getDescriptionAlbum(
+                    getDescription(
                         response.contents.twoColumnBrowseResultsRenderer.tabs
                             .firstOrNull()
                             ?.tabRenderer
@@ -492,11 +514,16 @@ class YouTube {
             )
         }
 
-    private fun getDescriptionAlbum(runs: List<Run>?): String {
+    /**
+     * Joins every run of a description. A link run contributes its `urlEndpoint` URL rather than
+     * its text, which YouTube shortens for display (`…/wiki/Ariana_...`) — the description view
+     * makes URLs clickable, and the shortened form would open the wrong page.
+     */
+    private fun getDescription(runs: List<Run>?): String {
         var description = ""
         if (!runs.isNullOrEmpty()) {
             for (run in runs) {
-                description += run.text
+                description += run.navigationEndpoint?.urlEndpoint?.url ?: run.text
             }
         }
         Logger.d("description", description)
@@ -602,13 +629,14 @@ class YouTube {
                         ?.sectionListRenderer
                         ?.contents
                         ?.mapNotNull(ArtistPage::fromSectionListRendererContent)!!,
+                // Every run, not just the first: YouTube splits the text at each link, so the first
+                // run alone stops at "From Wikipedia (".
                 description =
                     response.header
                         ?.musicImmersiveHeaderRenderer
                         ?.description
                         ?.runs
-                        ?.firstOrNull()
-                        ?.text,
+                        ?.let(::getDescription),
                 subscribers =
                     response.header
                         ?.musicImmersiveHeaderRenderer
@@ -643,19 +671,28 @@ class YouTube {
                 response.fromPlaylistToTrackWithSetVideoId(),
             )
             var continuation = response.getPlaylistContinuation()
-            while (continuation != null) {
+            // A token seen twice would loop forever.
+            val seenContinuations = mutableSetOf<String>()
+            while (continuation != null && seenContinuations.add(continuation)) {
+                // A page that fails ends the walk but keeps the pages already read, rather than
+                // failing the whole result.
                 val continuationResponse =
-                    ytMusic
-                        .browse(
-                            client = WEB_REMIX,
-                            setLogin = true,
-                            params = null,
-                            continuation = continuation,
-                        ).body<BrowseResponse>()
+                    runCatching {
+                        ytMusic
+                            .browse(
+                                client = WEB_REMIX,
+                                setLogin = true,
+                                params = null,
+                                continuation = continuation,
+                            ).body<BrowseResponse>()
+                    }.getOrNull() ?: break
+                // Continuation pages carry their rows in a different shape from the first page:
+                // read with the first-page parser they yielded nothing, so every track past the
+                // first page (100) was missing.
                 listPair.addAll(
-                    continuationResponse.fromPlaylistToTrackWithSetVideoId(),
+                    continuationResponse.fromPlaylistContinuationToTrackWithSetVideoId(),
                 )
-                continuation = continuationResponse.getContinuePlaylistContinuation()
+                continuation = continuationResponse.getPlaylistContinuation()
             }
 
             return@runCatching listPair
@@ -876,6 +913,17 @@ class YouTube {
             ytMusic.checkForFdroidUpdate().body<FdroidResponse>()
         }
 
+    /**
+     * SHA-256 of our release signing certificates: F-Droid ships the APK we sign, so it pins our keys.
+     * The field is either one inline value or a YAML list (`- <hex>` per line), e.g. after a key rotation.
+     */
+    suspend fun getFdroidSigningKeys(): Result<List<String>> =
+        runCatching {
+            val metadata = ytMusic.fdroidMetadata().bodyAsText()
+            val field = checkNotNull(Regex("""AllowedAPKSigningKeys:((?:\s*-?\s*[0-9a-f]{64})+)""").find(metadata)).groupValues[1]
+            Regex("[0-9a-f]{64}").findAll(field).map { it.value }.toList()
+        }
+
     suspend fun newRelease(): Result<ExplorePage> =
         runCatching {
             val response =
@@ -919,6 +967,42 @@ class YouTube {
                         .mapNotNull {
                             if (it.type == YTItemType.VIDEO) it as? VideoItem else null
                         },
+                // The same shelf released is read from above.
+                releasedMoreEndpoint =
+                    response.contents
+                        ?.singleColumnBrowseResultsRenderer
+                        ?.tabs
+                        ?.firstOrNull()
+                        ?.tabRenderer
+                        ?.content
+                        ?.sectionListRenderer
+                        ?.contents
+                        ?.firstOrNull()
+                        ?.musicCarouselShelfRenderer
+                        ?.header
+                        ?.musicCarouselShelfBasicHeaderRenderer
+                        ?.moreContentButton
+                        ?.buttonRenderer
+                        ?.navigationEndpoint
+                        ?.browseEndpoint,
+                // The same shelf musicVideo is read from above.
+                musicVideoMoreEndpoint =
+                    response.contents
+                        ?.singleColumnBrowseResultsRenderer
+                        ?.tabs
+                        ?.firstOrNull()
+                        ?.tabRenderer
+                        ?.content
+                        ?.sectionListRenderer
+                        ?.contents
+                        ?.lastOrNull()
+                        ?.musicCarouselShelfRenderer
+                        ?.header
+                        ?.musicCarouselShelfBasicHeaderRenderer
+                        ?.moreContentButton
+                        ?.buttonRenderer
+                        ?.navigationEndpoint
+                        ?.browseEndpoint,
             )
         }
 
@@ -939,6 +1023,9 @@ class YouTube {
     suspend fun browse(
         browseId: String,
         params: String?,
+        // The localized label YouTube puts ahead of a song's artists on mixed shelves ("Bài hát"
+        // in Vietnamese). Left at its English default, every other language reads it as the artist.
+        songString: String = "Song",
     ): Result<BrowseResult> =
         runCatching {
             val response = ytMusic.browse(WEB_REMIX, browseId = browseId, params = params).body<BrowseResponse>()
@@ -959,47 +1046,109 @@ class YouTube {
                         ?.content
                         ?.sectionListRenderer
                         ?.contents
-                        ?.mapNotNull { content ->
-                            when {
-                                content.gridRenderer != null -> {
-                                    BrowseResult.Item(
-                                        title =
-                                            content.gridRenderer.header
-                                                ?.gridHeaderRenderer
-                                                ?.title
-                                                ?.runs
-                                                ?.firstOrNull()
-                                                ?.text,
-                                        items =
-                                            content.gridRenderer.items
-                                                .mapNotNull(GridRenderer.Item::musicTwoRowItemRenderer)
-                                                .mapNotNull(RelatedPage.Companion::fromMusicTwoRowItemRenderer),
-                                    )
-                                }
-
-                                content.musicCarouselShelfRenderer != null -> {
-                                    BrowseResult.Item(
-                                        title =
-                                            content.musicCarouselShelfRenderer.header
-                                                ?.musicCarouselShelfBasicHeaderRenderer
-                                                ?.title
-                                                ?.runs
-                                                ?.firstOrNull()
-                                                ?.text,
-                                        items =
-                                            content.musicCarouselShelfRenderer.contents
-                                                .mapNotNull(MusicCarouselShelfRenderer.Content::musicTwoRowItemRenderer)
-                                                .mapNotNull(RelatedPage.Companion::fromMusicTwoRowItemRenderer),
-                                    )
-                                }
-
-                                else -> {
-                                    null
-                                }
-                            }
-                        }.orEmpty(),
+                        ?.mapNotNull { browseSection(it, songString) }
+                        .orEmpty(),
             )
         }
+
+    // The shelf kinds Metrolist's YouTube.browse() reads — grid, carousel (immersive carousels land
+    // here too, via @JsonNames), music shelf and playlist shelf — plus the mood buttons of the
+    // FEmusic_moods_and_genres page. Anything else carries nothing a "More" page shows.
+    private fun browseSection(
+        content: SectionListRenderer.Content,
+        songString: String,
+    ): BrowseResult.Item? =
+        when {
+            content.gridRenderer != null -> {
+                BrowseResult.Item(
+                    title =
+                        content.gridRenderer.header
+                            ?.gridHeaderRenderer
+                            ?.title
+                            ?.runs
+                            ?.firstOrNull()
+                            ?.text,
+                    items =
+                        content.gridRenderer.items
+                            .mapNotNull(GridRenderer.Item::musicTwoRowItemRenderer)
+                            .mapNotNull { RelatedPage.fromMusicTwoRowItemRenderer(it, songString) },
+                    moods =
+                        content.gridRenderer.items
+                            .mapNotNull(GridRenderer.Item::musicNavigationButtonRenderer)
+                            .mapNotNull(MoodAndGenres.Companion::fromMusicNavigationButtonRenderer),
+                )
+            }
+
+            content.musicCarouselShelfRenderer != null -> {
+                BrowseResult.Item(
+                    title =
+                        content.musicCarouselShelfRenderer.header
+                            ?.musicCarouselShelfBasicHeaderRenderer
+                            ?.title
+                            ?.runs
+                            ?.firstOrNull()
+                            ?.text,
+                    items =
+                        content.musicCarouselShelfRenderer.contents.mapNotNull { item ->
+                            item.musicTwoRowItemRenderer?.let { RelatedPage.fromMusicTwoRowItemRenderer(it, songString) }
+                                ?: item.musicResponsiveListItemRenderer?.let(::browseListItem)
+                                ?: item.musicMultiRowListItemRenderer?.let(::browseEpisode)
+                        },
+                    moods =
+                        content.musicCarouselShelfRenderer.contents
+                            .mapNotNull(MusicCarouselShelfRenderer.Content::musicNavigationButtonRenderer)
+                            .mapNotNull(MoodAndGenres.Companion::fromMusicNavigationButtonRenderer),
+                )
+            }
+
+            content.musicShelfRenderer != null -> {
+                BrowseResult.Item(
+                    title =
+                        content.musicShelfRenderer.title
+                            ?.runs
+                            ?.firstOrNull()
+                            ?.text,
+                    items =
+                        content.musicShelfRenderer.contents.orEmpty().mapNotNull { item ->
+                            item.musicResponsiveListItemRenderer?.let(::browseListItem)
+                                ?: item.musicMultiRowListItemRenderer?.let(::browseEpisode)
+                        },
+                )
+            }
+
+            content.musicPlaylistShelfRenderer != null -> {
+                BrowseResult.Item(
+                    title = null,
+                    items =
+                        content.musicPlaylistShelfRenderer.contents.orEmpty().mapNotNull { item ->
+                            item.musicResponsiveListItemRenderer?.let(::browseListItem)
+                        },
+                )
+            }
+
+            else -> {
+                null
+            }
+        }
+
+    // Metrolist tries a lenient library parser and then RelatedPage's. The search parser reads every
+    // item kind but gives up on a row missing its menu or play button; RelatedPage's catches those
+    // rows when they are plain tracks.
+    private fun browseListItem(renderer: MusicResponsiveListItemRenderer): YTItem? =
+        SearchPage.toYTItem(renderer) ?: RelatedPage.fromMusicResponsiveListItemRenderer(renderer)
+
+    // A podcast episode, played like a track — the same fields HomeParser reads for one.
+    private fun browseEpisode(row: MusicShelfRenderer.Content.MusicMultiRowListItemRenderer): YTItem? =
+        SongItem(
+            id = row.onTap?.watchEndpoint?.videoId ?: return null,
+            title =
+                row.title
+                    ?.runs
+                    ?.firstOrNull()
+                    ?.text ?: return null,
+            artists = emptyList(),
+            thumbnail = row.thumbnail?.musicThumbnailRenderer?.getThumbnailUrl() ?: return null,
+        )
 
     suspend fun getFullMetadata(videoId: String): Result<YouTubeInitialPage> =
         runCatching {
@@ -1045,7 +1194,7 @@ class YouTube {
                     ?.likeButtonRenderer
                     ?.likeStatus
                     ?.toLikeStatus()
-            Logger.w("YouTube", "Like Status ${response.playerOverlays}")
+            Logger.d("YouTube", "Like status: $likeStatus")
             return@runCatching likeStatus ?: LikeStatus.INDIFFERENT
         }
 
@@ -1107,6 +1256,50 @@ class YouTube {
                 dislike = returnYouTubeDislikeResponse.dislikes,
             )
             // Get author thumbnails, subscribers, description, like count
+        }
+
+    /**
+     * A track's comments, from the Comments tab of YouTube Music's own watch page: the first page
+     * and its header. Null when the track has none: comments turned off, or a live stream that only
+     * has its chat. Signed in, the comments carry the like, dislike and reply commands.
+     */
+    suspend fun comments(videoId: String): Result<CommentsPage?> =
+        runCatching {
+            val next = ytMusic.next(WEB_REMIX, videoId, null, null, null, null).body<NextResponse>()
+            val token = CommentsPageParser.commentsTabToken(next) ?: return@runCatching null
+            CommentsPageParser
+                .parse(ytMusic.next(WEB_REMIX, null, null, null, null, null, token).body<CommentsResponse>())
+                .takeIf { it.header != null || it.comments.isNotEmpty() }
+        }
+
+    /** Whatever a comments token loads: the next page, a thread's replies, or more of them. */
+    suspend fun commentsPage(token: String): Result<CommentsPage> =
+        runCatching {
+            CommentsPageParser.parse(ytMusic.next(WEB_REMIX, null, null, null, null, null, token).body<CommentsResponse>())
+        }
+
+    /** Posts a comment. The result is the comment as YouTube made it, or null when its answer did not carry it. */
+    suspend fun createComment(
+        createCommentParams: String,
+        text: String,
+    ): Result<CommentItem?> =
+        runCatching {
+            CommentsPageParser.parseCreated(ytMusic.createComment(createCommentParams, text).body<CommentsResponse>())
+        }
+
+    suspend fun createCommentReply(
+        createReplyParams: String,
+        text: String,
+    ): Result<CommentItem?> =
+        runCatching {
+            CommentsPageParser.parseCreated(ytMusic.createCommentReply(createReplyParams, text).body<CommentsResponse>())
+        }
+
+    /** Like, dislike, or undo either: [action] is the token the comment's toolbar carries for it. */
+    suspend fun performCommentAction(action: String): Result<Unit> =
+        runCatching {
+            ytMusic.performCommentAction(action)
+            Unit
         }
 
     private suspend fun getVisitorData(
@@ -1181,6 +1374,7 @@ class YouTube {
     suspend fun newPipePlayer(
         videoId: String,
         tempRes: PlayerResponse,
+        preferredAudioLanguage: String? = null,
     ): PlayerResponse? {
         val listUrlSig = mutableListOf<String>()
         var decodedSigResponse: PlayerResponse?
@@ -1191,7 +1385,7 @@ class YouTube {
         } else {
             sigResponse = tempRes
         }
-        val streamsList = ytMusic.getNewPipePlayer(videoId)
+        val streamsList = ytMusic.getNewPipePlayer(videoId).orderByAudioTrack(preferredAudioLanguage)
         if (streamsList.isEmpty()) return null
 
         decodedSigResponse =
@@ -1200,14 +1394,18 @@ class YouTube {
                     sigResponse.streamingData?.copy(
                         formats =
                             sigResponse.streamingData.formats?.map { format ->
+                                val url = streamsList.find { it.first == format.itag }?.second
                                 format.copy(
-                                    url = streamsList.find { it.first == format.itag }?.second,
+                                    url = url,
+                                    contentLength = url?.let(::contentLengthOf) ?: format.contentLength,
                                 )
                             },
                         adaptiveFormats =
                             sigResponse.streamingData.adaptiveFormats.map { adaptiveFormats ->
+                                val url = streamsList.find { it.first == adaptiveFormats.itag }?.second
                                 adaptiveFormats.copy(
-                                    url = streamsList.find { it.first == adaptiveFormats.itag }?.second,
+                                    url = url,
+                                    contentLength = url?.let(::contentLengthOf) ?: adaptiveFormats.contentLength,
                                 )
                             },
                         hlsManifestUrl = streamsList.firstOrNull { it.first == 96 }?.second,
@@ -1282,11 +1480,71 @@ class YouTube {
 
     fun isManifestUrl(url: String): Boolean = url.contains(".m3u8") || url.contains(".mpd") || url.contains("manifest")
 
+    /**
+     * The HLS playlist a live broadcast plays from — see [Ytmusic.liveStreamPlayer] for which
+     * client asks for it and why. Read as plain JSON: only one field is needed, and that client's
+     * response is not guaranteed to fit [PlayerResponse]'s non-null fields.
+     */
+    private suspend fun liveStreamHlsUrl(videoId: String): String? =
+        runCatching {
+            // A fresh visitor id every time, fetched without the session (sw.js_data sends no
+            // cookie), so this cookie-less request stays anonymous end to end — see
+            // Ytmusic.liveStreamPlayer.
+            val anonymousVisitorData =
+                visitorData() ?: run {
+                    Logger.w(TAG, "No anonymous visitorData for the live stream request of $videoId")
+                    return@runCatching null
+                }
+            val response = ytMusic.liveStreamPlayer(videoId, anonymousVisitorData).body<JsonObject>()
+            val status =
+                response["playabilityStatus"]
+                    ?.jsonObject
+                    ?.get("status")
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+            if (status != "OK") {
+                Logger.w(TAG, "Live stream request for $videoId: $status")
+                return@runCatching null
+            }
+            response["streamingData"]
+                ?.jsonObject
+                ?.get("hlsManifestUrl")
+                ?.jsonPrimitive
+                ?.contentOrNull
+        }.onFailure {
+            Logger.w(TAG, "Live stream request failed for $videoId: ${it.message}")
+        }.getOrNull()
+            ?.also { Logger.d(TAG, "live HLS from the Android client for $videoId") }
+
+    /**
+     * This response reduced to what a live broadcast plays from: its HLS playlist and nothing else.
+     * The fixed-length formats are dropped so nothing downstream picks one by mistake, and the status
+     * reads OK because the playlist came from an extractor even when this client was refused.
+     */
+    private fun PlayerResponse.asLiveStream(liveHlsUrl: String): PlayerResponse =
+        copy(
+            playabilityStatus = playabilityStatus.copy(status = "OK", reason = null),
+            streamingData =
+                (
+                    streamingData ?: PlayerResponse.StreamingData(
+                        hlsManifestUrl = null,
+                        formats = null,
+                        adaptiveFormats = emptyList(),
+                        expiresInSeconds = 0,
+                    )
+                ).copy(
+                    hlsManifestUrl = liveHlsUrl,
+                    formats = emptyList(),
+                    adaptiveFormats = emptyList(),
+                ),
+        )
+
     @OptIn(ExperimentalTime::class)
     suspend fun player(
         videoId: String,
         playlistId: String? = null,
         noLogIn: Boolean = false,
+        preferredAudioLanguage: String? = null,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
             val cpn =
@@ -1372,7 +1630,20 @@ class YouTube {
                         )
                     }
 
-            val response = newPipePlayer(videoId, tempRes)
+            // A live broadcast has no fixed-length formats to decode: it plays from one HLS
+            // playlist. videoDetails is present even on a response this client was refused, so the
+            // check comes before anything that requires an OK status.
+            if (tempRes.videoDetails?.isLive == true) {
+                // tempRes carries an hlsManifestUrl of its own, and it is deliberately not used: the
+                // web clients' live playlists load, but every segment is refused with 403.
+                val liveHlsUrl =
+                    liveStreamHlsUrl(videoId)
+                        ?: ytMusic.getLiveHlsUrl(videoId)
+                        ?: throw RuntimeException("No live HLS URL found for $videoId")
+                return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
+            }
+
+            val response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
             if (response != null) {
                 decodedSigResponse = response
                 Logger.d(TAG, "YouTube Player found URL")
@@ -1570,11 +1841,8 @@ class YouTube {
                             result.copy(
                                 title = playlistPanelRenderer.title,
                                 items =
-                                    playlistPanelRenderer.contents.mapNotNull {
-                                        it.playlistPanelVideoRenderer?.let { renderer ->
-                                            NextPage.fromPlaylistPanelVideoRenderer(renderer)
-                                        }
-                                    } + result.items,
+                                    playlistPanelRenderer.contents.mapNotNull(NextPage::fromPlaylistPanelContent) +
+                                        result.items,
                                 lyricsEndpoint =
                                     response.contents.singleColumnMusicWatchNextResultsRenderer
                                         ?.tabbedRenderer
@@ -1612,10 +1880,7 @@ class YouTube {
 //        }
                 return@runCatching NextResult(
                     title = playlistPanelRenderer.title,
-                    items =
-                        playlistPanelRenderer.contents.mapNotNull {
-                            it.playlistPanelVideoRenderer?.let(NextPage::fromPlaylistPanelVideoRenderer)
-                        },
+                    items = playlistPanelRenderer.contents.mapNotNull(NextPage::fromPlaylistPanelContent),
                     currentIndex = playlistPanelRenderer.currentIndex,
                     lyricsEndpoint =
                         response.contents.singleColumnMusicWatchNextResultsRenderer
@@ -1704,7 +1969,7 @@ class YouTube {
                 .jsonArray[0]
                 .jsonArray[2]
                 .jsonArray
-                .first { (it as? JsonPrimitive)?.content?.startsWith(VISITOR_DATA_PREFIX) == true }
+                .first { (it as? JsonPrimitive)?.content?.let(VISITOR_DATA_REGEX::containsMatchIn) == true }
                 .jsonPrimitive.content
         } catch (e: Exception) {
             e.printStackTrace()
@@ -1872,6 +2137,37 @@ class YouTube {
         ytMusic.editYouTubePlaylist(playlistId, title).status.value
     }
 
+    /**
+     * Puts a custom cover on a YouTube Music playlist.
+     *
+     * Three legs, because that is what the web client does: reserve a resumable upload slot, send
+     * the bytes, then attach the returned blob to the playlist. The upload id comes back as a
+     * response HEADER (`x-guploader-uploadid`) with an empty body, which is easy to miss.
+     *
+     * Returns the HTTP status of the final attach, the same way [editPlaylist] does — the response
+     * body is a fresh playlist header, and nothing here needs to read it back.
+     */
+    suspend fun setPlaylistCustomThumbnail(
+        playlistId: String,
+        image: ByteArray,
+    ) = runCatching {
+        val uploadId =
+            ytMusic
+                .getPlaylistThumbnailUploadSlot(image.size)
+                .headers["x-guploader-uploadid"]
+                ?: throw IllegalStateException("No upload id returned for playlist thumbnail")
+        // bodyAsText + manual decode, NOT body<T>(): this endpoint answers with JSON but does not
+        // label it as such — the response carries an html content type — so ContentNegotiation
+        // never engages and body<T>() fails with "expected ImageUploadResponse but was
+        // SourceByteReadChannel" on an otherwise perfectly good 200.
+        val blobId =
+            Json { ignoreUnknownKeys = true }
+                .decodeFromString<ImageUploadResponse>(
+                    ytMusic.uploadPlaylistThumbnail(uploadId, image).bodyAsText(),
+                ).encryptedBlobId
+        ytMusic.setYouTubePlaylistCustomThumbnail(playlistId, blobId).status.value
+    }
+
     suspend fun createPlaylist(
         title: String,
         listVideoId: List<String>?,
@@ -1879,9 +2175,30 @@ class YouTube {
         ytMusic.createYouTubePlaylist(title, listVideoId).body<CreatePlaylistResponse>()
     }
 
+    /**
+     * Subscribes the signed-in account to a channel.
+     *
+     * Returns the HTTP status rather than a parsed body, the same way the like endpoints do —
+     * these calls answer with an empty payload, so the status is the whole result.
+     */
+    suspend fun subscribeChannel(channelId: String) =
+        runCatching {
+            ytMusic.subscribeChannel(channelId).status.value
+        }
+
+    suspend fun unsubscribeChannel(channelId: String) =
+        runCatching {
+            ytMusic.unsubscribeChannel(channelId).status.value
+        }
+
     suspend fun addToLiked(mediaId: String) =
         runCatching {
             ytMusic.addToLiked(mediaId).status.value
+        }
+
+    suspend fun addToDisliked(mediaId: String) =
+        runCatching {
+            ytMusic.addToDisliked(mediaId).status.value
         }
 
     suspend fun removeFromLiked(mediaId: String) =
@@ -1898,9 +2215,9 @@ class YouTube {
      * Fetch the remote app config (TIDAL credentials) from GitHub raw.
      * Returns a [Result] so callers can fall back silently when the fetch/parse fails.
      */
-    suspend fun getTidalRemoteConfig(): Result<RemoteConfig> =
+    suspend fun getTidalRemoteConfig(dev: Boolean = false): Result<RemoteConfig> =
         runCatching {
-            ytMusic.getTidalRemoteConfig()
+            ytMusic.getTidalRemoteConfig(dev)
         }
 
     /**
@@ -1945,9 +2262,17 @@ class YouTube {
         )
     }
 
+    // Any format carrying a signatureCipher would do; medium Opus is the one YouTube returns for
+    // every video, logged in or not, which is why the lookup pins that itag rather than scanning.
+    /**
+     * Which extractor and cipher decoder produced this video's URLs in THIS run of the app, or null
+     * if it has not been extracted yet. Diagnostic only — see [com.maxrave.kotlinytmusicscraper.extractor.ExtractSource].
+     */
+    fun getExtractSource(videoId: String): String? = ExtractSource.of(videoId)
+
     private fun getNParam(listFormat: List<PlayerResponse.StreamingData.Format>): String? =
         listFormat
-            .firstOrNull { it.itag == 251 }
+            .firstOrNull { it.itag == ITAG.AUDIO_OPUS_MEDIUM }
             ?.let { format ->
                 val sc = format.signatureCipher ?: format.url ?: return null
                 val params = parseQueryString(sc)
@@ -1971,6 +2296,13 @@ class YouTube {
             trySend(DownloadProgress(0.01f))
             player(videoId = videoId)
                 .onSuccess { playerResponse ->
+                    // A live broadcast has no file to save: player() hands it back as an HLS
+                    // playlist with every format emptied, which would otherwise surface as the
+                    // misleading "Audio format url is null" below.
+                    if (playerResponse.second.videoDetails?.isLive == true) {
+                        trySend(DownloadProgress.failed("Live streams cannot be downloaded"))
+                        return@channelFlow
+                    }
                     val audioFormat =
                         listOf(
                             playerResponse.second.streamingData
@@ -2008,6 +2340,9 @@ class YouTube {
                             combine(downloadVideoJob, downloadAudioJob) { videoProgress, audioProgress ->
                                 Pair(videoProgress, audioProgress)
                             }.collectLatest { (videoProgress, audioProgress) ->
+                                if (videoProgress.isFailedDownload() || audioProgress.isFailedDownload()) {
+                                    throw Exception("Download failed")
+                                }
                                 if (!videoProgress.first || !audioProgress.first) {
                                     trySend(
                                         DownloadProgress(
@@ -2039,6 +2374,8 @@ class YouTube {
                                 .collect { downloadProgress ->
                                     if (!downloadProgress.first) {
                                         trySend(DownloadProgress(audioDownloadProgress = downloadProgress.second))
+                                    } else if (downloadProgress.isFailedDownload()) {
+                                        throw Exception("Download failed")
                                     } else {
                                         trySend(DownloadProgress(audioDownloadProgress = 1f, isDone = true))
                                     }
@@ -2064,12 +2401,18 @@ class YouTube {
                 }
         }.flowOn(Dispatchers.IO)
 
+    private fun Triple<Boolean, Float, Int>.isFailedDownload(): Boolean = first && second < 1f
+
     suspend fun is403Url(url: String) = ytMusic.is403Url(url)
 
     companion object {
         const val MAX_GET_QUEUE_SIZE = 1000
 
-        private const val VISITOR_DATA_PREFIX = "Cgt"
+        // Visitor data is a base64 protobuf: bytes 0x0a 0x0b (field 1, length 11) then an 11-char
+        // id. "Cg" is fixed; the third char encodes the top 2 bits of the id's first byte, so it is
+        // "s" for a digit or "-" and "t" for a letter or "_" ("u"/"v" only for a non-ASCII byte).
+        // Matching "Cgt" alone missed every id starting with a digit.
+        private val VISITOR_DATA_REGEX = Regex("^Cg[stuv][A-Za-z0-9_-]{15,}")
 
         const val DEFAULT_VISITOR_DATA = "CgtsZG1ySnZiQWtSbyiMjuGSBg%3D%3D"
 

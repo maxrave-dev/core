@@ -37,6 +37,10 @@ data class RelatedPage(
                         ?.musicResponsiveListItemFlexColumnRenderer
                         ?.text
                         ?.runs
+                        // The column reads "Artist • Album • 13M plays"; only the first group is
+                        // artists, so everything after the first " • " is dropped.
+                        ?.splitBySeparator()
+                        ?.firstOrNull()
                         ?.oddElements()
                         ?.map {
                             Artist(
@@ -65,6 +69,8 @@ data class RelatedPage(
                     renderer.badges?.find {
                         it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
                     } != null,
+                musicVideoType = renderer.musicVideoType,
+                isLive = renderer.isLive,
             )
         }
 
@@ -100,6 +106,8 @@ data class RelatedPage(
                         duration = null,
                         thumbnail = renderer.thumbnailRenderer?.musicThumbnailRenderer?.getThumbnailUrl() ?: return null,
                         endpoint = renderer.navigationEndpoint.watchEndpoint,
+                        musicVideoType = renderer.musicVideoType,
+                        isLive = renderer.isLive,
                     )
 
                 renderer.isVideo ->
@@ -121,6 +129,8 @@ data class RelatedPage(
                         duration = null,
                         thumbnail = renderer.thumbnailRenderer?.musicThumbnailRenderer?.getThumbnailUrl() ?: return null,
                         endpoint = renderer.navigationEndpoint.watchEndpoint,
+                        musicVideoType = renderer.musicVideoType,
+                        isLive = renderer.isLive,
                     )
 
                 renderer.isAlbum ->

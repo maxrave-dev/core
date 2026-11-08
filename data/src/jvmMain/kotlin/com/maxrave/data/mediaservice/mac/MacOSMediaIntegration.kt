@@ -235,6 +235,82 @@ private interface DynamicLibrary : Library {
 }
 
 /**
+ * `dispatch_function_t` — kept top-level so JNA can build its trampoline without fighting the
+ * accessibility of an enclosing private type.
+ */
+internal interface DispatchWork : Callback {
+    fun invoke(context: Pointer?)
+}
+
+/**
+ * Runs work on the AppKit main queue.
+ *
+ * ## Why this is needed
+ * Conveyor's launcher keeps thread 0 for the Cocoa event loop (`conveyor::run_cocoa_event_loop`)
+ * and starts the JVM on a separate pthread, so in a packaged `.app` neither `main()` nor anything
+ * Koin builds with `createdAtStart` runs on the main thread. MediaPlayer.framework does not
+ * register its command handlers from there, which is why Now Playing works under `gradle run` —
+ * where there is no launcher and `main()` owns thread 0 — but not in the shipped app.
+ *
+ * The queue is reachable because AWT keeps a CFRunLoop on thread 0, and that run loop drains the
+ * main dispatch queue.
+ */
+private object MainQueue {
+    private interface LibC : Library {
+        /** Darwin: returns 1 on the initial (main) thread. */
+        fun pthread_main_np(): Int
+    }
+
+    private interface Dispatch : Library {
+        fun dispatch_sync_f(
+            queue: Pointer,
+            context: Pointer?,
+            work: DispatchWork,
+        )
+    }
+
+    private val libc: LibC? = runCatching { Native.load("c", LibC::class.java) }.getOrNull()
+    private val dispatch: Dispatch? = runCatching { Native.load("System", Dispatch::class.java) }.getOrNull()
+
+    /** `dispatch_get_main_queue()` is `&_dispatch_main_q`, so the symbol address is the queue. */
+    private val mainQueue: Pointer? =
+        runCatching {
+            com.sun.jna.NativeLibrary
+                .getInstance("System")
+                .getGlobalVariableAddress("_dispatch_main_q")
+        }.getOrNull()
+
+    fun isMainThread(): Boolean = libc?.pthread_main_np() == 1
+
+    /**
+     * Runs [block] on the main queue and waits for it.
+     *
+     * Returns false when the hop is impossible (symbols unavailable) so the caller can decide;
+     * a thrown [block] is rethrown here rather than crossing back into libdispatch, where an
+     * escaping exception would abort the process.
+     */
+    fun runSync(block: () -> Unit): Boolean {
+        // dispatch_sync onto the queue we are already on would deadlock.
+        if (isMainThread()) {
+            block()
+            return true
+        }
+        val d = dispatch ?: return false
+        val q = mainQueue ?: return false
+        var failure: Throwable? = null
+        val work =
+            object : DispatchWork {
+                override fun invoke(context: Pointer?) {
+                    runCatching { block() }.onFailure { failure = it }
+                }
+            }
+        d.dispatch_sync_f(q, null, work)
+        failure?.let { throw it }
+        return true
+    }
+}
+
+/**
  * Main class for macOS Media Integration
  * Handles Now Playing Center and Remote Command Center
  */
@@ -318,6 +394,23 @@ class MacOSMediaIntegration private constructor() {
             return true
         }
 
+        // MediaPlayer.framework registers its command handlers against the main thread. In a
+        // packaged .app this method runs on the JVM's own pthread, not thread 0 — see [MainQueue].
+        var result = false
+        val reachedMainQueue =
+            runCatching { MainQueue.runSync { result = initializeOnMainThread() } }
+                .onFailure { Logger.e(TAG, "Main-queue init threw: ${it.message}", it) }
+                .getOrDefault(false)
+
+        if (!reachedMainQueue) {
+            Logger.e(TAG, "Could not reach the main queue; media integration stays disabled")
+            return false
+        }
+        return result
+    }
+
+    /** Body of [initialize]; must run on the main thread. */
+    private fun initializeOnMainThread(): Boolean {
         try {
             // Load MediaPlayer framework first
             if (!loadMediaPlayerFramework()) {
@@ -336,7 +429,7 @@ class MacOSMediaIntegration private constructor() {
             setupRemoteCommands(commandCenter)
 
             initialized.set(true)
-            Logger.d(TAG, "MacOS media integration initialized successfully")
+            Logger.d(TAG, "MacOS media integration initialized successfully (main thread)")
             return true
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to initialize MacOS media integration: ${e.message}", e)

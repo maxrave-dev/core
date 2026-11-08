@@ -20,18 +20,23 @@ import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.entities.DownloadState
+import com.maxrave.domain.data.entities.SongEntity
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
+import com.maxrave.domain.utils.isLive
 import com.maxrave.logger.Logger
+import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.flow.update
@@ -67,13 +72,30 @@ internal class DownloadUtils(
                 ),
         ) { dataSpec ->
             val mediaId = dataSpec.key ?: error("No media id")
-            Logger.w("Stream", mediaId)
-            Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
-            val length = if (dataSpec.length >= 0) dataSpec.length else 1
-            if (downloadCache.isCached(mediaId, dataSpec.position, length) || playerCache.isCached(mediaId, dataSpec.position, length)) {
+            Logger.d("Stream", mediaId)
+            Logger.d("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
+            // Already downloaded in full: hand the DataSpec back untouched so the enclosing
+            // CacheDataSource reads straight off disk. Safe precisely because the whole track
+            // is there — it never needs the upstream, which is the only thing the bare media id
+            // in the URI cannot survive. Re-resolving here would re-fetch a track the user
+            // already has.
+            if (downloadCache.isFullyCached(mediaId, dataSpec.position)) {
+                Logger.d("Stream", "Already downloaded $mediaId")
                 return@Factory dataSpec
             }
+            // Anything short of a full copy must resolve a real URL, and must never hand back
+            // the incoming DataSpec: its URI is the bare media id. Skipping the bytes already on
+            // disk is not this resolver's job — CacheWriter does that via cache.getCachedLength(),
+            // and the CacheDataSource wrapping this resolver still serves whatever playerCache
+            // holds.
+            //
+            // The upstream here is OkHttpDataSource (not DefaultDataSource, as on the playback
+            // side), so a scheme-less URI dies in HttpUrl.parse as
+            // HttpDataSourceException("Malformed URL", ERROR_CODE_FAILED_RUNTIME_CHECK) — a
+            // misleading error for what is really "we could not get a stream URL". Fail loudly
+            // instead, and let DownloadManager mark the download failed for the true reason.
             var dataSpecReturn: DataSpec = dataSpec
+            var resolved = false
             runBlocking(Dispatchers.IO) {
                 if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
                     val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
@@ -81,10 +103,11 @@ internal class DownloadUtils(
                         val videoUrl = it.videoUrl
                         if (videoUrl != null && it.expiredTime > now()) {
                             Logger.d("Stream", videoUrl)
-                            Logger.w("Stream", "Video from format")
+                            Logger.d("Stream", "Video from format")
                             val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
                             if (!is403Url) {
                                 dataSpecReturn = dataSpec.withUri(videoUrl.toUri())
+                                resolved = true
                                 return@runBlocking
                             }
                         }
@@ -98,16 +121,18 @@ internal class DownloadUtils(
                         ).lastOrNull()
                         ?.let {
                             dataSpecReturn = dataSpec.withUri(it.toUri())
+                            resolved = true
                         }
                 } else {
                     streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
                         val audioUrl = it.audioUrl
                         if (audioUrl != null && it.expiredTime > now()) {
                             Logger.d("Stream", audioUrl)
-                            Logger.w("Stream", "Audio from format")
+                            Logger.d("Stream", "Audio from format")
                             val is403Url = streamRepository.is403Url(audioUrl).firstOrNull() != false
                             if (!is403Url) {
                                 dataSpecReturn = dataSpec.withUri(audioUrl.toUri())
+                                resolved = true
                                 return@runBlocking
                             }
                         }
@@ -127,8 +152,21 @@ internal class DownloadUtils(
                                 )
                             }
                             dataSpecReturn = dataSpec.withUri(it.toUri())
+                            resolved = true
                         }
                 }
+            }
+            if (!resolved) {
+                // getStream hands a live broadcast no URL here (StreamRepositoryImpl), so say
+                // which case this is rather than a bare "failed to resolve".
+                val reason =
+                    if (LiveStreamRegistry.isLive(mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO))) {
+                        "it is a live stream"
+                    } else {
+                        "failed to resolve stream URL"
+                    }
+                Logger.e("Stream", "Cannot download $mediaId: $reason")
+                throw java.io.IOException("Cannot download $mediaId: $reason")
             }
             return@Factory dataSpecReturn
         }
@@ -152,6 +190,10 @@ internal class DownloadUtils(
                     context = context,
                     notificationHelper = downloadNotificationHelper,
                     nextNotificationId = MusicDownloadService.NOTIFICATION_ID + 1,
+                    scope = coroutineScope,
+                    isSmartDownload = { videoId ->
+                        songRepository.getSongById(videoId).lastOrNull()?.category == SongEntity.SMART_DOWNLOAD
+                    },
                 ),
             )
         }
@@ -165,23 +207,33 @@ internal class DownloadUtils(
     val downloadingVideoIds = MutableStateFlow<MutableSet<String>>(mutableSetOf())
 
     /**
-     * Use thumbnail to check video or audio
+     * Use thumbnail to check video or audio. The video stream is fetched only while
+     * "play video instead of audio" is on: playback merges it in for nothing else.
      */
     override suspend fun downloadTrack(
         videoId: String,
         title: String,
         thumbnail: String,
     ) {
+        // Every download path ends here, so this is where a broadcast already known to be live
+        // is turned away. One not known yet is refused when its stream resolves.
+        if (songRepository.getSongById(videoId).lastOrNull()?.isLive == true) {
+            Logger.i("Download", "$videoId is a live stream, not downloading")
+            songRepository.updateDownloadState(videoId, DownloadState.STATE_NOT_DOWNLOADED)
+            return
+        }
         var isVideo = false
-        val request =
-            ImageRequest
-                .Builder(context)
-                .data(thumbnail)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .build()
-        val imageResult = ImageLoader(context).execute(request)
-        if (imageResult.image?.height != imageResult.image?.width && imageResult.image != null) {
-            isVideo = true
+        if (dataStoreManager.watchVideoInsteadOfPlayingAudio.first() == DataStoreManager.Values.TRUE) {
+            val request =
+                ImageRequest
+                    .Builder(context)
+                    .data(thumbnail)
+                    .diskCachePolicy(CachePolicy.ENABLED)
+                    .build()
+            val imageResult = ImageLoader(context).execute(request)
+            if (imageResult.image?.height != imageResult.image?.width && imageResult.image != null) {
+                isVideo = true
+            }
         }
         val downloadRequest =
             DownloadRequest
@@ -237,23 +289,44 @@ internal class DownloadUtils(
 
     init {
         coroutineScope.launch {
+            var previousIds = emptySet<String>()
             downloads.collect { download ->
+                // A song that left the map was removed (onDownloadRemoved, removeAllDownloads).
+                // Written here rather than in the listener so it lands after any older snapshot
+                // that still listed the song as downloaded.
+                (previousIds - download.keys).forEach { videoId ->
+                    _downloadTask.update { it + (videoId to DownloadState.STATE_NOT_DOWNLOADED) }
+                    downloadingVideoIds.update {
+                        it.apply {
+                            remove(videoId)
+                        }
+                    }
+                    songRepository.updateDownloadState(videoId, DownloadState.STATE_NOT_DOWNLOADED)
+                }
+                previousIds = download.keys.toSet()
                 download.forEach {
                     val videoId = it.key
                     val audio = it.value.first?.state
                     val video = it.value.second?.state
                     val combineState =
-                        when (audio to video) {
-                            Download.STATE_COMPLETED to Download.STATE_COMPLETED -> DownloadState.STATE_DOWNLOADED
-                            Download.STATE_FAILED to Download.STATE_FAILED -> DownloadState.STATE_NOT_DOWNLOADED
-                            Download.STATE_QUEUED to Download.STATE_QUEUED -> DownloadState.STATE_PREPARING
-                            Download.STATE_COMPLETED to null -> DownloadState.STATE_DOWNLOADED
-                            Download.STATE_FAILED to null -> DownloadState.STATE_NOT_DOWNLOADED
-                            Download.STATE_QUEUED to null -> DownloadState.STATE_PREPARING
-                            null to Download.STATE_COMPLETED -> DownloadState.STATE_DOWNLOADING
-                            null to Download.STATE_QUEUED -> DownloadState.STATE_PREPARING
-                            null to Download.STATE_FAILED -> DownloadState.STATE_NOT_DOWNLOADED
-                            else -> DownloadState.STATE_DOWNLOADING
+                        if (audio == Download.STATE_REMOVING || video == Download.STATE_REMOVING) {
+                            // A removal reports REMOVING before the files go. The pairs below
+                            // would read it as downloading and write that over the
+                            // NOT_DOWNLOADED the caller has just set.
+                            DownloadState.STATE_NOT_DOWNLOADED
+                        } else {
+                            when (audio to video) {
+                                Download.STATE_COMPLETED to Download.STATE_COMPLETED -> DownloadState.STATE_DOWNLOADED
+                                Download.STATE_FAILED to Download.STATE_FAILED -> DownloadState.STATE_NOT_DOWNLOADED
+                                Download.STATE_QUEUED to Download.STATE_QUEUED -> DownloadState.STATE_PREPARING
+                                Download.STATE_COMPLETED to null -> DownloadState.STATE_DOWNLOADED
+                                Download.STATE_FAILED to null -> DownloadState.STATE_NOT_DOWNLOADED
+                                Download.STATE_QUEUED to null -> DownloadState.STATE_PREPARING
+                                null to Download.STATE_COMPLETED -> DownloadState.STATE_DOWNLOADING
+                                null to Download.STATE_QUEUED -> DownloadState.STATE_PREPARING
+                                null to Download.STATE_FAILED -> DownloadState.STATE_NOT_DOWNLOADED
+                                else -> DownloadState.STATE_DOWNLOADING
+                            }
                         }
                     _downloadTask.update {
                         it.toMutableMap().apply {
@@ -270,6 +343,11 @@ internal class DownloadUtils(
                             songRepository.updateDownloadState(videoId, DownloadState.STATE_DOWNLOADED)
                         }
                         DownloadState.STATE_DOWNLOADING -> {
+                            downloadingVideoIds.update {
+                                it.apply {
+                                    add(videoId)
+                                }
+                            }
                             songRepository.updateDownloadState(videoId, DownloadState.STATE_DOWNLOADING)
                         }
                         DownloadState.STATE_NOT_DOWNLOADED -> {
@@ -344,23 +422,38 @@ internal class DownloadUtils(
                                 }
                             }
                         }
+                        // The song's stored state is written by the collector alone. A write of
+                        // its own here, on a coroutine of its own, could land after a removal had
+                        // already reset the song, and nothing would correct it once the song left
+                        // the map.
                         when (download.state) {
                             Download.STATE_COMPLETED -> {
                                 playerCache.removeResource(id)
                             }
 
-                            Download.STATE_DOWNLOADING -> {
-                                coroutineScope.launch {
-                                    downloadingVideoIds.update {
-                                        it.apply {
-                                            add(songId)
-                                        }
-                                    }
-                                    songRepository.updateDownloadState(songId, DownloadState.STATE_DOWNLOADING)
-                                }
-                            }
                             else -> {
                             }
+                        }
+                    }
+                }
+
+                // Without this a removed track stayed in the map at REMOVING for good, and the
+                // collector above rewrote its song's row on every later emission. Once both
+                // tracks are gone the song leaves the map, which the collector reads as removed.
+                override fun onDownloadRemoved(
+                    downloadManager: DownloadManager,
+                    download: Download,
+                ) {
+                    val id = download.request.id
+                    val isVideo = id.contains(MERGING_DATA_TYPE.VIDEO)
+                    val songId = if (isVideo) id.removePrefix(MERGING_DATA_TYPE.VIDEO) else id
+                    _downloads.update { map ->
+                        val current = map[songId] ?: return@update map
+                        val remaining = if (isVideo) current.copy(second = null) else current.copy(first = null)
+                        if (remaining.first == null && remaining.second == null) {
+                            map - songId
+                        } else {
+                            map + (songId to remaining)
                         }
                     }
                 }

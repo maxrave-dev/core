@@ -20,8 +20,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +66,7 @@ import com.maxrave.common.Config
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.streams.TimeLine
 import com.maxrave.domain.data.model.ui.ScreenSizeInfo
+import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.logger.Logger
 import com.maxrave.media3.ui.extension.KeepScreenOn
 import org.koin.compose.koinInject
@@ -83,6 +84,7 @@ fun MediaPlayerView(
     url: String,
     screenSize: ScreenSizeInfo,
     cropToBounds: Boolean = false,
+    onFirstFrame: () -> Unit = {},
 ) {
     val canvasCache: SimpleCache = koinInject<SimpleCache>(named(Config.CANVAS_CACHE))
 
@@ -174,6 +176,11 @@ fun MediaPlayerView(
     }
 
     val presentationState = rememberPresentationState(exoPlayer)
+    // Media3 lifts coverSurface on EVENT_RENDERED_FIRST_FRAME: the moment the shutter below goes.
+    val currentOnFirstFrame by rememberUpdatedState(onFirstFrame)
+    LaunchedEffect(presentationState.coverSurface) {
+        if (!presentationState.coverSurface) currentOnFirstFrame()
+    }
     if (cropToBounds) {
         // Center scale-to-cover (ContentScale.Crop) into whatever frame the caller gives us.
         // resizeWithContentScale keeps the true video aspect ratio (no stretch), scales it
@@ -216,6 +223,20 @@ fun MediaPlayerView(
     }
 }
 
+/**
+ * Aspect ratio (width / height) of the video [playerName] is showing, or null while it has no
+ * video size. From [rememberPresentationState], which reads the player's current size before it
+ * listens, so a frame composed mid-video gets the right shape at once — the same reason the
+ * surface below takes its own ratio from there.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+fun rememberVideoAspectRatio(playerName: String): Float? {
+    val player: Player = koinInject(named(playerName))
+    val size = rememberPresentationState(player).videoSizeDp ?: return null
+    return size.width / size.height
+}
+
 @Composable
 @androidx.annotation.OptIn(UnstableApi::class)
 fun MediaPlayerViewWithSubtitle(
@@ -235,12 +256,14 @@ fun MediaPlayerViewWithSubtitle(
 ) {
     val player: Player = koinInject(named(playerName))
 
+    // Subtitles over the video are lyrics like any other, so they take the same audio-delay
+    // correction the lyrics sheet does. timelineState is used for nothing else in this composable,
+    // but it is subtracted at each read rather than up front so the parameter keeps meaning "where
+    // the player is".
+    val lyricsOffsetMs by koinInject<DataStoreManager>().lyricsOffsetMs.collectAsState(0)
+
     var shouldEnterPipMode by rememberSaveable {
         mutableStateOf(false)
-    }
-
-    var videoRatio by rememberSaveable {
-        mutableFloatStateOf(16f / 9)
     }
 
     var showArtwork by rememberSaveable {
@@ -258,10 +281,12 @@ fun MediaPlayerViewWithSubtitle(
         mutableIntStateOf(-1)
     }
 
-    LaunchedEffect(key1 = timelineState) {
+    LaunchedEffect(key1 = timelineState, key2 = lyricsOffsetMs) {
         val lines = lyricsData?.lines ?: return@LaunchedEffect
         val translatedLines = translatedLyricsData?.lines
-        if (timelineState.current > 0L) {
+        // What the ear is hearing right now, rather than where the player is.
+        val nowMs = timelineState.current - lyricsOffsetMs
+        if (nowMs > 0L) {
             lines.indices.forEach { i ->
                 val sentence = lines[i]
                 val startTimeMs = sentence.startTimeMs.toLong()
@@ -274,7 +299,7 @@ fun MediaPlayerViewWithSubtitle(
                         // if this is the last sentence, set the end time to be some default value (e.g., 1 minute after the start time)
                         startTimeMs + 60000
                     }
-                if (timelineState.current in startTimeMs..endTimeMs) {
+                if (nowMs in startTimeMs..endTimeMs) {
                     currentLineIndex = i
                 }
             }
@@ -290,13 +315,13 @@ fun MediaPlayerViewWithSubtitle(
                         // if this is the last sentence, set the end time to be some default value (e.g., 1 minute after the start time)
                         startTimeMs + 60000
                     }
-                if (timelineState.current in startTimeMs..endTimeMs) {
+                if (nowMs in startTimeMs..endTimeMs) {
                     currentTranslatedLineIndex = i
                 }
             }
             if (lines.isNotEmpty() &&
                 (
-                    timelineState.current in (
+                    nowMs in (
                         0..(
                             lines.getOrNull(0)?.startTimeMs
                                 ?: "0"
@@ -346,16 +371,6 @@ fun MediaPlayerViewWithSubtitle(
                     }
                 }
 
-                override fun onVideoSizeChanged(videoSize: VideoSize) {
-                    super.onVideoSizeChanged(videoSize)
-                    videoRatio =
-                        if (videoSize.width != 0 && videoSize.height != 0) {
-                            videoSize.width.toFloat() / videoSize.height
-                        } else {
-                            16f / 9 // Default ratio if video size is not available
-                        }
-                }
-
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     super.onIsPlayingChanged(isPlaying)
                     shouldEnterPipMode = isPlaying && shouldPip
@@ -379,6 +394,10 @@ fun MediaPlayerViewWithSubtitle(
         }
     }
     LaunchedEffect(player) {
+        // Same reason as the aspect ratio below: a view composed mid-song (Now Playing reopened,
+        // fullscreen) hears no track or item change, so start from what the player already has.
+        playerListener.onTracksChanged(player.currentTracks)
+        artworkUri = player.currentMediaItem?.mediaMetadata?.artworkUri?.toString()
         player.addListener(playerListener)
         (player as? ExoPlayer)?.videoScalingMode = C.VIDEO_SCALING_MODE_DEFAULT
     }
@@ -455,7 +474,11 @@ fun MediaPlayerViewWithSubtitle(
                     modifier =
                         Modifier
                             .wrapContentSize()
-                            .aspectRatio(if (videoRatio > 0f) videoRatio else 16f / 9)
+                            // The size the player already has, not a listener waiting for a change:
+                            // the Full build's session player is a CastPlayer, which only reports a
+                            // size that differs from its last one, so a view composed mid-video
+                            // (Now Playing reopened after fullscreen) never heard it and sat at 16:9.
+                            .aspectRatio(presentationState.videoSizeDp?.let { it.width / it.height } ?: 16f / 9)
                             .align(Alignment.Center),
                 )
 

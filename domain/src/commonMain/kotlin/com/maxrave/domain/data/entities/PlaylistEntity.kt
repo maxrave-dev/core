@@ -5,6 +5,7 @@ import androidx.room.PrimaryKey
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.data.type.RecentlyType
 import com.maxrave.domain.extension.now
+import com.maxrave.domain.utils.isRadioPlaylistId
 import kotlinx.datetime.LocalDateTime
 
 @Entity(tableName = "playlist")
@@ -29,7 +30,7 @@ data class PlaylistEntity(
 ) : PlaylistType,
     RecentlyType {
     override fun playlistType(): PlaylistType.Type =
-        if (id.startsWith("RDEM") || id.startsWith("RDAMVM") || id.startsWith("RDAT")) {
+        if (id.isRadioPlaylistId()) {
             PlaylistType.Type.RADIO
         } else {
             PlaylistType.Type.YOUTUBE_PLAYLIST

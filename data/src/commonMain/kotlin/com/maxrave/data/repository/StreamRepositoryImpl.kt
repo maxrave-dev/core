@@ -1,5 +1,6 @@
 package com.maxrave.data.repository
 
+import com.maxrave.common.ITAG
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.common.QUALITY
 import com.maxrave.common.VIDEO_QUALITY
@@ -9,6 +10,7 @@ import com.maxrave.data.mapping.toTrack
 import com.maxrave.domain.data.entities.NewFormatEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.isBefore
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.extension.plusSeconds
@@ -40,11 +42,13 @@ internal class StreamRepositoryImpl(
 
     override suspend fun getFormatFlow(videoId: String) = localDataSource.getNewFormatAsFlow(videoId)
 
+    override fun getExtractSource(videoId: String): String? = youTube.getExtractSource(videoId)
+
     override suspend fun updateFormat(videoId: String) {
         localDataSource.getNewFormat(videoId)?.let { oldFormat ->
-            Logger.w("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
-            Logger.w("Stream", "now: ${now()}")
-            Logger.w("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(now())}")
+            Logger.d("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
+            Logger.d("Stream", "now: ${now()}")
+            Logger.d("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(now())}")
             if (oldFormat.expiredTime.isBefore(now())) {
                 youTube
                     .player(videoId)
@@ -89,9 +93,9 @@ internal class StreamRepositoryImpl(
         flow {
             val itag =
                 if (isDownloading) {
-                    QUALITY.itags.getOrNull(QUALITY.items.indexOf(dataStoreManager.downloadQuality.first()))
+                    QUALITY.itagOf(dataStoreManager.downloadQuality.first())
                 } else {
-                    QUALITY.itags.getOrNull(QUALITY.items.indexOf(dataStoreManager.quality.first()))
+                    QUALITY.itagOf(dataStoreManager.quality.first())
                 }
             val videoItag =
                 if (!muxed) {
@@ -104,24 +108,42 @@ internal class StreamRepositoryImpl(
                             },
                         ),
                     )
-                        ?: 134
+                        ?: ITAG.VIDEO_360P
                 } else {
-                    18
+                    ITAG.MUXED_360P
                 }
-            // 134, 136, 137
             youTube
-                .player(videoId, noLogIn = muxed)
+                .player(
+                    videoId,
+                    noLogIn = muxed,
+                    preferredAudioLanguage = dataStoreManager.preferredAudioLanguage.first(),
+                )
                 .onSuccess { data ->
                     val response = data.second
-                    if (data.third == MediaType.Song) {
-                        Logger.w(
-                            "Stream",
-                            "response: is SONG",
-                        )
-                    } else {
-                        Logger.w("Stream", "response: is VIDEO")
+                    val isLive = response.videoDetails?.isLive == true
+                    LiveStreamRegistry.recordLiveStatus(videoId, isLive)
+                    // The song row follows, so the LIVE badge and the download gate know too —
+                    // including when a broadcast has ended and its recording downloads normally.
+                    localDataSource.updateSongLiveStatus(videoId, isLive)
+                    if (isLive && isDownloading) {
+                        // Nothing to save: handing an endless HLS playlist to a downloader stores
+                        // the playlist text as if it were the song. Emitting nothing fails the
+                        // download where the caller resolves its URL.
+                        Logger.i("Stream", "$videoId: live stream, refusing download")
+                        return@onSuccess
                     }
-                    Logger.w(
+                    if (isLive) {
+                        // A live broadcast plays from its HLS playlist alone, so none of the itag
+                        // choice below applies. Nothing about it goes into the format table either:
+                        // the playlist URL is good for a few hours and the broadcast may be over by
+                        // the next run, so every play resolves it afresh — and the players learn
+                        // that it is live from LiveStreamRegistry, recorded just above.
+                        val liveHlsUrl = response.streamingData?.hlsManifestUrl
+                        Logger.i("Stream", "$videoId: live stream, HLS URL ${if (liveHlsUrl == null) "missing" else "found"}")
+                        emit(liveHlsUrl)
+                        return@onSuccess
+                    }
+                    Logger.d(
                         "Stream",
                         response.streamingData
                             ?.formats
@@ -140,15 +162,15 @@ internal class StreamRepositoryImpl(
                         response.streamingData?.adaptiveFormats?.filter { it.url.isNullOrEmpty().not() }
                             ?: emptyList(),
                     )
-                    Logger.w("Stream", "Get stream for video $isVideo")
                     val videoFormat =
                         formatList.find { it.itag == videoItag }
-                            ?: formatList.find { it.itag == 136 }
-                            ?: formatList.find { it.itag == 134 }
+                            ?: formatList.find { it.itag == ITAG.VIDEO_720P }
+                            ?: formatList.find { it.itag == ITAG.VIDEO_360P }
                             ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
+                    val audioTwinItag = ITAG.highQualityTwinOf(itag)
                     val audioFormat =
-                        formatList.find { it.itag == itag } ?: if (itag == 774) {
-                            formatList.find { it.itag == 141 }
+                        formatList.find { it.itag == itag } ?: if (audioTwinItag != null) {
+                            formatList.find { it.itag == audioTwinItag }
                         } else {
                             formatList.find { it.isAudio && it.url.isNullOrEmpty().not() }
                         }
@@ -168,10 +190,14 @@ internal class StreamRepositoryImpl(
                                 url != null && youTube.isManifestUrl(url)
                             }.maxByOrNull { it.width ?: 0 } ?: formatList.find { it.itag == videoItag }
                     }
-                    Logger.w("Stream", "Selected hls ${response.streamingData?.hlsManifestUrl}")
-                    Logger.w("Stream", "format: $format")
-                    Logger.d("Stream", "expireInSeconds ${response.streamingData?.expiresInSeconds}")
-                    Logger.w("Stream", "expired at ${now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L)}")
+                    // One line per resolved stream and never the URL: a googlevideo URL carries the
+                    // listener's IP address.
+                    Logger.i(
+                        "Stream",
+                        "$videoId: ${data.third}, itag ${format?.itag} ${format?.mimeType?.substringBefore(';')}" +
+                            (if (muxed) ", HLS" else "") +
+                            ", expires in ${response.streamingData?.expiresInSeconds}s",
+                    )
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
                     // AutoMix metadata from Tidal official API
                     var tidalBpm: Int? = null
@@ -196,7 +222,7 @@ internal class StreamRepositoryImpl(
                         youTube
                             .searchTidalMetadata(q, durationSecond)
                             .onSuccess { metadata ->
-                                Logger.w("Stream", "Tidal metadata: $metadata")
+                                Logger.d("Stream", "Tidal metadata: $metadata")
                                 tidalBpm = metadata.bpm
                                 tidalMusicKey = metadata.musicKey
                                 tidalKeyScale = metadata.keyScale
@@ -207,7 +233,7 @@ internal class StreamRepositoryImpl(
                     insertNewFormat(
                         NewFormatEntity(
                             videoId = if (VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
-                            itag = format?.itag ?: itag ?: 141,
+                            itag = format?.itag ?: itag,
                             mimeType =
                                 Regex("""([^;]+);\s*codecs=["']([^"']+)["']""")
                                     .find(

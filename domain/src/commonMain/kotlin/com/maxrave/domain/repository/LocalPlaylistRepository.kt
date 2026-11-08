@@ -75,11 +75,39 @@ interface LocalPlaylistRepository {
         toIndex: Int,
     ): Flow<LocalResource<String>>
 
+    /**
+     * Move a song within an unsynced local playlist: updates local DB positions only.
+     * Items between the two indexes are shifted by one so the moved item lands at [toIndex]
+     * without displacing anything else.
+     * @param playlistId Local playlist ID
+     * @param fromIndex The current index of the item being moved (0-based, in CustomOrder)
+     * @param toIndex The target index to move the item to (0-based, in CustomOrder)
+     * @return Flow<LocalResource<String>> success/error message
+     */
+    fun moveItemInLocalPlaylist(
+        playlistId: Long,
+        fromIndex: Int,
+        toIndex: Int,
+    ): Flow<LocalResource<String>>
+
     fun downloadStateFlow(id: Long): Flow<Int>
 
     fun getAllDownloadingLocalPlaylists(): Flow<List<LocalPlaylistEntity>>
 
     fun listTrackFlow(id: Long): Flow<List<String>>
+
+    /**
+     * Search one local playlist by song title or artist name.
+     *
+     * A plain list, not [PagingData]: a search box already bounds its own result, and paging is
+     * for a list whose end is unknown. Keeping it separate also leaves the paged reader — which
+     * carries in-place reordering and removal — untouched.
+     */
+    fun searchTracks(
+        id: Long,
+        query: String,
+        limit: Int = 200,
+    ): Flow<List<Pair<SongEntity, PairSongLocalPlaylist>>>
 
     fun getTracksPaging(
         id: Long,

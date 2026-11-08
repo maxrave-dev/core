@@ -70,6 +70,19 @@ internal class DelegatingForwardingPlayer(
          * default to [seekToPrevious] if the distinction is irrelevant.
          */
         fun seekToPreviousMediaItem() = seekToPrevious()
+
+        /**
+         * Transport intent must round-trip through the adapter, not the delegate:
+         * [ForwardingPlayer]'s own play/pause/setPlayWhenReady act on the raw
+         * ExoPlayer, which resumes audio while the adapter's internalPlayWhenReady
+         * stays stale — the next track change then captures shouldPlay=false and
+         * loads paused.
+         */
+        fun play()
+
+        fun pause()
+
+        fun setPlayWhenReady(playWhenReady: Boolean)
     }
 
     /**
@@ -318,6 +331,27 @@ internal class DelegatingForwardingPlayer(
         }
     }
 
+    // ========== Transport Intent Overrides ==========
+    // MediaController surfaces (notification, Bluetooth, headset, Android Auto) land here.
+    // Without these overrides the calls fall through to the raw delegate ExoPlayer: audio
+    // resumes but the adapter's internalPlayWhenReady stays false, so the next track
+    // change captures shouldPlay=false and the incoming track loads paused.
+
+    override fun play() {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.play() else super.play()
+    }
+
+    override fun pause() {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.pause() else super.pause()
+    }
+
+    override fun setPlayWhenReady(playWhenReady: Boolean) {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.setPlayWhenReady(playWhenReady) else super.setPlayWhenReady(playWhenReady)
+    }
+
     // NOTE: Do NOT override getMediaItemCount() or getCurrentMediaItemIndex() here.
     // These must remain consistent with the underlying ExoPlayer's Timeline (1 item, index 0).
     // Media3's PlayerWrapper.createPositionInfo() validates that currentMediaItemIndex < timeline.windowCount.
@@ -388,6 +422,11 @@ internal class DelegatingForwardingPlayer(
      * Also dispatches [Player.Listener.onAvailableCommandsChanged] so MediaSession
      * re-evaluates which notification buttons to show (next/previous).
      *
+     * Also replays [Player.Listener.onPlaybackStateChanged]. A session holding this player
+     * directly (FOSS) stores the state an event carries rather than calling [getPlaybackState],
+     * so after a swap to an already-READY precached player it kept the outgoing ENDED, and
+     * Media3's 10-minute user-engaged timeout dropped the foreground service mid-playback (#2233).
+     *
      * Primary use case: crossfade transitions, where the secondary player is prepared
      * (with MediaItem + prepare()) before the ForwardingPlayer is swapped to it.
      * MediaSession uses these events to update the system notification metadata.
@@ -397,6 +436,7 @@ internal class DelegatingForwardingPlayer(
         val mediaItem = player.currentMediaItem ?: MediaItem.EMPTY
         val metadata = player.mediaMetadata
         val commands = getAvailableCommands()
+        val state = getPlaybackState()
 
         Logger.d(TAG, "Manually notifying ${trackedListeners.size} listeners about media item change: ${metadata.title}")
 
@@ -405,6 +445,7 @@ internal class DelegatingForwardingPlayer(
                 listener.onMediaItemTransition(mediaItem, Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
                 listener.onMediaMetadataChanged(metadata)
                 listener.onAvailableCommandsChanged(commands)
+                listener.onPlaybackStateChanged(state)
             } catch (e: Exception) {
                 Logger.w(TAG, "Error notifying listener about media item change: ${e.message}")
             }

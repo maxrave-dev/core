@@ -15,6 +15,7 @@ import com.maxrave.domain.data.model.browse.artist.Songs
 import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
+import com.maxrave.domain.utils.LIVE_RESULT_TYPE
 import com.maxrave.kotlinytmusicscraper.models.AlbumItem
 import com.maxrave.kotlinytmusicscraper.models.ArtistItem
 import com.maxrave.kotlinytmusicscraper.models.PlaylistItem
@@ -90,8 +91,9 @@ internal fun parseArtistData(data: ArtistPage): ArtistBrowse {
                 thumbnails = listOf(Thumbnail(544, song.thumbnail, 544)),
                 isAvailable = true,
                 isExplicit = false,
-                videoType = "Song",
+                videoType = song.musicVideoType,
                 durationSeconds = song.duration ?: 0,
+                isLive = song.isLive,
             ),
         )
     }
@@ -131,11 +133,11 @@ internal fun parseArtistData(data: ArtistPage): ArtistBrowse {
                 category = null,
                 duration = null,
                 durationSeconds = video.duration,
-                resultType = null,
+                resultType = if (video.isLive) LIVE_RESULT_TYPE else null,
                 thumbnails = video.thumbnails?.thumbnails?.toListThumbnail(),
                 title = video.title,
                 videoId = video.id,
-                videoType = null,
+                videoType = video.musicVideoType,
                 views = video.view,
                 year = "",
             ),

@@ -5,6 +5,11 @@ import com.maxrave.ktorext.crypto.HmacUri
 import com.maxrave.logger.Logger
 import io.ktor.client.call.body
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import org.simpmusic.lyrics.am.AMAlbumResource
+import org.simpmusic.lyrics.am.AMSongWithAlbum
+import org.simpmusic.lyrics.am.parseAMHlsVariants
+import org.simpmusic.lyrics.am.pickAMRendition
 import org.simpmusic.lyrics.am.AMArtistResource
 import org.simpmusic.lyrics.am.AMSearchResponse
 import org.simpmusic.lyrics.models.request.LyricsBody
@@ -19,6 +24,12 @@ import org.simpmusic.lyrics.parser.parseUnsyncedLyrics
 import kotlin.math.abs
 
 private const val TAG = "SimpMusicLyricsClient"
+
+/** An error the SimpMusic Lyrics API answered with; [code] 404 means nobody has added that song yet. */
+class SimpMusicLyricsApiException(
+    val code: Int,
+    message: String,
+) : Exception(message)
 
 class SimpMusicLyricsClient {
     private val algorithm = ""
@@ -190,6 +201,96 @@ class SimpMusicLyricsClient {
                 ?.get(id)
         }
 
+    /**
+     * Search the AM catalog for albums, ranked the way AM ranked them. Each result already carries
+     * its animated artwork when it has one, so the caller needs no follow-up request.
+     */
+    suspend fun searchAMAlbum(
+        query: String,
+        limit: Int = 5,
+    ): Result<List<AMAlbumResource>> =
+        runCatching {
+            val response = lyricsService.searchAMAlbum(query, limit)
+            if (response.status.value !in 200..299) {
+                throw Exception("AM album search failed: ${response.status.value}")
+            }
+            val parsed = response.body<AMSearchResponse>()
+            val resources = parsed.resources?.albums.orEmpty()
+            // Keep the search ranking from results.data; fall back to the resources map order.
+            parsed.results
+                ?.albums
+                ?.data
+                ?.mapNotNull { resources[it.id] }
+                ?: resources.values.toList()
+        }
+
+    /**
+     * Tracks reached by title, each paired with the album it appears on.
+     *
+     * The pairing comes from `relationships.albums`, never from the flat `resources.albums` map:
+     * that map holds every album any hit belongs to, so reading an album out of it directly
+     * attaches whichever release happens to carry artwork to whatever track was searched for.
+     * Order follows the search ranking; the caller still decides which hit is the right track.
+     */
+    suspend fun searchAMSongsWithAlbums(
+        query: String,
+        limit: Int = 5,
+    ): Result<List<AMSongWithAlbum>> =
+        runCatching {
+            val response = lyricsService.searchAMSongs(query, limit)
+            if (response.status.value !in 200..299) {
+                throw Exception("AM song search failed: ${response.status.value}")
+            }
+            val parsed = response.body<AMSearchResponse>()
+            val songs = parsed.resources?.songs.orEmpty()
+            val albums = parsed.resources?.albums.orEmpty()
+            val ranked =
+                parsed.results
+                    ?.songs
+                    ?.data
+                    ?.mapNotNull { songs[it.id] }
+                    ?: songs.values.toList()
+            ranked.mapNotNull { song ->
+                val albumId =
+                    song.relationships
+                        ?.albums
+                        ?.data
+                        ?.firstOrNull()
+                        ?.id
+                val album = albumId?.let { albums[it] } ?: return@mapNotNull null
+                AMSongWithAlbum(
+                    songName = song.attributes?.name,
+                    artistName = song.attributes?.artistName,
+                    durationInMillis = song.attributes?.durationInMillis,
+                    album = album,
+                )
+            }
+        }
+
+    /**
+     * Resolve an animated-artwork master playlist down to the single rendition worth playing, and
+     * return its media-playlist url.
+     *
+     * Doing this here rather than leaving it to the player is what makes the two platforms agree:
+     * mpv defaults to `--hls-bitrate=max` and would take the top of the ladder — on a measured
+     * artwork that is 2048x2732 10-bit HEVC at 20 Mbps, 52 MB for a 22-second loop — while
+     * ExoPlayer would pick by its own bandwidth estimate. Handing both a chosen rendition removes
+     * the question. Returns null when the url is not a master playlist.
+     */
+    suspend fun selectAMRendition(
+        masterUrl: String,
+        minWidth: Int,
+    ): Result<String?> =
+        runCatching {
+            val response = lyricsService.fetchAMHlsPlaylist(masterUrl)
+            if (response.status.value !in 200..299) {
+                throw Exception("AM playlist fetch failed: ${response.status.value}")
+            }
+            parseAMHlsVariants(response.bodyAsText(), masterUrl)
+                .pickAMRendition(minWidth)
+                ?.uri
+        }
+
     private suspend inline fun <reified T> HttpResponse.bodyOrThrow(): T {
         if (this.status.value == 429) {
             tooManyRequest = true
@@ -201,8 +302,10 @@ class SimpMusicLyricsClient {
             val data = body<BaseResponse<T>>()
             if (data.error != null) {
                 val error = data.error
-                Logger.e(TAG, "Error response: ${error.reason} (code: ${error.code})")
-                throw Exception("Error response: ${error.reason} (code: ${error.code})")
+                val message = "Error response: ${error.reason} (code: ${error.code})"
+                // 404 is the normal answer for a song nobody has added lyrics for, not a failure.
+                if (error.code == 404) Logger.d(TAG, message) else Logger.e(TAG, message)
+                throw SimpMusicLyricsApiException(error.code, message)
             }
             return data.data ?: throw Exception("Response data is null")
         } catch (e: Exception) {

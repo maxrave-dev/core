@@ -1,3 +1,10 @@
+val isFullBuild: Boolean =
+    try {
+        extra["isFullBuild"] == "true"
+    } catch (e: Exception) {
+        false
+    }
+
 plugins {
     alias(libs.plugins.android.library)
 }
@@ -57,7 +64,6 @@ dependencies {
 
     // Media3
     implementation(libs.media3.exoplayer)
-    implementation(libs.media3.ui)
     api(libs.media3.session)
     implementation(libs.media3.exoplayer.dash)
     implementation(libs.media3.exoplayer.hls)
@@ -67,4 +73,18 @@ dependencies {
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.okhttp3.logging.interceptor)
     implementation(libs.coroutines.guava)
+
+    // Android Auto (Car App Library media templates)
+    implementation(libs.car.app.core)
+    implementation(libs.car.app.projected)
+    // registerMediaPlaybackToken only accepts MediaSessionCompat.Token; both car-app
+    // and media3-session ship androidx.media at runtime scope only
+    implementation(libs.androidx.media)
+
+    // Google Cast (gated: real SDK for full builds, no-op stub for FOSS builds)
+    if (isFullBuild) {
+        implementation(projects.cast)
+    } else {
+        implementation(projects.castEmpty)
+    }
 }

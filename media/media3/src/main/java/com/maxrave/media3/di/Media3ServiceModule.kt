@@ -33,6 +33,7 @@ import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
+import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.flac.FlacExtractor
@@ -47,6 +48,7 @@ import com.maxrave.common.Config.MAIN_PLAYER
 import com.maxrave.common.Config.PLAYER_CACHE
 import com.maxrave.common.Config.SERVICE_SCOPE
 import com.maxrave.common.MERGING_DATA_TYPE
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
@@ -60,12 +62,19 @@ import com.maxrave.domain.repository.SearchRepository
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
+import com.maxrave.media3.cast.CastHandoffManager
+import com.maxrave.media3.waveform.WaveformReader
+import com.maxrave.media3.cast.CastStreamResolver
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter
+import com.maxrave.media3.extension.isFullyCached
 import com.maxrave.media3.repository.CacheRepositoryImpl
 import com.maxrave.media3.service.SimpleMediaService
 import com.maxrave.media3.service.callback.SimpleMediaSessionCallback
 import com.maxrave.media3.service.download.DownloadUtils
+import com.maxrave.media3.service.mediasourcefactory.LiveStreamAwareLoadErrorHandlingPolicy
+import com.maxrave.media3.service.mediasourcefactory.LiveStreamDetectedException
 import com.maxrave.media3.service.mediasourcefactory.MergingMediaSourceFactory
+import com.maxrave.media3.service.mediasourcefactory.liveStreamDataSourceFactory
 import com.maxrave.media3.utils.CoilBitmapLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -82,6 +91,8 @@ import org.koin.android.ext.koin.androidContext
 import org.koin.core.context.loadKoinModules
 import org.koin.core.qualifier.named
 import org.koin.dsl.module
+import org.simpmusic.cast.initCast
+import org.simpmusic.cast.wrapWithCastPlayer
 import java.net.Proxy
 import kotlin.time.Duration.Companion.seconds
 
@@ -165,17 +176,37 @@ private val mediaServiceModule =
             provideRendererFactory(androidContext())
         }
 
-        // Player exposed for UI (video rendering via PlayerView/PlayerSurface).
-        // Points to CrossfadeExoPlayerAdapter's ForwardingPlayer, which delegates to
-        // the currently active ExoPlayer instance. This ensures the video surface is
-        // always connected to the player that's actually playing media.
+        // Player exposed for MediaSession + UI (video rendering via PlayerView/PlayerSurface).
+        // The adapter's ForwardingPlayer (delegating to the active ExoPlayer) is wrapped with
+        // Cast support in the full build; org.simpmusic.cast no-ops back to the same instance
+        // in the FOSS build, so this stays the stable session-level player either way.
         single<Player>(qualifier = named(MAIN_PLAYER)) {
-            (get<MediaPlayerInterface>() as CrossfadeExoPlayerAdapter).forwardingPlayer
+            val adapter = get<MediaPlayerInterface>() as CrossfadeExoPlayerAdapter
+            initCast(androidContext())
+            wrapWithCastPlayer(androidContext(), adapter.forwardingPlayer)
         }
 
         // CoilBitmapLoader
         single<CoilBitmapLoader>(createdAtStart = true) {
             provideCoilBitmapLoader(androidContext(), get(named(SERVICE_SCOPE)))
+        }
+
+        // Reads a track's audio through the player's own resolving, cache-backed chain, so the
+        // waveform costs no second download of what the player streams anyway.
+        single<WaveformReader> {
+            WaveformReader(
+                context = androidContext(),
+                dataSourceFactory =
+                    provideResolvingDataSourceFactory(
+                        provideCacheDataSource(get(named(DOWNLOAD_CACHE)), get(named(PLAYER_CACHE)), androidContext(), provideProxy(get())),
+                        get(named(DOWNLOAD_CACHE)),
+                        get(named(PLAYER_CACHE)),
+                        get(),
+                        get(),
+                        get(named(SERVICE_SCOPE)),
+                    ),
+                streamRepository = get(),
+            )
         }
 
         single<MediaPlayerInterface>(createdAtStart = true) {
@@ -186,7 +217,19 @@ private val mediaServiceModule =
                 mediaSourceFactory = get(),
                 audioAttributes = get(),
                 streamRepository = get(),
+                waveformReader = get(),
             )
+        }
+
+        // Local ↔ Cast receiver handoff. No-op when wrapWithCastPlayer returned the plain
+        // ForwardingPlayer (FOSS build or no GMS on the device).
+        single<CastHandoffManager>(createdAtStart = true) {
+            CastHandoffManager(
+                adapter = get<MediaPlayerInterface>() as CrossfadeExoPlayerAdapter,
+                sessionPlayer = get(qualifier = named(MAIN_PLAYER)),
+                resolver = CastStreamResolver(get(), get()),
+                coroutineScope = get(qualifier = named(SERVICE_SCOPE)),
+            ).also { it.start() }
         }
 
         // MediaSession Callback for main player
@@ -225,42 +268,59 @@ private fun provideResolvingDataSourceFactory(
     val chunkLength = 10 * 512 * 1024L
     return ResolvingDataSource.Factory(cacheDataSourceFactory) { dataSpec ->
         val mediaId = dataSpec.key ?: error("No media id")
-        Logger.w("Stream", mediaId)
-        Logger.w("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
-        val length = if (dataSpec.length >= 0) dataSpec.length else 1
-        if (downloadCache.isCached(
-                mediaId,
-                dataSpec.position,
-                length,
-            )
-        ) {
-            coroutineScope.launch(Dispatchers.IO) {
-                streamRepository.updateFormat(
-                    if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
-                        mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                    } else {
-                        mediaId
-                    },
-                )
+        val videoId = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+        // A live broadcast reached a progressive source that was built before it was known to be
+        // live; failing it is what gets the track rebuilt as HLS — see LiveStreamDetectedException.
+        if (LiveStreamRegistry.isLive(videoId)) throw LiveStreamDetectedException(videoId)
+        Logger.d("Stream", mediaId)
+        Logger.d("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
+        if (downloadCache.isFullyCached(mediaId, dataSpec.position)) {
+            // Only on the first chunk: the subrange below makes the resolver run once per
+            // chunk, and updateFormat is a fire-and-forget youTube.player() call with no
+            // in-flight dedup, so leaving it ungated would fan out one request per 5 MiB.
+            if (dataSpec.position == 0L) {
+                coroutineScope.launch(Dispatchers.IO) {
+                    streamRepository.updateFormat(
+                        if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
+                            mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                        } else {
+                            mediaId
+                        },
+                    )
+                }
             }
-            Logger.w("Stream", "Downloaded $mediaId")
-            return@Factory dataSpec
+            Logger.d("Stream", "Downloaded $mediaId")
+            return@Factory dataSpec.subrange(dataSpec.uriPositionOffset, chunkLength)
         }
-        val playerCached = playerCache.isCached(mediaId, dataSpec.position, chunkLength)
-        if (playerCached) {
-            coroutineScope.launch(Dispatchers.IO) {
-                streamRepository.updateFormat(
-                    if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
-                        mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                    } else {
-                        mediaId
-                    },
-                )
+        if (playerCache.isFullyCached(mediaId, dataSpec.position)) {
+            // See the note above: once per track, not once per chunk.
+            if (dataSpec.position == 0L) {
+                coroutineScope.launch(Dispatchers.IO) {
+                    streamRepository.updateFormat(
+                        if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
+                            mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                        } else {
+                            mediaId
+                        },
+                    )
+                }
             }
-            Logger.w("Stream", "Cached $mediaId")
-            // Don't return bare video ID as URI — CacheDataSource.openNextSource()
-            // may need a valid HTTP URL for uncached spans beyond this chunk.
-            // Fall through to resolve actual stream URL.
+            Logger.d("Stream", "Cached $mediaId")
+            // Every byte is on disk right now, so CacheDataSource can serve this chunk
+            // without ever reaching upstream, and the bare media id is safe as the URI.
+            //
+            // It is only safe for ONE chunk though. A bare id has no scheme, so
+            // DefaultDataSource routes it to FileDataSource, not to OkHttp — the failure
+            // is FileNotFoundException (ERROR_CODE_IO_FILE_NOT_FOUND), which Media3 lists
+            // as non-retriable and which CrossfadeExoPlayerAdapter does not recover from
+            // either. Meanwhile CacheDataSource.read() walks span to span inside a single
+            // open() without consulting this resolver again, so an unbounded DataSpec
+            // would stake the whole remaining track on a snapshot taken here: one LRU
+            // eviction (precache and downloads write to playerCache concurrently) or one
+            // "clear cache" tap mid-song and playback dies with no way back.
+            // Capping to chunkLength forces a re-check at every chunk boundary, so a
+            // cache that shrinks under us falls back to resolving a real URL.
+            return@Factory dataSpec.subrange(dataSpec.uriPositionOffset, chunkLength)
         }
         var dataSpecReturn: DataSpec = dataSpec
         var resolved = false
@@ -271,7 +331,7 @@ private fun provideResolvingDataSourceFactory(
                     val videoUrl = it.videoUrl
                     if (videoUrl != null && it.expiredTime > now()) {
                         Logger.d("Stream", videoUrl)
-                        Logger.w("Stream", "Video from format")
+                        Logger.d("Stream", "Video from format")
                         val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
                         Logger.d("Stream", "is 403 $is403Url")
                         if (!is403Url) {
@@ -290,7 +350,7 @@ private fun provideResolvingDataSourceFactory(
                     ).lastOrNull()
                     ?.let {
                         Logger.d("Stream", it)
-                        Logger.w("Stream", "Video")
+                        Logger.d("Stream", "Video")
                         dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                         resolved = true
                     }
@@ -299,7 +359,7 @@ private fun provideResolvingDataSourceFactory(
                     val audioUrl = it.audioUrl
                     if (audioUrl != null && it.expiredTime > now()) {
                         Logger.d("Stream", audioUrl)
-                        Logger.w("Stream", "Audio from format")
+                        Logger.d("Stream", "Audio from format")
                         val is403Url = streamRepository.is403Url(audioUrl).firstOrNull() != false
                         Logger.d("Stream", "is 403 $is403Url")
                         if (!is403Url) {
@@ -318,12 +378,15 @@ private fun provideResolvingDataSourceFactory(
                     ).lastOrNull()
                     ?.let {
                         Logger.d("Stream", it)
-                        Logger.w("Stream", "Audio")
+                        Logger.d("Stream", "Audio")
                         dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                         resolved = true
                     }
             }
         }
+        // getStream above is where a live broadcast is first recognised. Its HLS playlist URL must
+        // not be read as a file, so this source fails and the track is rebuilt as HLS.
+        if (LiveStreamRegistry.isLive(videoId)) throw LiveStreamDetectedException(videoId)
         if (!resolved) {
             Logger.e("Stream", "Failed to resolve stream URL for $mediaId")
             throw java.io.IOException("Failed to resolve stream URL for $mediaId")
@@ -366,15 +429,7 @@ private fun provideMediaSourceFactory(
                 downloadCache,
                 playerCache,
                 context,
-                dataStoreManager.getJVMProxy()?.let {
-                    Proxy(
-                        when (it.type) {
-                            DataStoreManager.ProxyType.PROXY_TYPE_HTTP -> Proxy.Type.HTTP
-                            DataStoreManager.ProxyType.PROXY_TYPE_SOCKS -> Proxy.Type.SOCKS
-                        },
-                        java.net.InetSocketAddress(it.host, it.port),
-                    )
-                },
+                provideProxy(dataStoreManager),
             ),
             downloadCache,
             playerCache,
@@ -383,6 +438,42 @@ private fun provideMediaSourceFactory(
             coroutineScope,
         ),
         provideExtractorFactory(),
+    ).setLoadErrorHandlingPolicy(LiveStreamAwareLoadErrorHandlingPolicy())
+
+/** The proxy the user configured, for every HTTP source the player opens. */
+private fun provideProxy(dataStoreManager: DataStoreManager): Proxy? =
+    dataStoreManager.getJVMProxy()?.let {
+        Proxy(
+            when (it.type) {
+                DataStoreManager.ProxyType.PROXY_TYPE_HTTP -> Proxy.Type.HTTP
+                DataStoreManager.ProxyType.PROXY_TYPE_SOCKS -> Proxy.Type.SOCKS
+            },
+            java.net.InetSocketAddress(it.host, it.port),
+        )
+    }
+
+/**
+ * HLS for live broadcasts. The playlist placeholder is resolved through the same getStream every
+ * other track uses, which answers with the broadcast's HLS playlist once it knows the video is live.
+ */
+@UnstableApi
+private fun provideLiveStreamMediaSourceFactory(
+    context: Context,
+    streamRepository: StreamRepository,
+    dataStoreManager: DataStoreManager,
+): HlsMediaSource.Factory =
+    HlsMediaSource.Factory(
+        liveStreamDataSourceFactory(provideHttpDataSourceFactory(context, provideProxy(dataStoreManager))) { videoId ->
+            runBlocking(Dispatchers.IO) {
+                streamRepository
+                    .getStream(
+                        dataStoreManager,
+                        videoId,
+                        isDownloading = false,
+                        isVideo = false,
+                    ).lastOrNull()
+            }
+        },
     )
 
 @OptIn(UnstableApi::class)
@@ -403,7 +494,10 @@ private fun provideMergingMediaSource(
             dataStoreManager,
             coroutineScope,
         ),
+        provideLiveStreamMediaSourceFactory(context, streamRepository, dataStoreManager),
         dataStoreManager,
+        context,
+        downloadCache,
     )
 
 @UnstableApi
@@ -447,28 +541,33 @@ private fun provideCacheDataSource(
             CacheDataSource
                 .Factory()
                 .setCache(playerCache)
-                .setUpstreamDataSourceFactory(
-                    DefaultDataSource
-                        .Factory(
-                            context,
-                            OkHttpDataSource.Factory(
-                                OkHttpClient
-                                    .Builder()
-                                    .connectTimeout(30.seconds)
-                                    .readTimeout(30.seconds)
-                                    .proxy(
-                                        proxy,
-                                    ).addInterceptor(
-                                        HttpLoggingInterceptor()
-                                            .apply {
-                                                level = HttpLoggingInterceptor.Level.HEADERS
-                                            },
-                                    ).build(),
-                            ),
-                        ),
-                ),
+                .setUpstreamDataSourceFactory(provideHttpDataSourceFactory(context, proxy)),
         ).setCacheWriteDataSinkFactory(null)
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+/** The network underneath every player source: OkHttp behind the user's proxy, with header logging. */
+@UnstableApi
+private fun provideHttpDataSourceFactory(
+    context: Context,
+    proxy: Proxy?,
+): DataSource.Factory =
+    DefaultDataSource.Factory(
+        context,
+        OkHttpDataSource.Factory(
+            OkHttpClient
+                .Builder()
+                .connectTimeout(30.seconds)
+                .readTimeout(30.seconds)
+                .proxy(
+                    proxy,
+                ).addInterceptor(
+                    HttpLoggingInterceptor()
+                        .apply {
+                            level = HttpLoggingInterceptor.Level.HEADERS
+                        },
+                ).build(),
+        ),
+    )
 
 @UnstableApi
 private fun provideLoadControl(): LoadControl =

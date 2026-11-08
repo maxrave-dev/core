@@ -23,6 +23,24 @@ import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
 import com.maxrave.domain.data.model.searchResult.videos.VideosResult
 import kotlin.jvm.JvmName
 
+/**
+ * `resultType` value that marks a [Track] or a [SongEntity] row as a live broadcast.
+ *
+ * The column was otherwise dead — mappers fill it with labels nothing reads, and no query filters
+ * on it — so it carries the flag without a schema change. Not `videoType`: both player handlers
+ * rewrite that from YouTube's own value on every play, and YouTube labels a live row
+ * `MUSIC_VIDEO_TYPE_UGC` like any other upload, so a marker there would not survive one play.
+ */
+const val LIVE_RESULT_TYPE = "LIVE"
+
+/** A broadcast on air, as the row it came from — or its stream — said. False also means "never said". */
+val Track.isLive: Boolean
+    get() = resultType == LIVE_RESULT_TYPE
+
+/** See [Track.isLive]. An extension rather than a member, so Room never mistakes it for a column. */
+val SongEntity.isLive: Boolean
+    get() = resultType == LIVE_RESULT_TYPE
+
 fun SearchHistory.toQuery(): String = this.query
 
 fun List<SearchHistory>.toQueryList(): ArrayList<String> {
@@ -48,7 +66,7 @@ fun ResultSong.toTrack(): Track =
         videoType = videoType,
         category = null,
         feedbackTokens = null,
-        resultType = null,
+        resultType = if (isLive) LIVE_RESULT_TYPE else null,
         year = "",
     )
 
@@ -64,11 +82,15 @@ fun ResultVideo.toTrack(): Track =
         thumbnails = this.thumbnails,
         title = this.title,
         videoId = this.videoId,
-        videoType = this.views,
+        // Was `this.views`, which wrote the localized view-count subtitle ("432K views",
+        // "168 N lượt xem") into the type column and from there into song.videoType. The view
+        // count now travels in `views`, where the Videos shelf reads it.
+        videoType = this.videoType,
         category = null,
         feedbackTokens = null,
-        resultType = null,
+        resultType = this.resultType.takeIf { it == LIVE_RESULT_TYPE },
         year = "",
+        views = this.views,
     )
 
 fun SongsResult.toTrack(): Track =
@@ -145,7 +167,7 @@ fun SongEntity.toTrack(): Track {
         videoType = this.videoType,
         category = this.category,
         feedbackTokens = null,
-        resultType = null,
+        resultType = if (isLive) LIVE_RESULT_TYPE else null,
         year = "",
     )
 }
@@ -212,10 +234,10 @@ fun Content.toTrack(): Track =
         thumbnails = thumbnails,
         title = title,
         videoId = videoId!!,
-        videoType = "",
+        videoType = videoType,
         category = null,
         feedbackTokens = null,
-        resultType = null,
+        resultType = if (isLive) LIVE_RESULT_TYPE else null,
         year = "",
     )
 
@@ -348,7 +370,9 @@ fun PodcastBrowse.EpisodeItem.toTrack(): Track =
         thumbnails = this.thumbnail,
         title = this.title,
         videoId = this.videoId,
-        videoType = "Podcast",
+        // The podcast browse response carries no music config; `category`/`resultType` below are
+        // what mark this as an episode, so there is nothing to invent here.
+        videoType = null,
         category = "Podcast",
         feedbackTokens = null,
         resultType = "Podcast",
@@ -399,7 +423,7 @@ fun Lyrics.toRichSyncLrcString(): String? {
         val seconds = ((startTimeMs % 60000) / 1000).toString().padStart(2, '0')
         val centiseconds = ((startTimeMs % 1000) / 10).toString().padStart(2, '0')
 
-        "[$minutes:$seconds.$centiseconds] ${line.words}"
+        "[$minutes:$seconds.$centiseconds] ${line.words.replace("  ", " ")}"
     }
 }
 
@@ -413,18 +437,20 @@ fun Lyrics.toSyncedLyrics(): Lyrics {
         return this
     }
     val wordTimingRegex = Regex("""<\d{1,2}:\d{2}\.\d{2,3}>""")
-    val syncedLines = lines.map { line ->
-        val plainWords = line.words
-            .replace(wordTimingRegex, "")
-            .replace("  ", " ")
-            .trim()
-        Line(
-            endTimeMs = line.endTimeMs,
-            startTimeMs = line.startTimeMs,
-            syllables = line.syllables,
-            words = plainWords.ifBlank { "♫" },
-        )
-    }
+    val syncedLines =
+        lines.map { line ->
+            val plainWords =
+                line.words
+                    .replace(wordTimingRegex, "")
+                    .replace("  ", " ")
+                    .trim()
+            Line(
+                endTimeMs = line.endTimeMs,
+                startTimeMs = line.startTimeMs,
+                syllables = line.syllables,
+                words = plainWords.ifBlank { "♫" },
+            )
+        }
     return Lyrics(
         error = this.error,
         lines = syncedLines,

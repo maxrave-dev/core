@@ -52,4 +52,12 @@ interface StreamRepository {
     fun is403Url(url: String): Flow<Boolean>
 
     suspend fun invalidateFormat(videoId: String)
+
+    /**
+     * Which extractor and cipher decoder produced this video's stream URLs, for the info sheet.
+     *
+     * Null until the video has actually been extracted in this run — it is not persisted, because it
+     * describes one extraction rather than the format row, which outlives it in the cache.
+     */
+    fun getExtractSource(videoId: String): String?
 }

@@ -1,15 +1,22 @@
 package com.maxrave.media3.service.mediasourcefactory
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.cache.Cache
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import com.maxrave.common.MERGING_DATA_TYPE
+import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.logger.Logger
+import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -17,25 +24,43 @@ import kotlinx.coroutines.runBlocking
 @UnstableApi
 internal class MergingMediaSourceFactory(
     private val defaultMediaSourceFactory: DefaultMediaSourceFactory,
+    // HLS over plain HTTP, for live broadcasts only — see LiveStreamPlayback.kt.
+    private val liveStreamMediaSourceFactory: MediaSource.Factory,
     private val dataStoreManager: DataStoreManager,
+    private val context: Context,
+    private val downloadCache: Cache,
 ) : MediaSource.Factory {
     override fun setDrmSessionManagerProvider(drmSessionManagerProvider: DrmSessionManagerProvider): MediaSource.Factory {
         defaultMediaSourceFactory.setDrmSessionManagerProvider(drmSessionManagerProvider)
+        liveStreamMediaSourceFactory.setDrmSessionManagerProvider(drmSessionManagerProvider)
         return this
     }
 
     override fun setLoadErrorHandlingPolicy(loadErrorHandlingPolicy: LoadErrorHandlingPolicy): MediaSource.Factory {
         defaultMediaSourceFactory.setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
+        liveStreamMediaSourceFactory.setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
         return this
     }
 
     override fun getSupportedTypes(): IntArray = defaultMediaSourceFactory.supportedTypes
 
     override fun createMediaSource(mediaItem: MediaItem): MediaSource {
+        if (LiveStreamRegistry.isLive(mediaItem.mediaId)) {
+            // One HLS playlist carrying audio and video together: no merge, and none of the
+            // progressive resolver's caching or chunking.
+            Logger.w("Merging Media Source", "${mediaItem.mediaId} is live; building an HLS source")
+            return liveStreamMediaSourceFactory.createMediaSource(
+                mediaItem
+                    .buildUpon()
+                    .setUri(LiveStreamPlaylistUri.forVideo(mediaItem.mediaId))
+                    .setMimeType(MimeTypes.APPLICATION_M3U8)
+                    .build(),
+            )
+        }
         Logger.w("Merging Media Source", mediaItem.mediaMetadata.description.toString())
         val getVideo = runBlocking(Dispatchers.IO) { dataStoreManager.watchVideoInsteadOfPlayingAudio.first() } == DataStoreManager.Values.TRUE
         Logger.w("Merging Media Source", getVideo.toString())
-        if (mediaItem.mediaMetadata.description == MERGING_DATA_TYPE.VIDEO && getVideo) {
+        if (mediaItem.mediaMetadata.description == MERGING_DATA_TYPE.VIDEO && getVideo && !isVideoUnreachable(mediaItem.mediaId)) {
             val videoItem =
                 mediaItem
                     .buildUpon()
@@ -51,5 +76,19 @@ internal class MergingMediaSourceFactory(
         }
 
 //        val default = defaultMediaSourceFactory.createMediaSource(mediaItem.buildUpon().setMediaId("AUDIO-${mediaItem.mediaId}").build())
+    }
+
+    // A track downloaded while video playback was off holds its audio only. Offline, its video
+    // half can be neither read nor fetched, and one failing half fails the whole merged source.
+    private fun isVideoUnreachable(mediaId: String): Boolean =
+        downloadCache.isFullyCached(mediaId, 0L) &&
+            !downloadCache.isFullyCached("${MERGING_DATA_TYPE.VIDEO}$mediaId", 0L) &&
+            !isOnline()
+
+    private fun isOnline(): Boolean {
+        val connectivityManager = context.getSystemService(ConnectivityManager::class.java) ?: return true
+        return connectivityManager
+            .getNetworkCapabilities(connectivityManager.activeNetwork)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
     }
 }

@@ -16,4 +16,12 @@ data class PlaylistPanelVideoRenderer(
     val unplayableText: Runs?,
     val menu: Menu?,
     val navigationEndpoint: NavigationEndpoint,
-)
+) {
+    /**
+     * A broadcast on air right now. Queue rows measured on 2026-10-16 carried no LIVE chip (a live
+     * seed showed only its elapsed time as `lengthText`), so this is usually false here and the
+     * queue learns a broadcast is live when its stream resolves.
+     */
+    val isLive: Boolean
+        get() = badges?.any { it.liveBadgeRenderer != null } == true
+}

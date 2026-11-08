@@ -13,5 +13,8 @@ data class ResultSong(
     val thumbnails: List<Thumbnail>,
     val isAvailable: Boolean,
     val isExplicit: Boolean,
-    val videoType: String,
+    /** YouTube's `MUSIC_VIDEO_TYPE_*`, or null when the response carried none — as on [ResultVideo]. */
+    val videoType: String?,
+    /** From the row's LIVE chip. This model has no `resultType` to carry the marker the others use. */
+    val isLive: Boolean = false,
 )

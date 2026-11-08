@@ -20,6 +20,7 @@ import com.my.kizzy.gateway.entities.presence.Metadata
 import com.my.kizzy.gateway.entities.presence.Presence
 import com.my.kizzy.gateway.entities.presence.Timestamps
 import io.ktor.client.HttpClient
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
@@ -37,7 +38,15 @@ open class KizzyRPC(
     private val superPropertiesBase64: String? = null,
 ) {
     private val discordWebSocket = DiscordWebSocket(token, os, browser, device)
-    private val discordApiClient = HttpClient()
+
+    // Bound the external-asset fetch: without a timeout a stalled googleusercontent request would pin
+    // the RPC sender coroutine open indefinitely and block later presence updates.
+    private val discordApiClient =
+        HttpClient {
+            install(HttpTimeout) {
+                requestTimeoutMillis = 10_000
+            }
+        }
 
     fun closeRPC() {
         discordWebSocket.close()

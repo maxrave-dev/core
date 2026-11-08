@@ -57,6 +57,11 @@ data class SearchSummaryPage(
                             renderer.subtitleBadges?.find {
                                 it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
                             } != null,
+                        musicVideoType =
+                            renderer.onTap.watchEndpoint
+                                .watchEndpointMusicSupportedConfigs
+                                ?.watchEndpointMusicConfig
+                                ?.musicVideoType,
                     )
                 }
 
@@ -163,6 +168,7 @@ data class SearchSummaryPage(
                             renderer.badges?.find {
                                 it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
                             } != null,
+                        musicVideoType = renderer.musicVideoType,
                     )
                 }
 

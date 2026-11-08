@@ -1,6 +1,11 @@
 package org.simpmusic.aiservice
 
+import com.aallam.openai.api.exception.OpenAIAPIException
 import com.maxrave.domain.data.model.metadata.Lyrics
+import com.maxrave.domain.data.model.taste.TasteException
+import com.maxrave.domain.data.model.taste.TasteInput
+import com.maxrave.domain.data.model.taste.TasteReading
+import kotlin.coroutines.cancellation.CancellationException
 
 class AiClient {
     private var aiService: AiService? = null
@@ -67,4 +72,32 @@ class AiClient {
 
             result
         }
+
+    /**
+     * A reading of the listener's taste.
+     *
+     * Every failure comes back as a [TasteException] sorted by what the user can do about it: a
+     * refused key or model is fixed in Settings, everything else is worth another try. The layers
+     * above never see this library's own exception types.
+     */
+    suspend fun describeTaste(input: TasteInput): Result<TasteReading> {
+        val service = aiService ?: return Result.failure(TasteException(TasteException.Kind.NOT_CONFIGURED))
+        return try {
+            Result.success(service.describeTaste(input))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: TasteException) {
+            Result.failure(e)
+        } catch (e: OpenAIAPIException) {
+            val kind = if (e.statusCode in REJECTED_STATUS) TasteException.Kind.REJECTED else TasteException.Kind.TEMPORARY
+            Result.failure(TasteException(kind, e.statusCode, e.error.detail?.message ?: e.message, e))
+        } catch (e: Exception) {
+            Result.failure(TasteException(TasteException.Kind.TEMPORARY, message = e.message, cause = e))
+        }
+    }
+
+    private companion object {
+        /** Bad request, bad key, no access, unknown model: retrying cannot help, Settings can. */
+        val REJECTED_STATUS = setOf(400, 401, 403, 404)
+    }
 }

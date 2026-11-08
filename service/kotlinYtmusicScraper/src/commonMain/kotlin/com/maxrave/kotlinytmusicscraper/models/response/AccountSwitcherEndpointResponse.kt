@@ -169,6 +169,8 @@ data class AccountItemContent(
     val accountItem: AccountItem?,
 )
 
+private val authUserRegex = Regex("[?&]authuser=(\\d+)")
+
 @Serializable
 data class AccountItem(
     val onBehalfOfParameter: String?,
@@ -185,17 +187,26 @@ data class AccountItem(
     val unlimitedStatus: List<AccountItemUnlimitedStatus?>?,
 ) {
     fun toAccountInfo(email: String): AccountInfo? {
+        val tokens = serviceEndpoint?.selectActiveIdentityEndpoint?.supportedTokens
         return AccountInfo(
             name = accountName?.simpleText ?: return null,
             email = email,
             pageId =
                 onBehalfOfParameter
-                    ?: serviceEndpoint
-                        ?.selectActiveIdentityEndpoint
-                        ?.supportedTokens
+                    ?: tokens
                         ?.firstOrNull { it?.pageIdToken != null }
                         ?.pageIdToken
                         ?.pageId,
+            // The switcher tells which signed-in Google account owns each channel only
+            // through the `authuser=N` param of its sign-in URL, e.g.
+            // "/signin?action_handle_signin=true&authuser=1&pageid=1032...&next=%2F".
+            authUser =
+                tokens
+                    ?.firstOrNull { it?.accountSigninToken != null }
+                    ?.accountSigninToken
+                    ?.signinUrl
+                    ?.let { authUserRegex.find(it)?.groupValues?.get(1)?.toIntOrNull() }
+                    ?: 0,
             thumbnails = accountPhoto?.thumbnails?.filterNotNull() ?: emptyList(),
         )
     }

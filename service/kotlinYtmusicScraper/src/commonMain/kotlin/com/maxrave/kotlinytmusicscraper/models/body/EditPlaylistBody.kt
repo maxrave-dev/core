@@ -17,5 +17,27 @@ data class EditPlaylistBody(
         val removedVideoId: String? = null,
         val setVideoId: String? = null,
         val movedSetVideoIdSuccessor: String? = null,
+        // Set only by ACTION_SET_CUSTOM_THUMBNAIL; the blob comes from the two-step upload in
+        // Ytmusic.uploadPlaylistCustomThumbnail.
+        val addedCustomThumbnail: AddedCustomThumbnail? = null,
     )
+
+    /**
+     * The uploaded image, referenced by the blob id the upload endpoint hands back.
+     *
+     * [imageKey] is fixed: YouTube Music only accepts one image slot per playlist, and it names
+     * that slot `studio_square_thumbnail`. It is sent as a literal rather than derived because the
+     * server rejects the action without it.
+     */
+    @Serializable
+    data class AddedCustomThumbnail(
+        val playlistScottyEncryptedBlobId: String,
+        val imageKey: ImageKey = ImageKey(),
+    ) {
+        @Serializable
+        data class ImageKey(
+            val name: String = "studio_square_thumbnail",
+            val type: String = "PLAYLIST_IMAGE_TYPE_CUSTOM_THUMBNAIL",
+        )
+    }
 }

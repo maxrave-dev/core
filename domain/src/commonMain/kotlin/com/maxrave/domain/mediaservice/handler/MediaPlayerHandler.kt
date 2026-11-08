@@ -4,10 +4,12 @@ import com.maxrave.domain.data.entities.NewFormatEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
+import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericCommandButton
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.PlayerError
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
+import com.maxrave.domain.utils.isEndlessQueueId
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -27,6 +29,7 @@ interface MediaPlayerHandler {
     val skipSegments: StateFlow<List<SponsorSkipSegments>?>
     val format: StateFlow<NewFormatEntity?>
     val currentSongIndex: StateFlow<Int>
+    val castState: StateFlow<GenericCastState>
 
     // Listeners
     var onUpdateNotification: (List<GenericCommandButton>) -> Unit
@@ -91,6 +94,9 @@ interface MediaPlayerHandler {
 
     suspend fun moveItemDown(position: Int)
 
+    /** Moves the queue track at [position] to play right after the current one. */
+    suspend fun moveItemToPlayNext(position: Int)
+
     fun addFirstMediaItemToIndex(
         mediaItem: GenericMediaItem?,
         index: Int,
@@ -148,6 +154,18 @@ interface MediaPlayerHandler {
     fun mayBeSavePlaybackState()
 
     fun mayBeRestoreQueue()
+
+    /**
+     * Restores the persisted queue and starts playing it.
+     *
+     * This is the background playback resumption path: a `play` command that arrives with an
+     * empty player and no UI attached (a Bluetooth or headset button, a Samsung Routine, the
+     * system resumption chip). Unlike [mayBeRestoreQueue] it must end with the player actually
+     * playing, and it must get there quickly - see the implementation for why.
+     *
+     * Returns false when there is nothing to resume.
+     */
+    suspend fun restoreQueueAndPlay(): Boolean
 
     // Lifecycle
     fun shouldReleaseOnTaskRemoved(): Boolean
@@ -335,11 +353,49 @@ data class QueueData(
 
     fun isRadio(): Boolean = this.data.playlistType == PlaylistType.RADIO
 
-    fun isPlaylist(): Boolean = this.data.playlistType == PlaylistType.PLAYLIST
+    /** True for both plain playlists and albums — an album queue is a playlist that knows its origin. */
+    fun isPlaylist(): Boolean =
+        this.data.playlistType == PlaylistType.PLAYLIST ||
+            this.data.playlistType == PlaylistType.ALBUM
 }
+
+/**
+ * Why "Add to queue" is unavailable. It appends to the END of the queue, and two kinds of queue never
+ * reach one: a radio or mix, which YouTube keeps extending, and any queue while Endless queue is on,
+ * which the app keeps extending. Only Play next has somewhere to put a song there.
+ */
+enum class AddToQueueBlock {
+    RADIO,
+    ENDLESS_QUEUE,
+}
+
+/**
+ * The reason Add to queue is blocked for this queue, or null when it is not.
+ *
+ * Decided by the id alone, not the type: a mix opened from its playlist page is queued as
+ * [PlaylistType.PLAYLIST] and still never ends. [AddToQueueBlock.RADIO] wins when both apply, since
+ * turning Endless queue off would not lift the block then.
+ *
+ * An empty queue is never blocked: nothing is playing yet, and Add to queue there starts the queue
+ * and plays it (#2596).
+ */
+fun QueueData?.addToQueueBlock(endlessQueue: Boolean): AddToQueueBlock? =
+    when {
+        this == null || data.listTracks.isEmpty() -> null
+        this?.data?.playlistId?.isEndlessQueueId() == true -> AddToQueueBlock.RADIO
+        endlessQueue -> AddToQueueBlock.ENDLESS_QUEUE
+        else -> null
+    }
 
 enum class PlaylistType {
     PLAYLIST,
+
+    /**
+     * A queue loaded from an album. Behaves exactly like [PLAYLIST] everywhere else — it exists so
+     * playback can tell that the tracks were sequenced together deliberately, which is what lets
+     * crossfade step aside inside an album while still fading into whatever is queued after it.
+     */
+    ALBUM,
     LOCAL_PLAYLIST,
     RADIO,
 }
@@ -352,4 +408,8 @@ sealed class ToastType(
     data class PlayerError(
         val error: String,
     ) : ToastType(error)
+
+    data class SponsorBlockSkip(
+        val category: String,
+    ) : ToastType(category)
 }

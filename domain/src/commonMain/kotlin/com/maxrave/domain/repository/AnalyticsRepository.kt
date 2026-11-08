@@ -1,8 +1,10 @@
 package com.maxrave.domain.repository
 
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
+import com.maxrave.domain.data.model.analytics.AnalyticsPeriodStats
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedAlbum
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtist
+import com.maxrave.domain.data.entities.analytics.query.TopPlayedArtistTime
 import com.maxrave.domain.data.entities.analytics.query.TopPlayedTracks
 import kotlinx.coroutines.flow.Flow
 import kotlinx.datetime.LocalDateTime
@@ -44,6 +46,18 @@ interface AnalyticsRepository {
         endTimestamp: LocalDateTime,
     ): Flow<List<TopPlayedArtist>>
 
+    /**
+     * The same ranking as [queryTopArtistsInRange], with the seconds spent on each artist.
+     *
+     * Separate because the seconds cost a join back to `playback_event`, which the top-five list
+     * and the fingerprint's per-artist counts have no use for. Time is credited in full to every
+     * artist on a track, so it means "time spent with this artist" and does not sum to the period.
+     */
+    suspend fun queryTopArtistsWithTimeInRange(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): Flow<List<TopPlayedArtistTime>>
+
     suspend fun queryTopAlbumsLastXDays(x: Int): Flow<List<TopPlayedAlbum>>
 
     suspend fun queryTopAlbumsInRange(
@@ -61,4 +75,16 @@ interface AnalyticsRepository {
         startTimestamp: LocalDateTime,
         endTimestamp: LocalDateTime,
     ): Flow<Long>
+
+    /**
+     * One coherent snapshot of a span, rather than a dozen flows the caller has to line up.
+     *
+     * Suspending, not a Flow: the screen asks for exactly two of these — the period on screen and
+     * the one before it — and needs them as a matched pair. Ten independent flows would let a
+     * count from this week render against a total from last.
+     */
+    suspend fun getPeriodStats(
+        startTimestamp: LocalDateTime,
+        endTimestamp: LocalDateTime,
+    ): AnalyticsPeriodStats
 }

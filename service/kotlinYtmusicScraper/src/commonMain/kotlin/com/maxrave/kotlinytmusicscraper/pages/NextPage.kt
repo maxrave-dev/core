@@ -4,6 +4,7 @@ import com.maxrave.kotlinytmusicscraper.models.Album
 import com.maxrave.kotlinytmusicscraper.models.Artist
 import com.maxrave.kotlinytmusicscraper.models.BrowseEndpoint
 import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
+import com.maxrave.kotlinytmusicscraper.models.PlaylistPanelRenderer
 import com.maxrave.kotlinytmusicscraper.models.PlaylistPanelVideoRenderer
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
@@ -95,8 +96,16 @@ object NextPage {
                     ?.navigationEndpoint
                     ?.watchEndpoint,
             thumbnails = renderer.thumbnail?.musicThumbnailRenderer?.thumbnail,
+            musicVideoType = renderer.musicVideoType,
+            isLive = renderer.isLive,
         )
     }
+
+    /** A queue row, carrying its other rendition as [SongItem.counterpart] when YouTube sent one. */
+    fun fromPlaylistPanelContent(content: PlaylistPanelRenderer.Content): SongItem? =
+        content.track?.let(::fromPlaylistPanelVideoRenderer)?.copy(
+            counterpart = content.counterpartTrack?.let(::fromPlaylistPanelVideoRenderer),
+        )
 
     fun fromPlaylistPanelVideoRenderer(renderer: PlaylistPanelVideoRenderer): SongItem? {
         val longByLineRuns = renderer.longBylineText?.runs?.splitBySeparator() ?: return null
@@ -141,6 +150,12 @@ object NextPage {
                     it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
                 } != null,
             thumbnails = renderer.thumbnail,
+            musicVideoType =
+                renderer.navigationEndpoint.watchEndpoint
+                    ?.watchEndpointMusicSupportedConfigs
+                    ?.watchEndpointMusicConfig
+                    ?.musicVideoType,
+            isLive = renderer.isLive,
         )
     }
 }

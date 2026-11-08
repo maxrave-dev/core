@@ -3,6 +3,13 @@
 import com.android.build.gradle.internal.tasks.CompileArtProfileTask
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 
+val isFullBuild: Boolean =
+    try {
+        extra["isFullBuild"] == "true"
+    } catch (e: Exception) {
+        false
+    }
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
@@ -65,10 +72,22 @@ kotlin {
                 implementation(projects.common)
                 implementation(projects.domain)
                 implementation(projects.aiService)
+                implementation(projects.autoEqService)
                 implementation(projects.lyricsService)
                 implementation(projects.spotify)
                 implementation(projects.kotlinYtmusicScraper)
                 implementation(projects.kizzy)
+                // Rich Presence over OAuth, used instead of kizzy when the build carries a Discord
+                // application id (only Full builds do).
+                implementation(projects.discord)
+                implementation(projects.listenTogether)
+
+                // Last.fm (gated: real scrobbler for full builds, no-op stub for FOSS builds)
+                if (isFullBuild) {
+                    implementation(projects.lastfm)
+                } else {
+                    implementation(projects.lastfmEmpty)
+                }
 
                 implementation(libs.kotlin.stdlib)
                 // Add KMP dependencies here
@@ -88,6 +107,12 @@ kotlin {
             }
         }
 
+        commonTest {
+            dependencies {
+                implementation(libs.kotlin.test)
+            }
+        }
+
         androidMain {
             dependencies {
                 // Add Android-specific dependencies here. Note that this source set depends on
@@ -96,6 +121,8 @@ kotlin {
                 implementation(libs.koin.android)
                 implementation(projects.media3)
                 implementation(libs.room.ktx)
+                // Login sync: the phone sends sign-ins to the Desktop
+                implementation(projects.loginSync)
             }
         }
 
@@ -115,6 +142,8 @@ kotlin {
                 implementation(libs.nowplaying)
                 implementation(libs.jna)
                 implementation(libs.jna.platform)
+                // Login sync: the Desktop receives sign-ins from the phone
+                implementation(projects.loginSync)
             }
         }
     }

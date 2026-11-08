@@ -1,5 +1,6 @@
 package com.maxrave.domain.repository
 
+import com.maxrave.domain.data.model.home.BrowsePage
 import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.data.model.home.chart.Chart
 import com.maxrave.domain.data.model.mood.Mood
@@ -10,13 +11,14 @@ import kotlinx.coroutines.flow.Flow
 
 interface HomeRepository {
     /**
-     * @return Pair of continueParams and HomeItem List
+     * @return Triple of continueParams, HomeItem List and the URL of the page background image
+     * YouTube sends with Home (null when it sends none)
      */
     fun getHomeData(
         params: String? = null,
         viewString: String,
         songString: String,
-    ): Flow<Resource<Pair<String?, List<HomeItem>>>>
+    ): Flow<Resource<Triple<String?, List<HomeItem>, String?>>>
 
     fun getHomeDataContinue(
         continueParam: String,
@@ -33,7 +35,26 @@ interface HomeRepository {
 
     fun getMoodAndMomentsData(): Flow<Resource<Mood>>
 
+    /**
+     * Cover art for one browse category, or null when it cannot be resolved.
+     *
+     * The category list has no artwork field, so this costs a full category browse the first time
+     * and is cached on disk afterwards. Call it lazily — one category at a time, as its tile
+     * actually becomes visible — never for the whole list at once.
+     */
+    fun getMoodCategoryArtwork(params: String): Flow<String?>
+
     fun getGenreData(params: String): Flow<Resource<GenreObject>>
 
     fun getMoodData(params: String): Flow<Resource<MoodsMomentObject>>
+
+    /**
+     * The page a home section's "More" endpoint points to — see [BrowsePage]. [songString] is the
+     * localized "Song" label, the same one the Home shelves are parsed with.
+     */
+    fun getBrowsePage(
+        browseId: String,
+        params: String?,
+        songString: String,
+    ): Flow<Resource<BrowsePage>>
 }

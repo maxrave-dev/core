@@ -1,10 +1,13 @@
 package com.maxrave.data.parser
 
+import com.maxrave.data.mapping.toYouTubeWatchEndpoint
 import com.maxrave.domain.data.model.home.Content
 import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.data.model.searchResult.songs.Album
 import com.maxrave.domain.data.model.searchResult.songs.Artist
+import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.ArtistItem
+import com.maxrave.kotlinytmusicscraper.models.BrowseEndpoint
 import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicTwoRowItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.PlaylistItem
@@ -61,9 +64,7 @@ internal fun parseMixedContent(
                 }
             } else {
                 val results1 = row.musicCarouselShelfRenderer
-                Logger.w("parse_mixed_content", results1.toString())
                 val contentList = results1?.contents
-                Logger.w("parse_mixed_content", results1?.contents?.size.toString())
                 val title =
                     results1
                         ?.header
@@ -73,10 +74,7 @@ internal fun parseMixedContent(
                         ?.get(0)
                         ?.text
                         ?: ""
-                Logger.w("parse_mixed_content", title)
-                if (title == "Your daily discover") {
-                    Logger.w("parse_mixed_content", list.toString())
-                }
+                Logger.d("parse_mixed_content", "$title: ${contentList?.size ?: 0} items")
                 val subtitle =
                     results1
                         ?.header
@@ -104,11 +102,31 @@ internal fun parseMixedContent(
                         ?.navigationEndpoint
                         ?.browseEndpoint
                         ?.browseId
+                val moreEndpoint =
+                    results1
+                        ?.header
+                        ?.musicCarouselShelfBasicHeaderRenderer
+                        ?.moreContentButton
+                        ?.buttonRenderer
+                        ?.navigationEndpoint
+                        ?.browseEndpoint
+                        ?.toMoreEndpoint()
+                // The same button is "Play all" when it carries a watch endpoint instead of a browse one.
+                val playAllEndpoint =
+                    results1
+                        ?.header
+                        ?.musicCarouselShelfBasicHeaderRenderer
+                        ?.moreContentButton
+                        ?.buttonRenderer
+                        ?.navigationEndpoint
+                        ?.watchEndpoint
+                        ?.toYouTubeWatchEndpoint()
                 val listContent = mutableListOf<Content?>()
                 if (!contentList.isNullOrEmpty()) {
                     for (result1 in contentList) {
                         val musicTwoRowItemRenderer = result1.musicTwoRowItemRenderer
                         if (musicTwoRowItemRenderer != null) {
+                            val addedBefore = listContent.size
                             //                        if (pageType == null) {
 //                            if (result1.musicTwoRowItemRenderer!!.navigationEndpoint.watchEndpoint?.playlistId != null && result1.musicTwoRowItemRenderer!!.navigationEndpoint.watchEndpoint?.videoId == null){
 //                                val content = parseWatchPlaylist(result1.musicTwoRowItemRenderer!!)
@@ -192,7 +210,6 @@ internal fun parseMixedContent(
                                             it.printStackTrace()
                                         }
                                 }
-                                Logger.w("Song", ytItem.toString())
                                 if (ytItem != null) {
                                     listContent.add(
                                         Content(
@@ -220,13 +237,14 @@ internal fun parseMixedContent(
                                             views = null,
                                             durationSeconds = ytItem.duration,
                                             radio = null,
+                                            videoType = ytItem.musicVideoType,
+                                            isLive = musicTwoRowItemRenderer.isLive,
                                         ),
                                     )
                                 }
                             } else if (musicTwoRowItemRenderer.isVideo) {
                                 val ytItem =
                                     ArtistPage.fromMusicTwoRowItemRenderer(musicTwoRowItemRenderer) as VideoItem?
-                                Logger.w("Video", ytItem.toString())
                                 val artists =
                                     ytItem
                                         ?.artists
@@ -276,13 +294,14 @@ internal fun parseMixedContent(
                                             views = ytItem.view,
                                             durationSeconds = ytItem.duration,
                                             radio = null,
+                                            videoType = ytItem.musicVideoType,
+                                            isLive = musicTwoRowItemRenderer.isLive,
                                         ),
                                     )
                                 }
                             } else if (musicTwoRowItemRenderer.isArtist || musicTwoRowItemRenderer.isUserChannel) {
                                 val ytItem =
                                     RelatedPage.fromMusicTwoRowItemRenderer(musicTwoRowItemRenderer) as ArtistItem?
-                                Logger.w("Artists", ytItem.toString())
                                 if (ytItem != null) {
                                     listContent.add(
                                         Content(
@@ -316,7 +335,23 @@ internal fun parseMixedContent(
                                                         ?: "",
                                                 name = title,
                                             ),
-                                        artists = listOf(),
+                                        // An album card's subtitle is "Album • Charli xcx": a type
+                                        // specifier, a separator, then the artists. Keeping only the
+                                        // runs that actually link somewhere drops the specifier
+                                        // without having to recognise the word — which matters
+                                        // because that word is localised, and "Single"/"EP" appear
+                                        // there too. Leaving this list empty (as it was) made the UI
+                                        // fall back to printing the literal string "Album" where the
+                                        // artist should be.
+                                        artists =
+                                            musicTwoRowItemRenderer.subtitle
+                                                ?.runs
+                                                ?.mapNotNull { run ->
+                                                    run.navigationEndpoint
+                                                        ?.browseEndpoint
+                                                        ?.browseId
+                                                        ?.let { id -> Artist(id = id, name = run.text) }
+                                                } ?: listOf(),
                                         description = null,
                                         isExplicit = false,
                                         playlistId = null,
@@ -451,6 +486,12 @@ internal fun parseMixedContent(
                             } else {
                                 continue
                             }
+                            // Each branch above builds the card its own way; the play target is the same
+                            // field for all of them, so it is attached once, here, to what was just added.
+                            if (listContent.size > addedBefore) {
+                                listContent[listContent.lastIndex] =
+                                    listContent.last()?.copy(playEndpoint = musicTwoRowItemRenderer.playEndpoint())
+                            }
                         } else if (result1.musicResponsiveListItemRenderer != null) {
                             Logger.w(
                                 "parse Song flat",
@@ -463,11 +504,12 @@ internal fun parseMixedContent(
                                     Content(
                                         album = ytItem.album?.let { Album(name = it.name, id = it.id) },
                                         artists =
-                                            parseSongArtists(
-                                                result1.musicResponsiveListItemRenderer!!,
-                                                1,
-                                                viewString,
-                                            ) ?: listOf(),
+                                            result1.musicResponsiveListItemRenderer!!.let { renderer ->
+                                                parseSongArtistsAt(
+                                                    renderer,
+                                                    findSongColumns(renderer).artistIndex,
+                                                )
+                                            },
                                         description = null,
                                         isExplicit = ytItem.explicit,
                                         playlistId = null,
@@ -484,6 +526,7 @@ internal fun parseMixedContent(
                                         videoId = ytItem.id,
                                         views = "",
                                         radio = null,
+                                        isLive = result1.musicResponsiveListItemRenderer!!.isLive,
                                     )
                                 listContent.add(content)
                             }
@@ -530,10 +573,12 @@ internal fun parseMixedContent(
                             subtitle = subtitle,
                             thumbnail = thumbnail,
                             channelId = if (artistChannelId?.contains("UC") == true) artistChannelId else null,
+                            moreEndpoint = moreEndpoint,
+                            itemsPerColumn = results1?.numItemsPerColumn?.toIntOrNull(),
+                            playAllEndpoint = playAllEndpoint,
                         ),
                     )
                 }
-                Logger.w("parse_mixed_content", list.toString())
             }
         }
     }
@@ -547,39 +592,17 @@ internal fun parseSongFlat(
     if (data?.flexColumns != null) {
         val column =
             mutableListOf<MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer?>()
-        for (i in 0..data.flexColumns.size) {
+        // `indices`, not `0..size`: the inclusive range ran one past the end on every call.
+        for (i in data.flexColumns.indices) {
             column.add(getFlexColumnItem(data, i))
         }
+        // Identify the columns from each one's own pageType instead of assuming an order.
+        // Column 2 is not always the album: on a row with no album it holds the view count, which
+        // has text but no browseEndpoint — and the previous `browseId!!` threw on exactly that.
+        val columns = findSongColumns(data)
         return Content(
-            album =
-                if (column.size > 2 &&
-                    column[2] != null &&
-                    column[2]
-                        ?.text
-                        ?.runs
-                        ?.get(0)
-                        ?.text != null
-                ) {
-                    Album(
-                        id =
-                            column[2]
-                                ?.text
-                                ?.runs
-                                ?.get(0)
-                                ?.navigationEndpoint
-                                ?.browseEndpoint
-                                ?.browseId!!,
-                        name =
-                            column[2]
-                                ?.text
-                                ?.runs
-                                ?.get(0)
-                                ?.text!!,
-                    )
-                } else {
-                    null
-                },
-            artists = parseSongArtists(data, 1, viewString) ?: listOf(),
+            album = parseSongAlbumAt(data, columns.albumIndex),
+            artists = parseSongArtistsAt(data, columns.artistIndex),
             description = null,
             isExplicit = null,
             playlistId = null,
@@ -606,42 +629,15 @@ internal fun parseSongFlat(
                     ?.watchEndpoint
                     ?.videoId
                     ?: "",
-            views =
-                if (column.size <= 2 ||
-                    column[2] == null ||
-                    column[2]
-                        ?.text
-                        ?.runs
-                        ?.get(0)
-                        ?.text == null
-                ) {
-                    column[1]
-                        ?.text
-                        ?.runs
-                        ?.last()
-                        ?.text
-                        ?.split(" ")
-                        ?.get(0) ?: ""
-                } else {
-                    null
-                },
+            // A row shows either an album or a view count, never both — so a row that resolved an
+            // album column reports no views, exactly as before. Only the detection changed: the
+            // count is now recognised by its shape rather than by "whatever the last run of
+            // column 1 happens to be", which picked up the album name on rows laid out differently.
+            views = if (columns.albumIndex != null) null else parseSongViews(data) ?: "",
+            isLive = data.isLive,
         )
     } else {
         return null
-    }
-}
-
-internal fun parseSongArtists(
-    data: MusicResponsiveListItemRenderer,
-    index: Int,
-    viewString: String,
-): List<Artist>? {
-    val flexItem = getFlexColumnItem(data, index)
-    return if (flexItem == null) {
-        null
-    } else {
-        val runs = flexItem.text?.runs
-        runs?.let { parseSongArtistsRuns(it, viewString) }
     }
 }
 
@@ -694,7 +690,7 @@ internal fun parsePlaylist(
                             ?.split(" ")
                             ?.get(0)
                 }
-                author.addAll(parseSongArtistsRuns(subtitle.runs!!.take(1), viewString))
+                author.addAll(parseSongArtistsRuns(subtitle.runs!!.take(1)))
             }
         }
     }
@@ -723,27 +719,29 @@ internal fun parsePlaylist(
     )
 }
 
-internal fun parseSongArtistsRuns(
-    runs: List<Run>,
-    viewString: String,
-): List<Artist> {
+/**
+ * Picks the artists out of a run list, skipping the " • " separators at odd positions.
+ *
+ * Runs that are really a duration, a release year or a view count are dropped by
+ * [classifySongRun], which decides from structure and shape rather than by matching a localised
+ * word. The previous approach compared each run against the caller's localised "views" string with
+ * its first five characters chopped off — that mismatched on any locale it was not written for and
+ * let "1.2M plays" through as an artist name, and it threw outright when the string was shorter
+ * than five characters.
+ */
+internal fun parseSongArtistsRuns(runs: List<Run>): List<Artist> {
     val artists = mutableListOf<Artist>()
-    for (i in 0..(runs.size / 2)) {
-        if (runs[i * 2].navigationEndpoint?.browseEndpoint?.browseId != null) {
-            artists.add(
-                Artist(
-                    name = runs[i * 2].text,
-                    id = runs[i * 2].navigationEndpoint?.browseEndpoint?.browseId,
-                ),
-            )
-        } else {
-            if (!runs[i * 2].text.contains(
-                    viewString.removeRange(0..4),
-                )
-            ) {
-                artists.add(Artist(name = runs[i * 2].text, id = null))
-            }
-        }
+    // Step over separators. `indices step 2` also fixes an out-of-bounds read the old
+    // `0..(runs.size / 2)` bound produced whenever the list had an even number of runs.
+    for (i in runs.indices step 2) {
+        val run = runs[i]
+        if (classifySongRun(run) != SongRunType.ARTIST) continue
+        artists.add(
+            Artist(
+                name = run.text,
+                id = run.navigationEndpoint?.browseEndpoint?.browseId,
+            ),
+        )
     }
     Logger.d("artists_log", artists.toString())
     return artists
@@ -800,8 +798,17 @@ internal fun parseNewRelease(
                         videoId = null,
                         views = null,
                         radio = null,
+                        // The album's own track list (OLAK…), so its card can play without opening.
+                        playEndpoint = it.playlistId.takeIf { id -> id.isNotEmpty() }?.let { id -> YouTubeWatchEndpoint(playlistId = id) },
                     )
                 },
+            // YouTube still hangs FEmusic_new_releases_albums on this shelf, but that page has answered
+            // 4xx since at least 2026-05-29 (ArchiveTune added a fallback for it that day) and 404s for
+            // every client as of 2026-09-19, so a More there only opens an error. Any other target stays.
+            moreEndpoint =
+                explore.releasedMoreEndpoint
+                    ?.takeUnless { it.browseId == "FEmusic_new_releases_albums" }
+                    ?.toMoreEndpoint(),
         ),
     )
     result.add(
@@ -856,9 +863,31 @@ internal fun parseNewRelease(
                         views = videoItem.view,
                         durationSeconds = videoItem.duration,
                         radio = null,
+                        isLive = videoItem.isLive,
                     )
                 },
+            moreEndpoint = explore.musicVideoMoreEndpoint?.toMoreEndpoint(),
         ),
     )
+    // Signed out, FEmusic_new_releases carries only its video shelf, so "New releases" comes back
+    // empty; a section with nothing in it only draws a bare title.
+    result.removeAll { it.contents.isEmpty() }
     return result
 }
+
+// The card's own play button target: a song's radio, a playlist, or an album's track list.
+private fun MusicTwoRowItemRenderer.playEndpoint(): YouTubeWatchEndpoint? =
+    thumbnailOverlay
+        ?.musicItemThumbnailOverlayRenderer
+        ?.content
+        ?.musicPlayButtonRenderer
+        ?.playNavigationEndpoint
+        ?.let { it.watchEndpoint ?: it.watchPlaylistEndpoint }
+        ?.toYouTubeWatchEndpoint()
+
+private fun BrowseEndpoint.toMoreEndpoint() =
+    HomeItem.MoreEndpoint(
+        browseId = browseId,
+        params = params,
+        pageType = browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType,
+    )

@@ -78,6 +78,7 @@ kotlin {
 
                 implementation(libs.ksoup.html)
                 implementation(libs.ksoup.entities)
+                implementation(libs.quickjs)
             }
         }
 

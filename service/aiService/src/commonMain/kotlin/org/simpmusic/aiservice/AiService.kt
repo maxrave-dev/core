@@ -4,6 +4,7 @@ import com.aallam.openai.api.chat.ChatCompletion
 import com.aallam.openai.api.chat.ChatResponseFormat
 import com.aallam.openai.api.chat.JsonSchema
 import com.aallam.openai.api.chat.chatCompletionRequest
+import com.aallam.openai.api.http.Timeout
 import com.aallam.openai.api.model.ModelId
 import com.aallam.openai.client.OpenAI
 import com.aallam.openai.client.OpenAIConfig
@@ -11,6 +12,9 @@ import com.aallam.openai.client.OpenAIHost
 import com.aallam.openai.client.OpenAIHost.Companion.Gemini
 import com.maxrave.domain.data.model.metadata.Line
 import com.maxrave.domain.data.model.metadata.Lyrics
+import com.maxrave.domain.data.model.taste.TasteException
+import com.maxrave.domain.data.model.taste.TasteInput
+import com.maxrave.domain.data.model.taste.TasteReading
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -20,6 +24,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import kotlin.time.Duration.Companion.minutes
 
 class AiService(
     private val aiHost: AIHost = AIHost.GEMINI,
@@ -37,11 +42,11 @@ class AiService(
     private val openAI: OpenAI by lazy {
         when (aiHost) {
             AIHost.GEMINI -> {
-                OpenAI(host = Gemini, token = apiKey)
+                OpenAI(host = Gemini, token = apiKey, timeout = REQUEST_TIMEOUT)
             }
 
             AIHost.OPENAI -> {
-                OpenAI(token = apiKey)
+                OpenAI(token = apiKey, timeout = REQUEST_TIMEOUT)
             }
 
             AIHost.CUSTOM_OPENAI -> {
@@ -49,6 +54,7 @@ class AiService(
                 val config =
                     OpenAIConfig(
                         token = apiKey,
+                        timeout = REQUEST_TIMEOUT,
                         host = OpenAIHost(baseUrl = baseUrl),
                         headers = customHeaders ?: emptyMap(),
                     )
@@ -67,6 +73,41 @@ class AiService(
                 AIHost.CUSTOM_OPENAI -> ModelId("gpt-4o")
             }
         }
+    }
+
+    /**
+     * One reading of the listener's taste from [input].
+     *
+     * Sent without a `responseFormat`, unlike [translateLyrics]: providers reached through the
+     * custom OpenAI-compatible path do not all accept `json_schema` (issue #2297 traced DeepSeek's
+     * chat endpoint to `json_object` only), and a refused format fails the whole request. The
+     * prompt asks for a bare JSON object instead, and [parseTasteReading] reads it leniently.
+     */
+    suspend fun describeTaste(input: TasteInput): TasteReading {
+        val request =
+            chatCompletionRequest {
+                this.model = this@AiService.model
+                messages {
+                    system {
+                        content = TASTE_SYSTEM_PROMPT
+                    }
+                    user {
+                        content {
+                            text(input.toPromptData())
+                        }
+                    }
+                }
+            }
+        val raw =
+            openAI
+                .chatCompletion(request)
+                .choices
+                .firstOrNull()
+                ?.message
+                ?.content
+                ?: throw TasteException(TasteException.Kind.TEMPORARY, message = "Empty response from AI")
+        return parseTasteReading(raw)
+            ?: throw TasteException(TasteException.Kind.TEMPORARY, message = "Unreadable response from AI")
     }
 
     suspend fun translateLyrics(
@@ -170,6 +211,14 @@ class AiService(
     }
 
     companion object {
+        /**
+         * How long a request may go without a byte coming back. The library's default is 30 s,
+         * which a model that thinks before answering — or a router in front of one — exceeds on an
+         * open-ended prompt like the taste reading, and the request then dies with
+         * "Socket timeout has expired" while the provider is still working on it.
+         */
+        private val REQUEST_TIMEOUT = Timeout(socket = 2.minutes)
+
         private val translationJsonSchema: JsonObject =
             buildJsonObject {
                 put("type", "object")
