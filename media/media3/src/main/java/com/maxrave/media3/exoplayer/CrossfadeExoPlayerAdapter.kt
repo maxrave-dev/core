@@ -2249,10 +2249,18 @@ internal class CrossfadeExoPlayerAdapter(
                     }
                 val incomingStartMs = plan?.incomingStartMs ?: 0L
 
-                // Get or create secondary player
+                // Get or create secondary player. A precache that already failed holds its error, not
+                // the track: swapped in, it never plays (#2239). It is dropped and the track built afresh,
+                // as on the normal track change.
                 val cachedPlayerEntry =
-                    precachedPlayers.remove(nextVideoId)?.also { cached ->
+                    precachedPlayers.remove(nextVideoId)?.let { cached ->
                         cached.retryListener?.let { cached.player.removeListener(it) }
+                        if (cached.player.playerError == null) {
+                            cached
+                        } else {
+                            cached.player.release()
+                            null
+                        }
                     }
                 val nextPlayer: ExoPlayer
                 val nextFilter: CrossfadeFilterAudioProcessor?
@@ -2262,6 +2270,7 @@ internal class CrossfadeExoPlayerAdapter(
                     // A precached player sits at 0 with the intro buffered, so this seek stays inside it.
                     if (incomingStartMs > 0) nextPlayer.seekTo(incomingStartMs)
                 } else {
+                    Logger.d(TAG, "Creating new player for $nextVideoId")
                     val pwf = createExoPlayerInstance()
                     nextPlayer = pwf.player
                     nextFilter = pwf.filter
