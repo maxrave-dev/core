@@ -19,8 +19,7 @@ import org.simpmusic.lyrics.models.response.BetterLyricsResponse
 import org.simpmusic.lyrics.models.response.LrclibObject
 import org.simpmusic.lyrics.models.response.LyricsResponse
 import org.simpmusic.lyrics.models.response.TranslatedLyricsResponse
-import org.simpmusic.lyrics.parser.parseSyncedLyrics
-import org.simpmusic.lyrics.parser.parseUnsyncedLyrics
+import org.simpmusic.lyrics.parser.parseLrclibLyrics
 import kotlin.math.abs
 
 private const val TAG = "SimpMusicLyricsClient"
@@ -129,25 +128,8 @@ class SimpMusicLyricsClient {
                     q_track = q_track,
                     q_artist = q_artist,
                 ).body<List<LrclibObject>>()
-        val lrclibObject: LrclibObject? =
-            if (duration != null) {
-                rs.find { abs(it.duration.toInt() - duration) <= 10 }
-            } else {
-                rs.firstOrNull()
-            }
-        if (lrclibObject != null) {
-            val syncedLyrics = lrclibObject.syncedLyrics
-            val plainLyrics = lrclibObject.plainLyrics
-            if (!syncedLyrics.isNullOrEmpty()) {
-                parseSyncedLyrics(syncedLyrics)
-            } else if (!plainLyrics.isNullOrEmpty()) {
-                parseUnsyncedLyrics(plainLyrics)
-            } else {
-                null
-            }
-        } else {
-            null
-        }
+        val lrclibObject = selectLrclibLyricsRecord(rs, duration)
+        lrclibObject?.let { parseLrclibLyrics(it) }
     }
 
     suspend fun searchBetterLyrics(
@@ -312,4 +294,17 @@ class SimpMusicLyricsClient {
             throw e
         }
     }
+}
+
+internal fun selectLrclibLyricsRecord(
+    records: List<LrclibObject>,
+    duration: Int?,
+): LrclibObject? {
+    val candidates =
+        if (duration != null) {
+            records.filter { abs(it.duration.toInt() - duration) <= 10 }
+        } else {
+            records
+        }
+    return candidates.firstOrNull { it.hasWordSync } ?: candidates.firstOrNull()
 }
