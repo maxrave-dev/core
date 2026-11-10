@@ -19,6 +19,12 @@ interface SearchRepository {
 
     fun getSearchDataSong(query: String): Flow<Resource<ArrayList<SongsResult>>>
 
+    /**
+     * First page of song results only. [getSearchDataSong] follows two continuations (three requests
+     * per query), which is too heavy when looking up every track of a library one by one.
+     */
+    suspend fun searchSongsFirstPage(query: String): Resource<List<SongsResult>>
+
     fun getSearchDataVideo(query: String): Flow<Resource<ArrayList<VideosResult>>>
 
     fun getSearchDataPodcast(query: String): Flow<Resource<ArrayList<PlaylistsResult>>>

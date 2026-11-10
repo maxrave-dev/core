@@ -326,6 +326,10 @@ interface DataStoreManager {
 
     suspend fun setSpotifyPersonalTokenExpires(expires: Long)
 
+    val spotifySyncedPlaylists: Flow<String>
+
+    suspend fun setSpotifySyncedPlaylists(json: String)
+
     val homeLimit: Flow<Int>
 
     suspend fun setHomeLimit(limit: Int)
