@@ -242,10 +242,15 @@ interface MediaPlayerInterface {
      * 1 / [WAVEFORM_BARS_PER_SECOND] seconds of the track, each 0..1 against the track's loudest
      * moment. Null when this backend cannot produce one (the default) or the audio could not be read.
      *
-     * Suspends while the audio is fetched and decoded, which can take seconds on a first play;
-     * callers run it off the main thread and draw a flat line meanwhile.
+     * [onProgress] receives immutable snapshots as decoded audio becomes available. Zero slots mark
+     * undecoded ranges, e.g. after a seek. Android observes the active player's PCM until cancelled;
+     * a completed disk cache can return immediately. Desktop can return its completed measurement.
+     * Partial previews must not be saved as completed waveforms. Callbacks stop before return.
      */
-    suspend fun loadWaveform(mediaId: String): FloatArray? = null
+    suspend fun loadWaveform(
+        mediaId: String,
+        onProgress: (FloatArray) -> Unit = {},
+    ): FloatArray? = null
 
     // Listener management
     fun addListener(listener: MediaPlayerListener)

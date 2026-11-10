@@ -3,6 +3,7 @@ package com.simpmusic.media_jvm.mpv
 import com.maxrave.domain.mediaservice.automix.TrackStructure
 import com.maxrave.domain.mediaservice.automix.TrackStructureAnalyzer
 import com.maxrave.domain.mediaservice.player.WAVEFORM_BARS_PER_SECOND
+import com.maxrave.domain.mediaservice.player.WaveformProgress
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -23,7 +24,7 @@ import kotlin.math.roundToInt
  * mpv shares no cache between handles, so the track's audio is played once more through a second,
  * silent handle. A lavfi chain resamples it to 8 kHz mono 16-bit, cuts it into one frame per bar,
  * measures each frame's RMS with `astats`, and `ametadata` prints the values to a file that is read
- * back once the file has ended. The audio that comes out of the chain goes to `ao=pcm`, which writes
+ * incrementally while decoding. The audio that comes out of the chain goes to `ao=pcm`, which writes
  * it raw to a second file as fast as it decodes (a 4-minute track in under a second): that copy is
  * what AutoMix's [TrackStructureAnalyzer] reads, and its result is kept beside the waveform as
  * `<id>.mix`. Every bundled slice carries ao_pcm.
@@ -48,6 +49,7 @@ internal object MpvWaveformReader {
 
     // One decode at a time: the waveform and AutoMix ask for the same tracks, into the same files.
     private val decodeLock = Mutex()
+    private val progress = WaveformProgress()
     private val UNSAFE_FILE_CHARS = Regex("[^A-Za-z0-9_-]")
 
     private val dir: File by lazy {
@@ -60,11 +62,14 @@ internal object MpvWaveformReader {
      */
     suspend fun read(
         mediaId: String,
+        onProgress: (FloatArray) -> Unit,
         sourceUrl: suspend () -> String?,
     ): FloatArray? =
         withContext(Dispatchers.IO) {
             val name = mediaId.replace(UNSAFE_FILE_CHARS, "_")
-            storedBars(name) ?: decodeLock.withLock { storedBars(name) ?: measure(mediaId, name, sourceUrl)?.bars }
+            progress.observe(mediaId, onProgress) {
+                storedBars(name) ?: decodeLock.withLock { storedBars(name) ?: measure(mediaId, name, sourceUrl)?.bars }
+            }
         }
 
     /** AutoMix's measurements of the track, from the same decode as the waveform; null when it has none. */
@@ -114,12 +119,13 @@ internal object MpvWaveformReader {
         try {
             levels.delete()
             pcm.delete()
-            if (!decode(url, levels, pcm)) return null
+            if (!decode(url, levels, pcm) { progress.publish(mediaId, it) }) return null
             val bars = parse(levels)
             if (bars == null) {
                 Logger.w(TAG, "Measured $mediaId but read no levels back")
                 return null
             }
+            progress.publish(mediaId, bars)
             File(dir, "$name.wf").writeBytes(ByteArray(bars.size) { (bars[it] * 255f).toInt().coerceIn(0, 255).toByte() })
             val structure =
                 pcm
@@ -135,6 +141,7 @@ internal object MpvWaveformReader {
             )
             return Measured(bars, structure)
         } finally {
+            progress.clear(mediaId)
             levels.delete()
             pcm.delete()
         }
@@ -151,6 +158,7 @@ internal object MpvWaveformReader {
         url: String,
         levels: File,
         pcm: File,
+        onProgress: suspend (FloatArray) -> Unit,
     ): Boolean {
         val lib = MpvLibrary.INSTANCE ?: return false
         val ctx = lib.mpv_create() ?: return false
@@ -176,13 +184,30 @@ internal object MpvWaveformReader {
             val graph =
                 "lavfi=[aresample=$SAMPLE_RATE,aformat=sample_fmts=s16:channel_layouts=mono," +
                     "asetnsamples=n=$SAMPLES_PER_BAR:p=0,astats=metadata=1:reset=1," +
-                    "ametadata=mode=print:key=lavfi.astats.1.RMS_level:file=${lavfiEscapePath(levels.absolutePath)}]"
+                    "ametadata=mode=print:key=lavfi.astats.1.RMS_level:direct=1:file=${lavfiEscapePath(levels.absolutePath)}]"
             if (!option("af", graph)) return false
             if (lib.mpv_initialize(ctx) < 0) return false
             if (lib.mpv_command(ctx, arrayOf("loadfile", url, null)) < 0) return false
             val deadline = System.currentTimeMillis() + TIMEOUT_MS
+            var nextProgressAt = 0L
+            var levelsLength = 0L
+            var publishedBars = 0
             while (System.currentTimeMillis() < deadline) {
                 currentCoroutineContext().ensureActive()
+                val now = System.currentTimeMillis()
+                if (now >= nextProgressAt) {
+                    nextProgressAt = now + 250L
+                    val length = levels.length()
+                    if (length > levelsLength) {
+                        levelsLength = length
+                        parse(levels)?.let { bars ->
+                            if (bars.size > publishedBars) {
+                                onProgress(bars)
+                                publishedBars = bars.size
+                            }
+                        }
+                    }
+                }
                 val pointer = lib.mpv_wait_event(ctx, 0.25) ?: continue
                 val event = MpvEvent(pointer).apply { read() }
                 when (event.event_id) {
@@ -199,7 +224,7 @@ internal object MpvWaveformReader {
             Logger.w(TAG, "Gave up measuring after ${TIMEOUT_MS / 1000} s")
             return false
         } finally {
-            // Tears the filter graph down too, which is what flushes [levels] to disk.
+            // Tear down before the final parse/cache write; incomplete output is never cached.
             lib.mpv_terminate_destroy(ctx)
         }
     }
@@ -212,11 +237,12 @@ internal object MpvWaveformReader {
         if (!levels.isFile) return null
         val values = HashMap<Int, Float>()
         var time = -1.0
-        levels.forEachLine { line ->
+        // The writer can be in the middle of a line: only complete records count as loaded audio.
+        levels.readText().substringBeforeLast('\n', "").lineSequence().forEach { line ->
             val pts = line.substringAfter("pts_time:", "").trim()
             if (pts.isNotEmpty()) {
                 time = pts.toDoubleOrNull() ?: -1.0
-                return@forEachLine
+                return@forEach
             }
             val db = line.substringAfter("RMS_level=", "").trim()
             if (db.isNotEmpty() && time >= 0.0) {

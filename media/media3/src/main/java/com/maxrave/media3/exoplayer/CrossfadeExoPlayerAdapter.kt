@@ -336,7 +336,10 @@ internal class CrossfadeExoPlayerAdapter(
 
     override fun selectAudioOutput(id: String?) = outputRouter.select(id)
 
-    override suspend fun loadWaveform(mediaId: String): FloatArray? = waveformReader.read(mediaId)
+    override suspend fun loadWaveform(
+        mediaId: String,
+        onProgress: (FloatArray) -> Unit,
+    ): FloatArray? = waveformReader.read(mediaId, onProgress)
 
     override fun refreshAudioOutputs() = outputRouter.refresh()
 
@@ -583,7 +586,7 @@ internal class CrossfadeExoPlayerAdapter(
      * Audio focus is NOT handled per-player: it is managed once at the adapter level
      * (see the Audio Focus section) so it survives every player swap (#2155).
      */
-    private fun createExoPlayerInstance(): PlayerWithFilter {
+    private fun createExoPlayerInstance(mediaId: String? = null): PlayerWithFilter {
         val crossfadeFilter = CrossfadeFilterAudioProcessor()
         val sleepFade = SleepFadeAudioProcessor { internalSleepFadeFactor }
         val equalizer = EqualizerAudioProcessor { internalEqualizerCurve }
@@ -622,7 +625,7 @@ internal class CrossfadeExoPlayerAdapter(
                                 ),
                                 SonicAudioProcessor(),
                             ),
-                        ).build()
+                        ).build().let { waveformReader.playbackSink(it, mediaId) }
             }
 
         val player =
@@ -1718,7 +1721,7 @@ internal class CrossfadeExoPlayerAdapter(
                         playerFilter = cachedPlayerEntry.filter
                     } else {
                         Logger.d(TAG, "Creating new player for $videoId")
-                        val pwf = createExoPlayerInstance()
+                        val pwf = createExoPlayerInstance(mediaItem.mediaId)
                         player = pwf.player
                         playerFilter = pwf.filter
                         player.setMediaItem(mediaItem.toMedia3MediaItem())
@@ -2262,7 +2265,7 @@ internal class CrossfadeExoPlayerAdapter(
                     // A precached player sits at 0 with the intro buffered, so this seek stays inside it.
                     if (incomingStartMs > 0) nextPlayer.seekTo(incomingStartMs)
                 } else {
-                    val pwf = createExoPlayerInstance()
+                    val pwf = createExoPlayerInstance(nextMediaItem.mediaId)
                     nextPlayer = pwf.player
                     nextFilter = pwf.filter
                     nextPlayer.setMediaItem(nextMediaItem.toMedia3MediaItem(), incomingStartMs)
@@ -3254,7 +3257,7 @@ internal class CrossfadeExoPlayerAdapter(
                         }
 
                         try {
-                            val pwf = createExoPlayerInstance()
+                            val pwf = createExoPlayerInstance(mediaItem.mediaId)
                             pwf.player.setMediaItem(mediaItem.toMedia3MediaItem())
                             val retryListener = precacheRetryListener(mediaItem.mediaId, pwf.player)
                             pwf.player.addListener(retryListener)

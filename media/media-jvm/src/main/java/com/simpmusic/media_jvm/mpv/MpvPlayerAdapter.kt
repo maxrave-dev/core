@@ -1323,9 +1323,12 @@ class MpvPlayerAdapter(
     @Volatile
     private var preferredAudioDevice: String? = null
 
-    override suspend fun loadWaveform(mediaId: String): FloatArray? {
+    override suspend fun loadWaveform(
+        mediaId: String,
+        onProgress: (FloatArray) -> Unit,
+    ): FloatArray? {
         if (mediaId.isBlank() || LiveStreamRegistry.isLive(mediaId)) return null
-        return MpvWaveformReader.read(mediaId) { waveformSourceUrl(mediaId) }
+        return MpvWaveformReader.read(mediaId, onProgress) { waveformSourceUrl(mediaId) }
     }
 
     /**

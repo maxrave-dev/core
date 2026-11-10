@@ -10,6 +10,8 @@ import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import androidx.media3.exoplayer.audio.AudioSink
+import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.mediaservice.automix.TrackStructure
 import com.maxrave.domain.mediaservice.automix.TrackStructureAnalyzer
@@ -30,16 +32,11 @@ import java.nio.ByteOrder
 import kotlin.math.sqrt
 
 /**
- * Builds the SoundCloud style's waveform for a track from the audio the player itself streams.
+ * SoundCloud observes PCM already consumed by the real player's [WaveformAudioSink], or a finished
+ * `.wf` cache. Opening the UI never starts a download, creates a decoder or waits for AutoMix.
  *
- * The bytes are read through [dataSourceFactory], the player's own resolving, cache-backed chain:
- * what the player already cached is not downloaded again, and what this reads first lands in the
- * player cache for the player. They are decoded with MediaExtractor + MediaCodec and reduced to one
- * RMS value per 1 / [WAVEFORM_BARS_PER_SECOND] seconds. A finished waveform is a few hundred bytes
- * kept under the cache directory, so a track is decoded once.
- *
- * The same decode feeds AutoMix: the audio is also averaged down to 8 kHz mono and handed to
- * [TrackStructureAnalyzer], whose result is kept beside the waveform as `<id>.mix`.
+ * AutoMix alone retains the existing offline MediaExtractor/MediaCodec analysis below. Its complete
+ * waveform and 8 kHz [TrackStructureAnalyzer] result keep their existing `.wf` and `.mix` formats.
  */
 @OptIn(UnstableApi::class)
 internal class WaveformReader(
@@ -49,14 +46,26 @@ internal class WaveformReader(
 ) {
     private val dir by lazy { File(context.cacheDir, "waveforms").apply { mkdirs() } }
 
-    // One decode at a time: the waveform and AutoMix ask for the same tracks, into the same .part file.
+    // Only AutoMix starts a separate analysis decode; UI waveform reads never wait for this lock.
     private val decodeLock = Mutex()
+    private val playbackWaveforms = PlaybackWaveforms()
 
-    suspend fun read(mediaId: String): FloatArray? =
+    suspend fun read(
+        mediaId: String,
+        onProgress: (FloatArray) -> Unit,
+    ): FloatArray? =
         withContext(Dispatchers.IO) {
             if (mediaId.isBlank() || LiveStreamRegistry.isLive(mediaId)) return@withContext null
             val name = mediaId.replace(UNSAFE_FILE_CHARS, "_")
-            storedBars(name) ?: decodeLock.withLock { storedBars(name) ?: measure(mediaId, name)?.bars }
+            // UI never starts another download/decoder or waits for AutoMix's decode lock.
+            storedBars(name) ?: playbackWaveforms.observe(mediaId, onProgress)
+        }
+
+    fun playbackSink(delegate: AudioSink, mediaId: String?): AudioSink =
+        if (mediaId.isNullOrBlank()) {
+            delegate
+        } else {
+            WaveformAudioSink(delegate, mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO), playbackWaveforms)
         }
 
     /** AutoMix's measurements of the track; null when it has none (yet, or ever). */
@@ -89,7 +98,7 @@ internal class WaveformReader(
         val structure: TrackStructure?,
     )
 
-    /** Downloads and decodes the track once, storing both its waveform and its AutoMix measurements. */
+    /** Downloads and decodes the track once for AutoMix, storing its completed measurements. */
     private suspend fun measure(
         mediaId: String,
         name: String,
@@ -128,19 +137,13 @@ internal class WaveformReader(
         }
     }
 
-    /**
-     * Copies the whole audio stream to [target]. The resolver serves at most one 5 MiB chunk per
-     * open, so this reopens at each chunk boundary until the format's own length is reached; it
-     * never opens at the end of the file, which is where HTTP answers 416.
-     */
+    /** Copies the audio for AutoMix's offline analysis, reopening at resolver chunk boundaries. */
     private suspend fun download(
         mediaId: String,
         target: File,
     ): Boolean {
         val buffer = ByteArray(64 * 1024)
         var position = 0L
-        // Known only once the first chunk is open: opening is what makes the resolver replace a stale
-        // or refused format, so the length read after it belongs to the stream actually being read.
         var length = Long.MAX_VALUE
         target.outputStream().buffered().use { out ->
             while (position < length) {
@@ -166,7 +169,6 @@ internal class WaveformReader(
                 } finally {
                     source.close()
                 }
-                // A source that gives nothing back would otherwise reopen at the same spot forever.
                 if (readThisOpen == 0L) return false
                 position += readThisOpen
                 if (length == Long.MAX_VALUE) {
