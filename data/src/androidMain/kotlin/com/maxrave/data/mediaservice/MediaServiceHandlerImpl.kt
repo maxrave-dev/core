@@ -34,6 +34,8 @@ import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.data.player.AudioEffects
 import com.maxrave.domain.data.player.DelayEffect
+import com.maxrave.domain.data.player.EightDDirection
+import com.maxrave.domain.data.player.EightDEffect
 import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.GenericCommandButton
 import com.maxrave.domain.data.player.GenericMediaItem
@@ -420,6 +422,19 @@ internal class MediaServiceHandlerImpl(
             combine(delayEffects, reverbEffects) { echo, room -> AudioEffects(delay = echo, reverb = room) }
                 .distinctUntilChanged()
                 .collect { effects -> player.setAudioEffects(effects) }
+        }
+        backgroundScope.launch {
+            combine(
+                dataStoreManager.eightDEnabled,
+                dataStoreManager.eightDDirection,
+                dataStoreManager.eightDPeriodSeconds,
+            ) { enabled, direction, seconds ->
+                if (enabled == TRUE) {
+                    EightDEffect(EightDDirection.fromStored(direction), seconds).normalized()
+                } else {
+                    null
+                }
+            }.distinctUntilChanged().collect { player.setEightD(it) }
         }
         normalizeVolume =
             runBlocking { dataStoreManager.normalizeVolume.first() == TRUE }

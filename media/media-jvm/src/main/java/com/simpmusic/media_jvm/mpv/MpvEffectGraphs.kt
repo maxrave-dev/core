@@ -1,6 +1,57 @@
 package com.simpmusic.media_jvm.mpv
 
 import com.maxrave.domain.data.player.DelayTaps
+import com.maxrave.domain.data.player.EightDEffect
+import com.maxrave.domain.data.player.EightDHead
+import com.maxrave.domain.data.player.EightDOrbit
+
+internal enum class EightDTransition { ACTIVE, FADE_IN, FADE_OUT }
+
+/**
+ * The [EightDHead] head shadow as one aeval expression, the arithmetic of EightDHeadShadow:
+ * the source at azimuth `phase + ω·n/s`, each ear's angle of incidence (left ear on channel 0,
+ * right on 1), equation (5)'s α for this ear and the other (at π − θ), the shadow divided by the
+ * brighter ear's, then the bilinear one-pole-one-zero filter over this ear's own channel, so the
+ * song keeps its stereo and the brighter ear is untouched. aeval keeps a
+ * separate variable set per channel that survives from sample to sample (measured with
+ * ffmpeg 8.0.1: a counter in st(9) reached n on both channels, not 2n), which is what holds each
+ * ear's filter state in ld(6)/ld(7). It keeps no sample history, so Android's interaural delay
+ * has no Desktop equivalent here.
+ */
+internal fun eightDGraph(
+    effect: EightDEffect,
+    phaseRadians: Double,
+    transition: EightDTransition = EightDTransition.ACTIVE,
+): String {
+    val phase = if (phaseRadians.isFinite()) EightDOrbit.wrapPhase(phaseRadians) else 0.0
+    val seconds = EightDEffect.TRANSITION_MS / 1000.0
+    val wet = when (transition) {
+        EightDTransition.ACTIVE -> "1"
+        EightDTransition.FADE_IN -> "min(n/(s*$seconds),1)"
+        EightDTransition.FADE_OUT -> "max(1-n/(s*$seconds),0)"
+    }
+    val beta = EightDHead.SHADOW_BETA_RADIANS_PER_SECOND
+    val alphaMin = EightDHead.ALPHA_MIN
+    val thetaMin = EightDHead.THETA_MIN_RADIANS
+    val setup =
+        // 0: azimuth. 1: this ear's angle of incidence, |wrap(azimuth − ear axis)| in 0..π.
+        "st(0,$phase+${effect.radiansPerSecond}*n/s);" +
+            "st(1,abs(mod(ld(0)-if(eq(ch,0),-PI/2,PI/2)+PI,2*PI)-PI));" +
+            // 2: α(θ), 9: the other ear's α(π − θ), equation (5). 3: the pole, EightDHead.shadowPole.
+            // 2 again: the gain, EightDHead.shadowGain. The bilinear constant K is 2·s.
+            "st(2,${1 + alphaMin / 2}+${1 - alphaMin / 2}*cos(ld(1)/$thetaMin*PI));" +
+            "st(9,${1 + alphaMin / 2}+${1 - alphaMin / 2}*cos((PI-ld(1))/$thetaMin*PI));" +
+            "st(3,$beta/max(ld(2),ld(9)));" +
+            "st(2,ld(2)/max(ld(2),ld(9)));" +
+            "st(4,$wet);" +
+            // 5: this ear's own channel. 8: its filter output from the previous x (6) and y (7).
+            "st(5,val(ch));" +
+            "st(8,((ld(3)+ld(2)*2*s)*ld(5)+(ld(3)-ld(2)*2*s)*ld(6)-(ld(3)-2*s)*ld(7))/(ld(3)+2*s));" +
+            "st(6,ld(5));st(7,ld(8));"
+    // One expression reused per channel plus c=same keeps mono/multichannel unchanged.
+    return "aeval=exprs='if(eq(nb_in_channels,2)," + setup +
+        "val(ch)*(1-ld(4))+ld(8)*ld(4),val(ch))':c=same"
+}
 
 // The `lavfi` graph bodies behind the two audio effects, deliberately kept out of MpvPlayer.
 //

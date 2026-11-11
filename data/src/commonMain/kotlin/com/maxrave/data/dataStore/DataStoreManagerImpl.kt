@@ -13,6 +13,8 @@ import com.maxrave.common.SponsorBlockType
 import com.maxrave.domain.data.model.discord.DiscordSession
 import com.maxrave.domain.data.model.network.ProxyConfiguration
 import com.maxrave.domain.data.player.ReverbPreset
+import com.maxrave.domain.data.player.EightDDirection
+import com.maxrave.domain.data.player.EightDEffect
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.AI_PROVIDER_GEMINI
 import com.maxrave.domain.manager.DataStoreManager.Values.FALSE
@@ -765,6 +767,29 @@ internal class DataStoreManagerImpl(
                 settings[REVERB_MIX] = mix.toString()
             }
         }
+    }
+
+    override val eightDEnabled: Flow<String> =
+        settingsDataStore.data.map { it[EIGHT_D_ENABLED] ?: FALSE }
+
+    override suspend fun setEightDEnabled(enabled: Boolean) {
+        settingsDataStore.edit { it[EIGHT_D_ENABLED] = if (enabled) TRUE else FALSE }
+    }
+
+    override val eightDDirection: Flow<String> =
+        settingsDataStore.data.map { EightDDirection.fromStored(it[EIGHT_D_DIRECTION].orEmpty()).name }
+
+    override suspend fun setEightDDirection(direction: EightDDirection) {
+        settingsDataStore.edit { it[EIGHT_D_DIRECTION] = direction.name }
+    }
+
+    override val eightDPeriodSeconds: Flow<Float> =
+        settingsDataStore.data.map {
+            EightDEffect.normalizePeriod(it[EIGHT_D_PERIOD_SECONDS]?.toFloatOrNull() ?: EightDEffect.DEFAULT_PERIOD_SECONDS)
+        }
+
+    override suspend fun setEightDPeriodSeconds(seconds: Float) {
+        settingsDataStore.edit { it[EIGHT_D_PERIOD_SECONDS] = EightDEffect.normalizePeriod(seconds).toString() }
     }
 
     override val syncFollowToYouTube: Flow<String> =
@@ -1913,6 +1938,9 @@ internal class DataStoreManagerImpl(
         val DELAY_FEEDBACK = stringPreferencesKey("delay_feedback")
         val DELAY_MIX = stringPreferencesKey("delay_mix")
         val REVERB_ENABLED = stringPreferencesKey("reverb_enabled")
+        val EIGHT_D_ENABLED = stringPreferencesKey("eight_d_enabled")
+        val EIGHT_D_DIRECTION = stringPreferencesKey("eight_d_direction")
+        val EIGHT_D_PERIOD_SECONDS = stringPreferencesKey("eight_d_period_seconds")
         val REVERB_PRESET = stringPreferencesKey("reverb_preset")
         val REVERB_MIX = stringPreferencesKey("reverb_mix")
         val SPOTIFY_CANVAS = stringPreferencesKey("spotify_canvas")

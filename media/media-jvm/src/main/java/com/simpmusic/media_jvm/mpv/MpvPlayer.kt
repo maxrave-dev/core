@@ -1,6 +1,8 @@
 package com.simpmusic.media_jvm.mpv
 
 import com.maxrave.domain.data.player.AudioEffects
+import com.maxrave.domain.data.player.EightDEffect
+import com.maxrave.domain.data.player.EightDOrbit
 import com.maxrave.logger.Logger
 import com.sun.jna.Memory
 import com.sun.jna.Pointer
@@ -41,6 +43,12 @@ open class MpvPlayerEventAdapter {
 
     /** `MPV_EVENT_PLAYBACK_RESTART` combined with observed `pause` == false. */
     open fun playing(player: MpvPlayer) {}
+
+    /** Every `MPV_EVENT_PLAYBACK_RESTART`, seeks and `loop-file` wraps included; [playing] is deduplicated. */
+    open fun restarted(player: MpvPlayer) {}
+
+    /** `MPV_EVENT_SEEK`: sent right after mpv reset the filters for a seek or a `loop-file` wrap. */
+    open fun seeking(player: MpvPlayer) {}
 
     /** Observed `pause` == true. */
     open fun paused(player: MpvPlayer) {}
@@ -139,6 +147,9 @@ class MpvPlayer private constructor(
          * change addresses — see [setReverbMix].
          */
         private const val FX_REVERB_LABEL = "simpFxReverb"
+        private const val EIGHT_D_LABEL = "simp8D"
+        private const val EIGHT_D_TEMPO_LABEL = "simp8DTempo"
+        private const val SYNC_GUARD_NANOS = 500_000_000L
 
         /**
          * Set once this libmpv has proven it cannot build the convolution reverb graph.
@@ -519,10 +530,13 @@ class MpvPlayer private constructor(
                 applyVolume()
             }
 
+            MpvEventId.SEEK -> listener?.seeking(this)
+
             MpvEventId.PLAYBACK_RESTART -> {
                 // Also fires after every seek, so it can't stand in for vlcj's playing() on its
                 // own — it only marks "output has (re)started"; the pause flag decides the rest.
                 playbackRestarted = true
+                listener?.restarted(this)
                 maybeEmitPlayState()
             }
 
@@ -603,6 +617,7 @@ class MpvPlayer private constructor(
         startMs: Long = 0L,
     ) {
         if (isReleased) return
+        playedSinceLoad = !startPaused
         setPropertyString("pause", if (startPaused) "yes" else "no")
         // `start` is read by the next loadfile, so it rides on the handle like the options in [create]:
         // `time-pos` cannot be set yet, since nothing is loaded. AutoMix starts a track past its intro.
@@ -612,6 +627,14 @@ class MpvPlayer private constructor(
 
     fun play() {
         if (isReleased) return
+        if (!playedSinceLoad) {
+            playedSinceLoad = true
+            // A handle loaded paused (a precache, a crossfade's incoming track) filled its output
+            // before anyone knew when it would be heard, and dry, since 8D waits for a restart.
+            // Join the live orbit now and fade in from that dry audio. A plain resume skips this:
+            // its graph and the orbit both stood still during the pause.
+            eightDOrbit?.let { setEightD(it, fadeIn = true) }
+        }
         setPropertyString("pause", "no")
     }
 
@@ -874,19 +897,125 @@ class MpvPlayer private constructor(
     @Volatile
     private var crossfadeEntries: List<String> = emptyList()
 
+    private var eightDOrbit: EightDOrbit? = null
+    private var eightDFadeOutEffect: EightDEffect? = null
+    private var eightDFadeIn = false
+    private var eightDInstalled = false
+    private var eightDInstalledAtNanos = 0L
+    private var eightDRejected = false
+    private var playedSinceLoad = false
+
     /**
-     * Write `af` from all three tiers at once.
+     * Called on every PLAYBACK_RESTART and every SEEK.
+     *
+     * The first restart is where 8D is installed: the initial load stays dry until audio is
+     * ready, so a missing optional filter cannot fail it.
+     *
+     * After that, mpv frees and rebuilds each lavfi graph on every reset (f_lavfi.c `lavfi_reset`
+     * → `free_graph`), so after a seek or a `loop-file` wrap aeval's sample counter `n` starts
+     * again at 0 and the graph would replay the phase it was installed with. SEEK arrives right
+     * after that reset (playloop.c `mp_seek`), before the audio refills, so the live phase is
+     * written then. [seekTo] already wrote it for the seeks this app asks for.
+     *
+     * @return false only when 8D has been refused here.
+     */
+    fun syncEightD(): Boolean {
+        val orbit = eightDOrbit
+        if (eightDRejected || orbit == null || eightDFadeOutEffect != null) return !eightDRejected
+        // Rewriting `af` while audio plays can itself issue a refresh seek (audio.c
+        // reinit_audio_filters, when ≥0.2 s of buffered audio is dropped), whose SEEK and restart
+        // land here again; the graph written moments ago is already on the live phase.
+        if (eightDInstalled && System.nanoTime() - eightDInstalledAtNanos < SYNC_GUARD_NANOS) return true
+        return setEightD(orbit)
+    }
+
+    /**
+     * @param fadeIn fade in from dry even if a graph is installed: the audio heard just before is dry.
+     * @return false only when 8D has been refused here.
+     */
+    fun setEightD(
+        orbit: EightDOrbit?,
+        fadeOutEffect: EightDEffect? = null,
+        fadeIn: Boolean = false,
+    ): Boolean {
+        if (isReleased) return true
+        if (eightDRejected) return orbit == null
+        if (orbit == null && eightDOrbit == null) return true
+        eightDFadeIn = orbit != null && fadeOutEffect == null && (fadeIn || !eightDInstalled)
+        eightDOrbit = orbit
+        eightDFadeOutEffect = fadeOutEffect
+        // Before PLAYBACK_RESTART an af option can be accepted without constructing its graph.
+        // Installing there could turn a missing optional filter into a first-track load failure.
+        if (orbit != null && !playbackRestarted) return true
+        applyAudioFilters()
+        return !eightDRejected
+    }
+
+    /** The 8D tier: a speed filter so 8D sits after the speed change, then the rotation itself. */
+    private fun eightDEntries(): List<String> {
+        if (!playbackRestarted) return emptyList()
+        val orbit = eightDOrbit?.snapshot()
+        val effect = eightDFadeOutEffect ?: orbit?.effect ?: return emptyList()
+        return buildList {
+            // mpv's default speed filter is POST-user-filters. Move that same native
+            // scaletempo2 before 8D so seconds/turn is independent of playback speed.
+            // Existing rubberband already consumes SET_SPEED during AutoMix/pitch, so
+            // leave that owner untouched when present (mpv f_output_chain.c:484-502).
+            if (crossfadeEntries.none { it.startsWith("@$PITCH_LABEL:") }) {
+                add("@$EIGHT_D_TEMPO_LABEL:scaletempo2")
+            }
+            val mode = when {
+                eightDFadeOutEffect != null -> EightDTransition.FADE_OUT
+                eightDFadeIn -> EightDTransition.FADE_IN
+                else -> EightDTransition.ACTIVE
+            }
+            add("@$EIGHT_D_LABEL:lavfi=[${eightDGraph(effect, orbit?.phaseRadians ?: 0.0, mode)}]")
+        }
+    }
+
+    /**
+     * Write `af` from all four tiers at once.
      *
      * Order is the design. The equalizer goes first so everything after it works on the curve the
      * user chose. The effects sit next, so echo and reverb act on the equalised signal rather than
-     * on one that is about to be re-shaped behind them. The crossfade sweep goes last so it also
-     * sweeps the effects' tails — a reverb that kept ringing at full brightness through a
-     * transition would be the one thing in the mix that refuses to fade.
+     * on one that is about to be re-shaped behind them. The crossfade sweep comes after them so it
+     * also sweeps the effects' tails — a reverb that kept ringing at full brightness through a
+     * transition would be the one thing in the mix that refuses to fade. 8D is last, after the
+     * speed change.
      */
     private fun applyAudioFilters(): Boolean {
-        val entries = listOfNotNull(eqEntry) + fxEntries + crossfadeEntries
-        return setPropertyString("af", entries.joinToString(","))
+        val others = listOfNotNull(eqEntry) + fxEntries + crossfadeEntries
+        val eightD = eightDEntries()
+        if (writeAf((others + eightD).joinToString(","))) {
+            eightDInstalled = eightD.isNotEmpty()
+            if (eightDInstalled) eightDInstalledAtNanos = System.nanoTime()
+            eightDFadeIn = false
+            return true
+        }
+        // Every writer comes through here, and the af property also owns EQ/reverb/crossfade: a
+        // refused 8D entry must not take them down. Blame 8D only if the chain works without it.
+        if (eightD.isEmpty() || !writeAf(others.joinToString(","))) return false
+        eightDOrbit = null
+        eightDFadeOutEffect = null
+        eightDFadeIn = false
+        eightDInstalled = false
+        eightDRejected = true
+        Logger.w(TAG, "8D unavailable: the audio engine rejected its aeval/tempo filter; other effects retained")
+        return true
     }
+
+    /**
+     * Replace the whole `af` chain, and say truthfully whether mpv built it.
+     *
+     * Setting the `af` PROPERTY returns success even when a filter cannot be created: the option
+     * change goes through `mp_option_change_callback`, which ignores `set_filters`' result, so mpv
+     * logs "Audio filter initialized failed!" and keeps the old live chain while the caller hears
+     * "success". Measured on the bundled Linux libmpv (no `aeval`): property → rc 0, `af set` →
+     * rc -12 with the previous chain restored. The `af` COMMAND goes through `edit_filters`, which
+     * returns that result, so a refused entry is reported instead of silently stalling every later
+     * write (EQ, effects, the crossfade sweep).
+     */
+    private fun writeAf(chain: String): Boolean = command("af", "set", chain)
 
     /**
      * Install a ten-band equalizer, or remove it when every band and the preamp are at zero.
@@ -1100,6 +1229,9 @@ class MpvPlayer private constructor(
     /** @param timeMs milliseconds, matching `VlcPlayer.seekTo`. mpv's `time-pos` is seconds. */
     fun seekTo(timeMs: Long) {
         if (isReleased) return
+        // The seek's reset rebuilds the 8D graph from its string with n = 0 (see [syncEightD]).
+        // Writing the live phase first makes that rebuild start on it, before any audio refills.
+        if (eightDInstalled && eightDOrbit != null && eightDFadeOutEffect == null) applyAudioFilters()
         setPropertyDouble("time-pos", timeMs / 1000.0)
     }
 

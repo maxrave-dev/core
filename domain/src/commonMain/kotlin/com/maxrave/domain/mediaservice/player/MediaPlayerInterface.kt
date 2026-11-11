@@ -2,6 +2,7 @@ package com.maxrave.domain.mediaservice.player
 
 import com.maxrave.domain.data.player.AudioEffects
 import com.maxrave.domain.data.player.AudioOutput
+import com.maxrave.domain.data.player.EightDEffect
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.GenericPlaybackParameters
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -207,6 +208,13 @@ interface MediaPlayerInterface {
      */
     fun setAudioEffects(effects: AudioEffects) = Unit
 
+    /** Independent of EQ/echo/reverb. Null bypasses 8D without changing its saved controls. */
+    fun setEightD(effect: EightDEffect?) = Unit
+
+    /** A rejected native filter disables only the 8D controls, never the rest of playback. */
+    val eightDAvailable: StateFlow<Boolean>
+        get() = NO_EIGHT_D
+
     /**
      * The outputs this player can render into right now, with the one the sound is leaving by
      * marked [AudioOutput.isActive].
@@ -263,3 +271,4 @@ interface MediaPlayerInterface {
 
 // What a backend that cannot list its outputs reports: nothing, and never anything else.
 private val NO_AUDIO_OUTPUTS: StateFlow<List<AudioOutput>> = MutableStateFlow(emptyList())
+private val NO_EIGHT_D: StateFlow<Boolean> = MutableStateFlow(false)
