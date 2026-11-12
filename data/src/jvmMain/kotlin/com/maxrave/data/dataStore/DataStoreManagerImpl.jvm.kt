@@ -41,7 +41,7 @@ actual fun createDataStoreInstance(): DataStore<Preferences> =
  * `writeScope`, never one inside the other, and always takes its own coordinator lock before this
  * one. Re-check both when bumping DataStore.
  */
-private class ReadsWaitForWritesStorage<T>(
+internal class ReadsWaitForWritesStorage<T>(
     private val delegate: Storage<T>,
 ) : Storage<T> {
     override fun createConnection(): StorageConnection<T> {

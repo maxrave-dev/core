@@ -185,7 +185,7 @@ fun reachableAddresses(): List<LocalAddress> =
 private val HOST_ONLY_NIC_PREFIXES = listOf("docker", "br-", "veth", "virbr", "vboxnet", "vmnet", "podman", "cni")
 
 /** The name the user knows this computer by. Blocking on macOS (runs scutil). */
-private fun localDeviceName(): DeviceName {
+internal fun localDeviceName(): DeviceName {
     val osName = System.getProperty("os.name").orEmpty()
     val isMac = osName.startsWith("Mac")
     val name =
