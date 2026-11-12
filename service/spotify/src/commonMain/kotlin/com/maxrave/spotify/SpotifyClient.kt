@@ -271,6 +271,70 @@ class SpotifyClient {
             )
         }
 
+    private fun io.ktor.client.request.HttpRequestBuilder.webApiAuth(token: String) {
+        userAgent(USER_AGENT)
+        header("Authorization", "Bearer $token")
+        header("Accept", "application/json")
+        header("App-platform", "WebPlayer")
+        header("Spotify-App-Version", "1.2.61.20.g3b4cd5b2")
+        header("Origin", "https://open.spotify.com")
+        header("Referer", "https://open.spotify.com/")
+    }
+
+    suspend fun getSpotifyEmbedHtml(type: String, id: String, spdc: String? = null) =
+        spotifyClient.get("https://open.spotify.com/embed/$type/$id") {
+            userAgent(USER_AGENT)
+            header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            header("Accept-Language", "en-US,en;q=0.9")
+            if (!spdc.isNullOrEmpty()) {
+                header("Cookie", "sp_dc=$spdc")
+            }
+        }
+
+    suspend fun getMe(token: String) =
+        spotifyClient.get("/v1/me") {
+            webApiAuth(token)
+        }
+
+    suspend fun getMyPlaylists(
+        token: String,
+        offset: Int,
+        limit: Int = 50,
+    ) = spotifyClient.get("/v1/me/playlists") {
+        webApiAuth(token)
+        parameter("limit", limit)
+        parameter("offset", offset)
+    }
+
+    /**
+     * Playlist entries. Since February 2026 the path is `/items`; `/tracks` was removed for dev-mode
+     * apps. [useLegacyPath] lets the caller retry the old path when `/items` is not found.
+     */
+    suspend fun getPlaylistItems(
+        playlistId: String,
+        token: String,
+        offset: Int,
+        limit: Int = 100,
+        useLegacyPath: Boolean = false,
+    ) = spotifyClient.get("/v1/playlists/$playlistId/${if (useLegacyPath) "tracks" else "items"}") {
+        webApiAuth(token)
+        parameter("limit", limit)
+        parameter("offset", offset)
+        parameter("market", "from_token")
+        parameter("additional_types", "track")
+    }
+
+    suspend fun getSavedTracks(
+        token: String,
+        offset: Int,
+        limit: Int = 50,
+    ) = spotifyClient.get("/v1/me/tracks") {
+        webApiAuth(token)
+        parameter("limit", limit)
+        parameter("offset", offset)
+        parameter("market", "from_token")
+    }
+
     fun getRandomUserAgent(): String {
         val macOSVersion = "${Random.nextInt(11, 15)}_${Random.nextInt(4, 9)}"
         val webKitVersion = "${Random.nextInt(530, 537)}.${Random.nextInt(30, 37)}"
@@ -281,6 +345,6 @@ class SpotifyClient {
     }
 
     companion object {
-        const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.157 Safari/537.36"
+        const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
     }
 }

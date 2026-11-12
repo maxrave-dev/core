@@ -937,6 +937,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val spotifySyncedPlaylists: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[SPOTIFY_SYNCED_PLAYLISTS] ?: "[]"
+        }
+
+    override suspend fun setSpotifySyncedPlaylists(json: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[SPOTIFY_SYNCED_PLAYLISTS] = json
+            }
+        }
+    }
+
     override val homeLimit: Flow<Int> =
         settingsDataStore.data.map { preferences ->
             preferences[HOME_LIMIT] ?: 5
@@ -2018,6 +2031,7 @@ internal class DataStoreManagerImpl(
         val AUTO_BACKUP_FREQUENCY = stringPreferencesKey("auto_backup_frequency")
         val AUTO_BACKUP_MAX_FILES = intPreferencesKey("auto_backup_max_files")
         val AUTO_BACKUP_LAST_TIME = longPreferencesKey("auto_backup_last_time")
+        val SPOTIFY_SYNCED_PLAYLISTS = stringPreferencesKey("spotify_synced_playlists")
     }
 }
 
