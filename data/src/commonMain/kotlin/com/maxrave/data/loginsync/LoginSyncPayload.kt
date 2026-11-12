@@ -1,5 +1,6 @@
 package com.maxrave.data.loginsync
 
+import com.maxrave.domain.data.model.loginsync.LoginSyncService
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -17,6 +18,14 @@ internal data class LoginBundle(
     // A phone on an older version may still send `discordToken`; ignoreUnknownKeys drops it.
     val lastfm: LastfmLogin? = null,
 )
+
+/** The services [this] carries, in the order a restore writes them. */
+internal fun LoginBundle.services(): List<LoginSyncService> =
+    buildList {
+        if (youtube != null) add(LoginSyncService.YOUTUBE)
+        if (!spotifySpDc.isNullOrEmpty()) add(LoginSyncService.SPOTIFY)
+        if (!lastfm?.sessionKey.isNullOrEmpty()) add(LoginSyncService.LASTFM)
+    }
 
 @Serializable
 internal data class YouTubeLogin(

@@ -2,13 +2,17 @@ package com.maxrave.domain.data.entities
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.maxrave.domain.data.type.HomeContentType
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.extension.now
 import kotlinx.datetime.LocalDateTime
 
-@Entity(tableName = "local_playlist")
+@Entity(
+    tableName = "local_playlist",
+    indices = [Index(value = ["syncId"], unique = true)],
+)
 @Suppress("ktlint:standard:property-naming")
 data class LocalPlaylistEntity(
     @PrimaryKey(autoGenerate = true)
@@ -22,6 +26,11 @@ data class LocalPlaylistEntity(
     @ColumnInfo(name = "youtube_sync_state", defaultValue = "0")
     val syncState: Int = YouTubeSyncState.NotSynced,
     val tracks: List<String>? = null,
+    /**
+     * The playlist's identity across devices for library sync. [id] is autoincremented per database, so
+     * the same playlist has a different [id] on every device. Null until sync first needs it.
+     */
+    val syncId: String? = null,
     // Only synced with YouTube playlist
     // val listSetVideoId: List<String>? = null,
 ) : PlaylistType,

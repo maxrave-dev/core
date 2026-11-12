@@ -1137,6 +1137,7 @@ interface DatabaseDao {
         albumBrowseId: String?,
         durationSecond: Long,
         listenedSecond: Long,
+        syncId: String? = null,
     ): Long {
         val timestamp = now()
 
@@ -1148,6 +1149,7 @@ interface DatabaseDao {
                     albumBrowseId = albumBrowseId,
                     durationSecond = durationSecond,
                     listenedSecond = listenedSecond,
+                    syncId = syncId,
                 ),
             )
 
@@ -1167,7 +1169,9 @@ interface DatabaseDao {
         return eventId
     }
 
-    @Query("SELECT * FROM playback_event ORDER BY timestamp DESC LIMIT :limit OFFSET :offset")
+    // "Recently played" lists this device's own plays only (deviceId is null on them): plays library
+    // sync brought in from the other device count in Analytics and Wrapped, never here.
+    @Query("SELECT * FROM playback_event WHERE deviceId IS NULL ORDER BY timestamp DESC LIMIT :limit OFFSET :offset")
     suspend fun getPlaybackEventsByOffset(
         offset: Int,
         limit: Int,
@@ -1503,8 +1507,15 @@ interface DatabaseDao {
         endTimestamp: LocalDateTime,
     ): List<PlaybackSample>
 
-    /** Every play since [from], for the Smart downloads score. */
-    @Query("SELECT videoId, timestamp, durationSecond, listenedSecond FROM playback_event WHERE timestamp >= :from")
+    /**
+     * Every play on this device since [from], for the Smart downloads score. Plays synced from another
+     * device are left out: downloads belong to each device, and what is played there must not decide
+     * what is downloaded here.
+     */
+    @Query(
+        "SELECT videoId, timestamp, durationSecond, listenedSecond FROM playback_event " +
+            "WHERE timestamp >= :from AND deviceId IS NULL",
+    )
     suspend fun getSongPlaysSince(from: LocalDateTime): List<SongPlaySample>
 
     @Query(

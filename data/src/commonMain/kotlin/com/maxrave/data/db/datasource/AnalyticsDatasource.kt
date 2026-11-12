@@ -1,6 +1,8 @@
 package com.maxrave.data.db.datasource
 
 import DatabaseDao
+import com.maxrave.data.librarysync.SyncChangeRecorder
+import com.maxrave.data.librarysync.newSyncId
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
 import com.maxrave.domain.extension.beforeXDays
 import com.maxrave.domain.extension.now
@@ -8,20 +10,30 @@ import kotlinx.datetime.LocalDateTime
 
 internal class AnalyticsDatasource(
     private val databaseDao: DatabaseDao,
+    private val syncRecorder: SyncChangeRecorder,
 ) {
+    // Every play gets its library-sync identity when it is written, paired or not, so pairing later
+    // only has to fill in the plays made before this existed.
     suspend fun insertPlaybackEvent(
         videoId: String,
         channelIds: List<String>,
         albumBrowseId: String?,
         durationSecond: Long,
         listenedSecond: Long,
-    ) = databaseDao.insertPlaybackWithArtists(
-        videoId = videoId,
-        channelIds = channelIds,
-        albumBrowseId = albumBrowseId,
-        durationSecond = durationSecond,
-        listenedSecond = listenedSecond,
-    )
+    ): Long {
+        val syncId = newSyncId()
+        val eventId =
+            databaseDao.insertPlaybackWithArtists(
+                videoId = videoId,
+                channelIds = channelIds,
+                albumBrowseId = albumBrowseId,
+                durationSecond = durationSecond,
+                listenedSecond = listenedSecond,
+                syncId = syncId,
+            )
+        syncRecorder.play(syncId)
+        return eventId
+    }
 
     suspend fun getPlaybackEventsByOffset(
         offset: Int,

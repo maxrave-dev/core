@@ -8,6 +8,10 @@ import com.maxrave.data.dataStore.DataStoreManagerImpl
 import com.maxrave.data.dataStore.createDataStoreInstance
 import com.maxrave.data.db.Converters
 import com.maxrave.data.db.MusicDatabase
+import com.maxrave.data.db.SyncDao
+import com.maxrave.data.librarysync.SyncChangeRecorder
+import com.maxrave.data.librarysync.SyncPrefs
+import com.maxrave.data.librarysync.createLibrarySyncDataStore
 import com.maxrave.data.db.datasource.AnalyticsDatasource
 import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.data.db.getDatabaseBuilder
@@ -41,13 +45,24 @@ val databaseModule =
         single(createdAtStart = true) {
             get<MusicDatabase>().getDatabaseDao()
         }
+        // Library sync (#2663): its own small preferences file, its DAO, and the recorder every
+        // write to a synced item goes through.
+        single(createdAtStart = true) {
+            get<MusicDatabase>().getSyncDao()
+        }
+        single(createdAtStart = true) {
+            SyncPrefs(createLibrarySyncDataStore())
+        }
+        single(createdAtStart = true) {
+            SyncChangeRecorder(get<SyncDao>(), get<SyncPrefs>())
+        }
         // LocalDataSource
         single(createdAtStart = true) {
-            LocalDataSource(get<DatabaseDao>(), get<MusicDatabase>())
+            LocalDataSource(get<DatabaseDao>(), get<MusicDatabase>(), get<SyncChangeRecorder>())
         }
         // AnalyticsDatasource
         single(createdAtStart = true) {
-            AnalyticsDatasource(get<DatabaseDao>())
+            AnalyticsDatasource(get<DatabaseDao>(), get<SyncChangeRecorder>())
         }
         // Datastore
         single(createdAtStart = true) {
