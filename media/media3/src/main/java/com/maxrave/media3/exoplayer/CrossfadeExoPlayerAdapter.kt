@@ -5,6 +5,9 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -415,6 +418,29 @@ internal class CrossfadeExoPlayerAdapter(
     private var retryVideoId: String? = null
     private val maxRetryCount = 2
 
+    // A track that failed while the network was down stayed failed (#2429): reload it once a network is back,
+    // if the drop was recent and no other app has taken the audio focus since.
+    private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+    private val networkCallback =
+        object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                coroutineScope.launch {
+                    val error = currentPlayer?.playerError ?: return@launch
+                    val isRecentNetworkError =
+                        error.errorCode in 2000..2999 && SystemClock.elapsedRealtime() - error.timestampMs < NETWORK_RELOAD_WINDOW_MS
+                    if (internalState == InternalState.ERROR && internalPlayWhenReady && hasAudioFocus && isRecentNetworkError) {
+                        Logger.d(TAG, "Network is back: reloading the track that failed")
+                        play()
+                    }
+                }
+            }
+        }
+
+    init {
+        runCatching { connectivityManager?.registerDefaultNetworkCallback(networkCallback) }
+            .onFailure { Logger.w(TAG, "Could not watch the network: ${it.message}") }
+    }
+
     // ========== AutoMix Metadata Cache ==========
     // videoId -> audio analysis data from Tidal (populated externally when 320kbps stream is fetched)
     private val audioMetaCache = ConcurrentHashMap<String, SongAudioMeta>()
@@ -723,6 +749,14 @@ internal class CrossfadeExoPlayerAdapter(
                 InternalState.PLAYING -> {
                     internalPlayWhenReady = true
                     cachedIsLoading = false
+                }
+
+                // A failed track does nothing until it is loaded again (#2429).
+                InternalState.ERROR -> {
+                    internalPlayWhenReady = true
+                    retryCount = 0
+                    val positionMs = if (isCurrentTrackLive()) 0L else cachedPosition.coerceAtLeast(0L)
+                    loadAndPlayTrackInternal(localCurrentMediaItemIndex, positionMs, shouldPlay = true)
                 }
 
                 else -> {
@@ -1597,6 +1631,7 @@ internal class CrossfadeExoPlayerAdapter(
         cleanupCurrentPlayerInternal()
         clearAllPrecacheInternal()
         outputRouter.release()
+        runCatching { connectivityManager?.unregisterNetworkCallback(networkCallback) }
         listeners.clear()
     }
 
@@ -1934,6 +1969,7 @@ internal class CrossfadeExoPlayerAdapter(
                     // Retry for source errors (expired/invalid stream URL)
                     // ERROR_CODE_PARSING_CONTAINER_MALFORMED (3001) = server returned non-media response (e.g. HTML error page)
                     // ERROR_CODE_IO_BAD_HTTP_STATUS (2004) = HTTP 403/410 from expired URL
+                    // ERROR_CODE_IO_UNSPECIFIED (2000), ..._NETWORK_CONNECTION_TIMEOUT (2002) = network briefly down (#2429)
                     // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED (2001) = connection refused
                     // ERROR_CODE_IO_FILE_NOT_FOUND (2005) = the resolver served a cache hit as a bare
                     //   media id and the cached spans were evicted (or cleared) mid-read, so
@@ -3057,6 +3093,8 @@ internal class CrossfadeExoPlayerAdapter(
         private const val HPF_START_HZ = 2000f // High-pass starts lower — incoming track fills in faster
         private const val HPF_END_HZ = 20f // High-pass ends wide open
 
+        private const val NETWORK_RELOAD_WINDOW_MS = 5 * 60 * 1000L
+
         // AutoMix constants
         private const val AUTO_FALLBACK_DURATION_MS = 30000 // Default when no BPM data
         private const val STRUCTURE_RETRY_MS = 30_000L
@@ -3361,7 +3399,10 @@ internal class CrossfadeExoPlayerAdapter(
     private fun PlaybackException.isRetryableSourceError(): Boolean =
         errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
             errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-            errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+            errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+            errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+            errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
 
     private fun clearPrecacheExceptCurrentInternal() {
         Logger.d(TAG, "Clearing precache")
