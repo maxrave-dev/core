@@ -1264,6 +1264,11 @@ class Ytmusic {
         repeat(maxRetries + 1) { attempt ->
             if (jobDone == 1) return@repeat
 
+            // An attempt is judged on its own outcome. Without this, an error from an earlier attempt
+            // (a failed HEAD, say) outlives the retry that succeeds, and the finished download is
+            // reported as failed.
+            lastException = null
+
             if (attempt > 0) {
                 try {
                     if (fileSystem.exists(path)) {
