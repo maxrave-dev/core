@@ -26,7 +26,7 @@ private val streamHealthCheckClient: OkHttpClient by lazy {
  * the whole song can play. Only a definitive rejection warrants trying another decoder;
  * a timeout or server error leaves validation to the player's actual media request.
  */
-internal fun List<Pair<Int, String>>.headCheckAudioStream(
+internal fun List<Pair<Int, String>>.checkAudioStream(
     videoId: String,
     tier: String,
 ): Boolean {
@@ -38,23 +38,30 @@ internal fun List<Pair<Int, String>>.headCheckAudioStream(
         val request =
             okhttp3.Request
                 .Builder()
-                .head()
+                .get()
+                .header("Range", "bytes=0-0")
                 .url(candidate.second)
                 .build()
+        val clientName = request.url.queryParameter("c") ?: "unknown"
         streamHealthCheckClient.newCall(request).execute().use { response ->
             val rejected = response.code in 400..499 && response.code !in setOf(405, 408, 429)
             if (response.code !in 200..299) {
                 Logger.w(
                     "Extractor",
-                    "PipePipe[$tier] audio HEAD for $videoId itag=${candidate.first}: HTTP ${response.code}, rejected=$rejected",
+                    "PipePipe[$tier] audio probe for $videoId itag=${candidate.first} client=$clientName: HTTP ${response.code}, rejected=$rejected",
                 )
+            }
+            if (response.code in 200..299) {
+                // Read just one byte, then close the response even if the CDN ignores Range.
+                response.body?.source()?.readByte()
+                Logger.i("Extractor", "PipePipe[$tier] audio probe passed for $videoId itag=${candidate.first} client=$clientName")
             }
             !rejected
         }
     } catch (e: IOException) {
         Logger.w(
             "Extractor",
-            "PipePipe[$tier] audio HEAD inconclusive for $videoId itag=${candidate.first}: ${e.javaClass.simpleName}; trying playback",
+            "PipePipe[$tier] audio probe inconclusive for $videoId itag=${candidate.first}: ${e.javaClass.simpleName}; trying playback",
         )
         true
     }

@@ -125,7 +125,7 @@ actual class Extractor {
                 Logger.w(TAG, "PipePipe[$tier] missing playable audio itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null
             }
-            if (!pipeResult.headCheckAudioStream(videoId, tier)) {
+            if (!pipeResult.checkAudioStream(videoId, tier)) {
                 // A rejected URL is the one symptom of a stale player table: the signature is
                 // well-formed and still wrong, so nothing threw on the way here. Only the on-device
                 // table can go stale, so only that tier is worth invalidating.
