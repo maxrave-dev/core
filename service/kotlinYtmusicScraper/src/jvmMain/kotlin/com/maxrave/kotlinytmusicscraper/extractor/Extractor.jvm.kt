@@ -30,6 +30,7 @@ actual class Extractor {
 
     actual fun logIn(cookie: String?) {
         ServiceList.YouTube.tokens = cookie ?: ""
+        braveNewPipeDownloader.logIn(cookie)
         // The visionos player request is anonymous; TV requests carry the saved login session.
         NewPipe.setYoutubePlayerClient(if (cookie.isNullOrEmpty()) "visionos" else "tv_samsung")
     }
@@ -109,22 +110,27 @@ actual class Extractor {
         tier: String,
     ): List<Pair<Int, String>>? {
         try {
-            val streamInfo =
-                StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
-            val streamsList = streamInfo.audioStreams + streamInfo.videoStreams + streamInfo.videoOnlyStreams
+            // Metadata is already available in the app; a missing TV title must not stop audio extraction.
+            val streamExtractor = ServiceList.YouTube.getStreamExtractor("https://music.youtube.com/watch?v=$videoId")
+            streamExtractor.fetchPage()
+            val streamsList =
+                streamExtractor.audioStreams +
+                    runCatching { streamExtractor.videoStreams }.getOrDefault(emptyList()) +
+                    runCatching { streamExtractor.videoOnlyStreams }.getOrDefault(emptyList())
             val temp =
                 streamsList
                     .mapNotNull {
                         (it.itagItem?.id ?: return@mapNotNull null) to it.content
                     }.toMutableList()
-            val manifest = streamInfo.dashMpdUrl.takeIf { !it.isNullOrEmpty() } ?: streamInfo.hlsUrl
+            val manifest = runCatching { streamExtractor.dashMpdUrl.takeIf { it.isNotEmpty() } ?: streamExtractor.hlsUrl }.getOrNull()
             if (!manifest.isNullOrEmpty()) temp.add(96 to manifest)
             val pipeResult = temp.toList()
             if (!pipeResult.hasPlayableAudio()) {
                 Logger.w(TAG, "PipePipe[$tier] missing playable audio itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null
             }
-            if (!pipeResult.checkAudioStream(videoId, tier)) {
+            val playableResult = pipeResult.playableStreams(videoId, tier)
+            if (playableResult.isEmpty()) {
                 // A rejected URL is the one symptom of a stale player table: the signature is
                 // well-formed and still wrong, so nothing threw on the way here. Only the on-device
                 // table can go stale, so only that tier is worth invalidating.
@@ -133,8 +139,8 @@ actual class Extractor {
             }
             val label = if (tier == LOCAL_TIER) faradayDecoder.lastOutcomeLabel else REMOTE_TIER
             ExtractSource.record(videoId, "PipePipe · $label")
-            Logger.i(TAG, "extract source=PipePipe[$tier] itags=${pipeResult.map { it.first }} for $videoId")
-            return pipeResult
+            Logger.i(TAG, "extract source=PipePipe[$tier] itags=${playableResult.map { it.first }} for $videoId")
+            return playableResult
         } catch (e: Throwable) {
             Logger.w(TAG, "PipePipe[$tier] extractor failed for $videoId: ${e.message}")
             return null

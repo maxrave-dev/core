@@ -35,6 +35,7 @@ actual class Extractor {
 
     actual fun logIn(cookie: String?) {
         ServiceList.YouTube.tokens = cookie ?: ""
+        braveNewPipeDownloader.logIn(cookie)
         // The visionos player request is anonymous; TV requests carry the saved login session.
         NewPipe.setYoutubePlayerClient(if (cookie.isNullOrEmpty()) "visionos" else "tv_samsung")
     }
@@ -114,9 +115,14 @@ actual class Extractor {
         tier: String,
     ): List<Pair<Int, String>>? {
         try {
-            val streamInfo =
-                StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
-            val streamsList = streamInfo.audioStreams + streamInfo.videoStreams + streamInfo.videoOnlyStreams
+            // The app already has metadata from WEB_REMIX. StreamInfo requires a title before
+            // extracting streams, so a TV response without a title can discard playable audio.
+            val streamExtractor = ServiceList.YouTube.getStreamExtractor("https://music.youtube.com/watch?v=$videoId")
+            streamExtractor.fetchPage()
+            val streamsList =
+                streamExtractor.audioStreams +
+                    runCatching { streamExtractor.videoStreams }.getOrDefault(emptyList()) +
+                    runCatching { streamExtractor.videoOnlyStreams }.getOrDefault(emptyList())
             val pipeResult =
                 streamsList.mapNotNull {
                     (it.itagItem?.id ?: return@mapNotNull null) to it.content
@@ -125,7 +131,8 @@ actual class Extractor {
                 Logger.w(TAG, "PipePipe[$tier] missing playable audio itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null
             }
-            if (!pipeResult.checkAudioStream(videoId, tier)) {
+            val playableResult = pipeResult.playableStreams(videoId, tier)
+            if (playableResult.isEmpty()) {
                 // A rejected URL is the one symptom of a stale player table: the signature is
                 // well-formed and still wrong, so nothing threw on the way here. Only the on-device
                 // table can go stale, so only that tier is worth invalidating.
@@ -134,8 +141,8 @@ actual class Extractor {
             }
             val label = if (tier == LOCAL_TIER) faradayDecoder.lastOutcomeLabel else REMOTE_TIER
             ExtractSource.record(videoId, "PipePipe · $label")
-            Logger.i(TAG, "extract source=PipePipe[$tier] itags=${pipeResult.map { it.first }} for $videoId")
-            return pipeResult
+            Logger.i(TAG, "extract source=PipePipe[$tier] itags=${playableResult.map { it.first }} for $videoId")
+            return playableResult
         } catch (e: Throwable) {
             Logger.w(TAG, "PipePipe[$tier] extractor failed for $videoId: ${e.message}")
             return null
