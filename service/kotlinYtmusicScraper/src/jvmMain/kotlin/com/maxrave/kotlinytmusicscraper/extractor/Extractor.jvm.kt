@@ -22,6 +22,8 @@ actual class Extractor {
 
     actual fun init() {
         NewPipe.init(newPipeDownloader)
+        // PipePipe defaults to five seconds, which is too short for slower VPN routes.
+        ServiceList.YouTube.setLoadingTimeout(30)
         BraveNewPipe.init(braveNewPipeDownloader)
         YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
     }
@@ -118,12 +120,11 @@ actual class Extractor {
             val manifest = streamInfo.dashMpdUrl.takeIf { !it.isNullOrEmpty() } ?: streamInfo.hlsUrl
             if (!manifest.isNullOrEmpty()) temp.add(96 to manifest)
             val pipeResult = temp.toList()
-            if (!pipeResult.hasRequiredItags()) {
-                Logger.d(TAG, "PipePipe[$tier] missing required itags for $videoId (got=${pipeResult.map { it.first }})")
+            if (!pipeResult.hasPlayableAudio()) {
+                Logger.w(TAG, "PipePipe[$tier] missing playable audio itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null
             }
-            if (!pipeResult.headCheckRandomStream()) {
-                Logger.d(TAG, "PipePipe[$tier] stream URL HEAD check failed (non 2xx) for $videoId")
+            if (!pipeResult.headCheckAudioStream(videoId, tier)) {
                 // A rejected URL is the one symptom of a stale player table: the signature is
                 // well-formed and still wrong, so nothing threw on the way here. Only the on-device
                 // table can go stale, so only that tier is worth invalidating.
@@ -132,7 +133,7 @@ actual class Extractor {
             }
             val label = if (tier == LOCAL_TIER) faradayDecoder.lastOutcomeLabel else REMOTE_TIER
             ExtractSource.record(videoId, "PipePipe · $label")
-            Logger.d(TAG, "extract source=PipePipe[$tier] itags=${pipeResult.map { it.first }} for $videoId")
+            Logger.i(TAG, "extract source=PipePipe[$tier] itags=${pipeResult.map { it.first }} for $videoId")
             return pipeResult
         } catch (e: Throwable) {
             Logger.w(TAG, "PipePipe[$tier] extractor failed for $videoId: ${e.message}")

@@ -17,6 +17,7 @@ import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.Proxy
+import java.util.concurrent.TimeUnit
 
 class NewPipeDownloaderImpl(
     proxy: Proxy?,
@@ -25,6 +26,8 @@ class NewPipeDownloaderImpl(
         OkHttpClient
             .Builder()
             .proxy(proxy)
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
             .build()
 
     @Throws(IOException::class, ReCaptchaException::class)

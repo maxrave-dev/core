@@ -2,6 +2,7 @@ package com.maxrave.kotlinytmusicscraper.extractor
 
 import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
+import com.maxrave.logger.Logger
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.downloader.Downloader
@@ -11,12 +12,8 @@ import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import java.io.IOException
 import java.net.Proxy
 
-internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
-    val itags = this.mapTo(HashSet()) { it.first }
-    val hasAudio = ITAG.AUDIO.any { it in itags }
-    val hasVideo = ITAG.VIDEO.any { it in itags }
-    return hasAudio && hasVideo
-}
+internal fun List<Pair<Int, String>>.hasPlayableAudio(): Boolean =
+    any { it.first in ITAG.AUDIO && it.second.isNotBlank() }
 
 private val streamHealthCheckClient: OkHttpClient by lazy {
     OkHttpClient
@@ -25,14 +22,19 @@ private val streamHealthCheckClient: OkHttpClient by lazy {
 }
 
 /**
- * Pick one random URL whose itag belongs to [ITAG.AUDIO] or [ITAG.VIDEO] and HEAD it. Returns true
- * only when the response code is in the 200..299 range. We only health-check those URLs because
- * they are the ones the player will actually use; lower-quality extras can stay unverified.
+ * Check a standard audio URL first. A video or Premium-only format must not decide whether
+ * the whole song can play. Only a definitive rejection warrants trying another decoder;
+ * a timeout or server error leaves validation to the player's actual media request.
  */
-internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
-    val required = ITAG.AUDIO + ITAG.VIDEO
-    val candidate = this.filter { it.first in required }.randomOrNull() ?: return false
-    return runCatching {
+internal fun List<Pair<Int, String>>.headCheckAudioStream(
+    videoId: String,
+    tier: String,
+): Boolean {
+    val audioPriority = listOf(ITAG.AUDIO_OPUS_MEDIUM, ITAG.AUDIO_OPUS_LOW, ITAG.AUDIO_OPUS_HIGH, ITAG.AUDIO_AAC_HIGH)
+    val candidate =
+        filter { it.first in ITAG.AUDIO && it.second.isNotBlank() }
+            .minByOrNull { audioPriority.indexOf(it.first) } ?: return false
+    return try {
         val request =
             okhttp3.Request
                 .Builder()
@@ -40,9 +42,22 @@ internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
                 .url(candidate.second)
                 .build()
         streamHealthCheckClient.newCall(request).execute().use { response ->
-            response.code in 200..299
+            val rejected = response.code in 400..499 && response.code !in setOf(405, 408, 429)
+            if (response.code !in 200..299) {
+                Logger.w(
+                    "Extractor",
+                    "PipePipe[$tier] audio HEAD for $videoId itag=${candidate.first}: HTTP ${response.code}, rejected=$rejected",
+                )
+            }
+            !rejected
         }
-    }.getOrDefault(false)
+    } catch (e: IOException) {
+        Logger.w(
+            "Extractor",
+            "PipePipe[$tier] audio HEAD inconclusive for $videoId itag=${candidate.first}: ${e.javaClass.simpleName}; trying playback",
+        )
+        true
+    }
 }
 
 class BraveNewPipeDownloaderImpl(
