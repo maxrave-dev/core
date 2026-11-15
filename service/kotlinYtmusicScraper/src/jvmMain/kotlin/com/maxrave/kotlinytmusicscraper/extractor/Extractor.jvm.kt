@@ -28,6 +28,8 @@ actual class Extractor {
 
     actual fun logIn(cookie: String?) {
         ServiceList.YouTube.tokens = cookie ?: ""
+        // The visionos player request is anonymous; TV requests carry the saved login session.
+        NewPipe.setYoutubePlayerClient(if (cookie.isNullOrEmpty()) "visionos" else "tv_samsung")
     }
 
     actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
