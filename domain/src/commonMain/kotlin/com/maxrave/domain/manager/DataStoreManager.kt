@@ -451,6 +451,14 @@ interface DataStoreManager {
 
     suspend fun setCrossfadeEnabled(enabled: Boolean)
 
+    /**
+     * When on, the player only pulls a whole track into its cache (the stall-prevention download)
+     * on unmetered networks. Off by default: full-track caching runs on any connection.
+     */
+    val fullTrackCacheWifiOnly: Flow<String>
+
+    suspend fun setFullTrackCacheWifiOnly(only: Boolean)
+
     val crossfadeDuration: Flow<Int>
 
     suspend fun setCrossfadeDuration(duration: Int)

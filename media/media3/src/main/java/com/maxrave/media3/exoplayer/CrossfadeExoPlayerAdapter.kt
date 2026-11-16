@@ -43,6 +43,7 @@ import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.audio.BiquadFilter
 import com.maxrave.media3.waveform.WaveformReader
+import com.maxrave.media3.cache.TrackCachePreloader
 import com.maxrave.media3.audio.ConvolutionReverbAudioProcessor
 import com.maxrave.media3.audio.CrossfadeFilterAudioProcessor
 import com.maxrave.media3.audio.EchoAudioProcessor
@@ -101,6 +102,7 @@ internal class CrossfadeExoPlayerAdapter(
     private val audioAttributes: AudioAttributes,
     private val streamRepository: StreamRepository,
     private val waveformReader: WaveformReader,
+    private val trackCachePreloader: TrackCachePreloader,
 ) : MediaPlayerInterface {
     // ========== Internal State Enum (same as GstreamerPlayerAdapter) ==========
 
@@ -1843,6 +1845,15 @@ internal class CrossfadeExoPlayerAdapter(
 
                     // Trigger precaching
                     triggerPrecachingInternal()
+
+                    // Prevention: pull the whole track into the player cache so a mid-song
+                    // network drop has nothing left to fetch. The preloader's watchdog keeps
+                    // retrying until the track is fully local, then caches the next one.
+                    val nextIndex = getNextMediaItemIndex()
+                    trackCachePreloader.onTrackStarted(
+                        mediaItem.mediaId,
+                        playlist.getOrNull(nextIndex)?.mediaId?.takeIf { nextIndex != localCurrentMediaItemIndex },
+                    )
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
                     Logger.e(TAG, "Load track error: ${e.message}", e)

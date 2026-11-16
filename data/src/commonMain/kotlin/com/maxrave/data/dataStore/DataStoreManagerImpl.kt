@@ -1455,6 +1455,25 @@ internal class DataStoreManagerImpl(
             preferences[CROSSFADE_ENABLED] ?: FALSE
         }
 
+    override val fullTrackCacheWifiOnly: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[FULL_TRACK_CACHE_WIFI_ONLY] ?: FALSE
+        }
+
+    override suspend fun setFullTrackCacheWifiOnly(only: Boolean) {
+        withContext(Dispatchers.IO) {
+            if (only) {
+                settingsDataStore.edit { settings ->
+                    settings[FULL_TRACK_CACHE_WIFI_ONLY] = TRUE
+                }
+            } else {
+                settingsDataStore.edit { settings ->
+                    settings[FULL_TRACK_CACHE_WIFI_ONLY] = FALSE
+                }
+            }
+        }
+    }
+
     override suspend fun setCrossfadeEnabled(enabled: Boolean) {
         withContext(Dispatchers.IO) {
             if (enabled) {
@@ -1907,6 +1926,7 @@ internal class DataStoreManagerImpl(
 
         val KILL_SERVICE_ON_EXIT = stringPreferencesKey("kill_service_on_exit")
         val CROSSFADE_ENABLED = stringPreferencesKey("crossfade_enabled")
+        val FULL_TRACK_CACHE_WIFI_ONLY = stringPreferencesKey("full_track_cache_wifi_only")
         val CROSSFADE_DURATION = intPreferencesKey("crossfade_duration")
         val CROSSFADE_DJ_MODE = stringPreferencesKey("crossfade_dj_mode")
         val CROSSFADE_SKIP_ALBUM = stringPreferencesKey("crossfade_skip_album")

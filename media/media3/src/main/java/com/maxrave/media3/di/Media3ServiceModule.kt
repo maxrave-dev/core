@@ -64,6 +64,7 @@ import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
 import com.maxrave.media3.cast.CastHandoffManager
 import com.maxrave.media3.waveform.WaveformReader
+import com.maxrave.media3.cache.TrackCachePreloader
 import com.maxrave.media3.cast.CastStreamResolver
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter
 import com.maxrave.media3.extension.isFullyCached
@@ -209,6 +210,28 @@ private val mediaServiceModule =
             )
         }
 
+        // Prevention for mid-song stalls: pulls the whole track into the player cache through the
+        // same resolving chain the player streams through, with a watchdog that keeps retrying
+        // until the track is fully local.
+        single<TrackCachePreloader>(createdAtStart = true) {
+            TrackCachePreloader(
+                context = androidContext(),
+                dataSourceFactory =
+                    provideResolvingDataSourceFactory(
+                        provideCacheDataSource(get(named(DOWNLOAD_CACHE)), get(named(PLAYER_CACHE)), androidContext(), provideProxy(get())),
+                        get(named(DOWNLOAD_CACHE)),
+                        get(named(PLAYER_CACHE)),
+                        get(),
+                        get(),
+                        get(named(SERVICE_SCOPE)),
+                    ),
+                playerCache = get(named(PLAYER_CACHE)),
+                streamRepository = get(),
+                dataStoreManager = get(),
+                coroutineScope = get(named(SERVICE_SCOPE)),
+            )
+        }
+
         single<MediaPlayerInterface>(createdAtStart = true) {
             CrossfadeExoPlayerAdapter(
                 context = androidContext(),
@@ -218,6 +241,7 @@ private val mediaServiceModule =
                 audioAttributes = get(),
                 streamRepository = get(),
                 waveformReader = get(),
+                trackCachePreloader = get(),
             )
         }
 

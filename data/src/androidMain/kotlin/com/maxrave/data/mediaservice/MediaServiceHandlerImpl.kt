@@ -120,6 +120,11 @@ import kotlin.math.pow
 
 private val TAG = "Media3ServiceHandlerImpl"
 
+// Stream error recovery (see onPlayerError): how many times a failed item is re-prepared before
+// the error is surfaced to the user, and the base delay between attempts (grows per attempt).
+private const val MAX_STREAM_RECOVERY_ATTEMPTS = 3
+private const val STREAM_RECOVERY_DELAY_MS = 2_000L
+
 internal class MediaServiceHandlerImpl(
     private val dataStoreManager: DataStoreManager,
     private val songRepository: SongRepository,
@@ -2769,6 +2774,11 @@ internal class MediaServiceHandlerImpl(
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         _controlState.value = _controlState.value.copy(isPlaying = isPlaying)
         if (isPlaying) {
+            // Playing again means any stream failure is over: the next failure on this item gets
+            // a full set of recovery attempts (see onPlayerError). A prepare that never reaches
+            // playing never lands here, so a dead connection still runs its attempts down.
+            streamRecoveryAttempts = 0
+            streamRecoveryJob?.cancel()
             startProgressUpdate()
             nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
         } else {
@@ -2904,29 +2914,89 @@ internal class MediaServiceHandlerImpl(
         Logger.d(TAG, "onTracksChanged: ${tracks.groups.size}")
     }
 
-    override fun onPlayerError(error: PlayerError) {
-        when (error.errorCode) {
-            PlayerConstants.ERROR_CODE_TIMEOUT -> {
-                Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
-                if (isAppInForeground()) {
-                    showToast(ToastType.PlayerError(error.errorCodeName))
-                } else {
-                    Logger.w("Player Error", "App is not in foreground, skipping toast")
-                }
-                player.pause()
-            }
+    // Automatic recovery from a failed stream. The player's data source resolves the stream URL
+    // lazily and already falls back to a fresh URL when the cached one is expired or answers 403 —
+    // but nothing ever gave it the chance: onPlayerError used to log, toast and pause, so a
+    // connection that dropped mid-song (or a URL that died between chunks) ended playback for
+    // good, and even pressing play could not resume, because the player stays in its error state
+    // until it is prepared again. For the network-shaped errors below, the handler now re-prepares
+    // the current item at the interrupted position instead, a bounded number of times per item;
+    // the error is surfaced (toast + pushPlayerError + pause, the old behaviour) only when the
+    // error is not one a fresh prepare can fix, or the attempts have run out.
+    private var streamRecoveryAttempts = 0
+    private var streamRecoveryMediaId: String? = null
+    private var streamRecoveryJob: Job? = null
 
-            else -> {
-                Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
-                pushPlayerError(error)
-                if (isAppInForeground()) {
-                    showToast(ToastType.PlayerError(error.errorCodeName))
-                } else {
-                    Logger.w("Player Error", "App is not in foreground, skipping toast")
-                }
-                player.pause()
-            }
+    override fun onPlayerError(error: PlayerError) {
+        Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
+        if (isRecoverableStreamError(error.errorCode) && tryScheduleStreamRecovery()) {
+            return
         }
+        // No recovery pending: surface the error exactly as before. The timeout branch
+        // historically skipped pushPlayerError; keep that distinction.
+        if (error.errorCode != PlayerConstants.ERROR_CODE_TIMEOUT) {
+            pushPlayerError(error)
+        }
+        if (isAppInForeground()) {
+            showToast(ToastType.PlayerError(error.errorCodeName))
+        } else {
+            Logger.w("Player Error", "App is not in foreground, skipping toast")
+        }
+        player.pause()
+    }
+
+    private fun isRecoverableStreamError(errorCode: Int): Boolean =
+        when (errorCode) {
+            // Media3 PlaybackException codes, passed through unchanged by the player adapters
+            // (only the timeout is remapped, to the same value). A fresh prepare re-runs the
+            // stream resolver, which replaces an expired or 403 URL, and a dropped connection
+            // is usually back by the time it runs. File and permission errors are deliberately
+            // absent: re-preparing cannot fix a missing or unreadable local file.
+            PlayerConstants.ERROR_CODE_TIMEOUT,
+            2001, // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
+            2002, // ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+            2004, // ERROR_CODE_IO_BAD_HTTP_STATUS
+            -> true
+
+            else -> false
+        }
+
+    /**
+     * Schedules one recovery attempt for the item that just failed and returns true when an
+     * attempt is now pending. The attempt re-seeks to the interrupted position and prepares the
+     * player again, restoring whether it was playing; if the user has moved to another item in
+     * the meantime it does nothing. Attempts are counted per item and capped; a return to
+     * playing resets the count (see onIsPlayingChanged).
+     */
+    private fun tryScheduleStreamRecovery(): Boolean {
+        val mediaItem = player.currentMediaItem ?: return false
+        if (streamRecoveryMediaId != mediaItem.mediaId) {
+            streamRecoveryMediaId = mediaItem.mediaId
+            streamRecoveryAttempts = 0
+        }
+        if (streamRecoveryAttempts >= MAX_STREAM_RECOVERY_ATTEMPTS) return false
+        streamRecoveryAttempts++
+        val attempt = streamRecoveryAttempts
+        val index = player.currentMediaItemIndex
+        val positionMs = player.currentPosition.coerceAtLeast(0)
+        val wasPlayWhenReady = player.playWhenReady
+        val mediaId = mediaItem.mediaId
+        streamRecoveryJob?.cancel()
+        streamRecoveryJob =
+            coroutineScope.launch {
+                delay(STREAM_RECOVERY_DELAY_MS * attempt)
+                // The queue may have moved on while waiting; recovering then would yank the
+                // user back to a song they already left.
+                if (player.currentMediaItem?.mediaId != mediaId) return@launch
+                Logger.d(
+                    "Player Error",
+                    "Recovering stream for $mediaId at ${positionMs}ms (attempt $attempt/$MAX_STREAM_RECOVERY_ATTEMPTS)",
+                )
+                player.seekTo(index, positionMs)
+                player.prepare()
+                player.playWhenReady = wasPlayWhenReady
+            }
+        return true
     }
 
     override fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {
