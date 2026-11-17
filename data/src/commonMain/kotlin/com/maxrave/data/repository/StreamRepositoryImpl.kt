@@ -168,12 +168,18 @@ internal class StreamRepositoryImpl(
                             ?: formatList.find { it.itag == ITAG.VIDEO_360P }
                             ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
                     val audioTwinItag = ITAG.highQualityTwinOf(itag)
+                    // The last resort is the BEST audio the response actually carries,
+                    // never an arbitrary entry. When the chosen itag and its high-quality
+                    // twin are both absent — a free account asking for a Premium quality
+                    // is served neither 774 nor 141 — the selection used to fall through
+                    // to the last format in the list, in practice one of the lowest
+                    // bitrate streams (~48-70 kbps), below even the Low setting.
                     val audioFormat =
-                        formatList.find { it.itag == itag } ?: if (audioTwinItag != null) {
-                            formatList.find { it.itag == audioTwinItag }
-                        } else {
-                            formatList.find { it.isAudio && it.url.isNullOrEmpty().not() }
-                        }
+                        formatList.find { it.itag == itag }
+                            ?: audioTwinItag?.let { twin -> formatList.find { it.itag == twin } }
+                            ?: formatList
+                                .filter { it.isAudio && it.url.isNullOrEmpty().not() }
+                                .maxByOrNull { it.bitrate }
                     var format =
                         if (isVideo) {
                             videoFormat
