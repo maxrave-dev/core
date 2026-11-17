@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.media.audiofx.AudioEffect
 import android.media.audiofx.LoudnessEnhancer
+import android.net.ConnectivityManager
+import android.net.Network
 import com.maxrave.common.ASC
 import com.maxrave.common.CUSTOM_ORDER
 import com.maxrave.common.Config.ALBUM_CLICK
@@ -156,6 +158,40 @@ internal class MediaServiceHandlerImpl(
      * and all three actuals for one dependency.
      */
     private val lastfmScrobbler = LastfmScrobbler(dataStoreManager)
+
+    // Resume-on-reconnect state (see resumePlaybackAfterReconnect, by the stream recovery
+    // below). Declared before init because init registers [networkCallback]; its methods only
+    // run long after construction, when every property they touch exists. Both flags are
+    // written from the connectivity thread and read from the player thread, hence volatile.
+    @Volatile
+    private var networkWasLost = false
+
+    @Volatile
+    private var resumeWhenNetworkReturns = false
+
+    private val networkCallback =
+        object : ConnectivityManager.NetworkCallback() {
+            override fun onLost(network: Network) {
+                networkWasLost = true
+                // Only an outage that interrupts wanted playback earns a resume. A paused
+                // player, an ended queue or an empty one is left exactly as the user left it.
+                if (player.playWhenReady &&
+                    player.currentMediaItem != null &&
+                    player.playbackState != PlayerConstants.STATE_ENDED
+                ) {
+                    resumeWhenNetworkReturns = true
+                }
+            }
+
+            override fun onAvailable(network: Network) {
+                if (!networkWasLost) return
+                networkWasLost = false
+                if (!resumeWhenNetworkReturns) return
+                resumeWhenNetworkReturns = false
+                coroutineScope.launch { resumePlaybackAfterReconnect() }
+            }
+        }
+
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
     override var pushPlayerError: (PlayerError) -> Unit = {}
@@ -346,6 +382,15 @@ internal class MediaServiceHandlerImpl(
     //
     init {
         player.addListener(this)
+        // Resume-on-reconnect (see networkCallback): registered for the handler's lifetime
+        // and removed again in release(). A failure here only loses the instant resume; the
+        // timed loader retries and stream recovery keep working as before.
+        try {
+            (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+                ?.registerDefaultNetworkCallback(networkCallback)
+        } catch (e: Exception) {
+            Logger.e(TAG, "Could not register network callback: ${e.message}")
+        }
         progressJob = Job()
         bufferedJob = Job()
         sleepTimerJob = Job()
@@ -2683,6 +2728,14 @@ internal class MediaServiceHandlerImpl(
             // Stop and release player
             player.removeListener(this)
 
+            // Stop listening for the connection coming back (see networkCallback)
+            try {
+                (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+                    ?.unregisterNetworkCallback(networkCallback)
+            } catch (e: Exception) {
+                Logger.e("ServiceHandler", "Error unregistering network callback ${e.message}")
+            }
+
             // Release audio effects
             try {
                 loudnessEnhancer?.enabled = false
@@ -2787,6 +2840,7 @@ internal class MediaServiceHandlerImpl(
             // playing never lands here, so a dead connection still runs its attempts down.
             streamRecoveryAttempts = 0
             streamRecoveryJob?.cancel()
+            resumeWhenNetworkReturns = false
             startProgressUpdate()
             nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
         } else {
@@ -2938,6 +2992,9 @@ internal class MediaServiceHandlerImpl(
     override fun onPlayerError(error: PlayerError) {
         Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
         if (isRecoverableStreamError(error.errorCode) && tryScheduleStreamRecovery()) {
+            // The timed attempts are now pending; if the connection itself comes back first,
+            // the network callback resumes at once instead of waiting them out.
+            resumeWhenNetworkReturns = true
             return
         }
         // No recovery pending: surface the error exactly as before. The timeout branch
@@ -3012,6 +3069,38 @@ internal class MediaServiceHandlerImpl(
                 player.playWhenReady = wasPlayWhenReady
             }
         return true
+    }
+
+    /**
+     * Resumes playback the moment the connection returns, instead of waiting out the retry
+     * timers. The loader policy (core media) and [tryScheduleStreamRecovery] both retry on a
+     * clock: after an outage the next attempt can still be seconds away when the connection
+     * is already back, and after a long outage every timed attempt may already be spent, so
+     * nothing is left to resume at all — on device, only a manual seek (which forces a fresh
+     * load) brought the track back. The system signals the reconnect itself, so this runs
+     * then: a player that still wants to play but sits in its error state, or buffering a
+     * load that is backing off, gets the same seek + prepare a manual seek performs, at
+     * once. Anything else — already playing, paused by the user, queue ended, item gone —
+     * is left untouched.
+     */
+    private fun resumePlaybackAfterReconnect() {
+        val mediaItem = player.currentMediaItem ?: return
+        if (!player.playWhenReady || player.isPlaying) return
+        val state = player.playbackState
+        if (state != PlayerConstants.STATE_IDLE && state != PlayerConstants.STATE_BUFFERING) return
+        // A reconnect is a fresh start for the timed recovery as well: attempts spent against
+        // a dead connection do not count against the working one.
+        streamRecoveryAttempts = 0
+        streamRecoveryJob?.cancel()
+        val index = player.currentMediaItemIndex
+        val positionMs = player.currentPosition.coerceAtLeast(0)
+        Logger.d(
+            "Player Error",
+            "Connection is back: resuming ${mediaItem.mediaId} at ${positionMs}ms",
+        )
+        player.seekTo(index, positionMs)
+        player.prepare()
+        player.playWhenReady = true
     }
 
     override fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {
