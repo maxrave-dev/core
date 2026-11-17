@@ -3035,10 +3035,11 @@ internal class MediaServiceHandlerImpl(
 
     /**
      * Schedules one recovery attempt for the item that just failed and returns true when an
-     * attempt is now pending. The attempt re-seeks to the interrupted position and prepares the
-     * player again, restoring whether it was playing; if the user has moved to another item in
-     * the meantime it does nothing. Attempts are counted per item and capped; a return to
-     * playing resets the count (see onIsPlayingChanged).
+     * attempt is now pending. The attempt restores whether the item was playing and then
+     * re-seeks to the interrupted position, which on the Android player is a full reload of
+     * the track at that position; if the user has moved to another item in the meantime it
+     * does nothing. Attempts are counted per item and capped; a return to playing resets
+     * the count (see onIsPlayingChanged).
      */
     private fun tryScheduleStreamRecovery(): Boolean {
         val mediaItem = player.currentMediaItem ?: return false
@@ -3064,9 +3065,16 @@ internal class MediaServiceHandlerImpl(
                     "Player Error",
                     "Recovering stream for $mediaId at ${positionMs}ms (attempt $attempt/$MAX_STREAM_RECOVERY_ATTEMPTS)",
                 )
-                player.seekTo(index, positionMs)
-                player.prepare()
+                // No prepare() after the seek, deliberately: on the Android player
+                // (CrossfadeExoPlayerAdapter) prepare() is not ExoPlayer's prepare — it
+                // reloads the current track from position 0 with shouldPlay = false and
+                // cancels the load this seek just started, so every recovery used to end
+                // with the track restarted and paused instead of resumed. The two-arg
+                // seekTo is that player's real reload: it rebuilds the track at the given
+                // position and auto-plays when playWhenReady is set, so the flag is
+                // restored first and the seek does the rest on its own.
                 player.playWhenReady = wasPlayWhenReady
+                player.seekTo(index, positionMs)
             }
         return true
     }
@@ -3079,7 +3087,7 @@ internal class MediaServiceHandlerImpl(
      * nothing is left to resume at all — on device, only a manual seek (which forces a fresh
      * load) brought the track back. The system signals the reconnect itself, so this runs
      * then: a player that still wants to play but sits in its error state, or buffering a
-     * load that is backing off, gets the same seek + prepare a manual seek performs, at
+     * load that is backing off, gets the same reload a manual seek performs, at
      * once. Anything else — already playing, paused by the user, queue ended, item gone —
      * is left untouched.
      */
@@ -3098,9 +3106,11 @@ internal class MediaServiceHandlerImpl(
             "Player Error",
             "Connection is back: resuming ${mediaItem.mediaId} at ${positionMs}ms",
         )
+        // Seek only, no prepare(): on the Android player the two-arg seekTo is the full
+        // reload (and playWhenReady is already set — it is a condition above), while
+        // prepare() would reload the track from 0 paused and cancel this load. See
+        // tryScheduleStreamRecovery for the full explanation.
         player.seekTo(index, positionMs)
-        player.prepare()
-        player.playWhenReady = true
     }
 
     override fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {
