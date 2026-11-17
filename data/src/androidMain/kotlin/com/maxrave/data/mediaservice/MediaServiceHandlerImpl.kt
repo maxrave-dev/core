@@ -121,9 +121,17 @@ import kotlin.math.pow
 private val TAG = "Media3ServiceHandlerImpl"
 
 // Stream error recovery (see onPlayerError): how many times a failed item is re-prepared before
-// the error is surfaced to the user, and the base delay between attempts (grows per attempt).
-private const val MAX_STREAM_RECOVERY_ATTEMPTS = 3
+// the error is surfaced to the user. The delay between attempts grows exponentially up to a cap
+// (see streamRecoveryDelayMs): a dropped connection can take tens of seconds to come back (the
+// user toggling airplane mode, a tunnel, a network switch), and the first version's 3 attempts
+// over ~12s ran out before the network returned in on-device testing, leaving the item paused
+// for good. Six attempts span about a minute instead.
+private const val MAX_STREAM_RECOVERY_ATTEMPTS = 6
 private const val STREAM_RECOVERY_DELAY_MS = 2_000L
+private const val MAX_STREAM_RECOVERY_DELAY_MS = 15_000L
+
+private fun streamRecoveryDelayMs(attempt: Int): Long =
+    minOf(STREAM_RECOVERY_DELAY_MS * (1L shl (attempt - 1)), MAX_STREAM_RECOVERY_DELAY_MS)
 
 internal class MediaServiceHandlerImpl(
     private val dataStoreManager: DataStoreManager,
@@ -2953,6 +2961,13 @@ internal class MediaServiceHandlerImpl(
             // is usually back by the time it runs. File and permission errors are deliberately
             // absent: re-preparing cannot fix a missing or unreadable local file.
             PlayerConstants.ERROR_CODE_TIMEOUT,
+            // ERROR_CODE_IO_UNSPECIFIED is the catch-all the data source reports when the
+            // connection drops before or during stream URL resolution — in on-device testing
+            // (airplane mode during a seek load) the failure surfaced with this code, missed
+            // the list and ended in the old pause-for-good behaviour. A re-prepare that cannot
+            // fix the underlying cause just spends the bounded attempts and then surfaces the
+            // error exactly as before, so including the catch-all is safe.
+            2000, // ERROR_CODE_IO_UNSPECIFIED
             2001, // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
             2002, // ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
             2004, // ERROR_CODE_IO_BAD_HTTP_STATUS
@@ -2984,7 +2999,7 @@ internal class MediaServiceHandlerImpl(
         streamRecoveryJob?.cancel()
         streamRecoveryJob =
             coroutineScope.launch {
-                delay(STREAM_RECOVERY_DELAY_MS * attempt)
+                delay(streamRecoveryDelayMs(attempt))
                 // The queue may have moved on while waiting; recovering then would yank the
                 // user back to a song they already left.
                 if (player.currentMediaItem?.mediaId != mediaId) return@launch
