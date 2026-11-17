@@ -1402,6 +1402,11 @@ interface DatabaseDao {
     @Query("DELETE FROM new_format WHERE videoId NOT IN (SELECT videoId FROM song)")
     suspend fun deleteStaleNewFormats(): Int
 
+    // Every stored stream format, library songs included — the quality-change sweep.
+    // Rows are re-created by the next resolve, so nothing but the stored URLs is lost.
+    @Query("DELETE FROM new_format")
+    suspend fun deleteAllNewFormats(): Int
+
     @Query("DELETE FROM lyrics WHERE videoId NOT IN (SELECT videoId FROM song)")
     suspend fun deleteStaleLyrics(): Int
 

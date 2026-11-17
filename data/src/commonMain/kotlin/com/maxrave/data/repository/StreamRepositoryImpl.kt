@@ -410,4 +410,11 @@ internal class StreamRepositoryImpl(
             }
         }
     }
+
+    override suspend fun invalidateAllFormats() {
+        withContext(Dispatchers.IO) {
+            val deleted = localDataSource.deleteAllNewFormats()
+            Logger.d("Stream", "Invalidated all stored formats ($deleted rows)")
+        }
+    }
 }

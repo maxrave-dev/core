@@ -54,6 +54,15 @@ interface StreamRepository {
     suspend fun invalidateFormat(videoId: String)
 
     /**
+     * Forget every stored stream format, so the next play of anything re-resolves its
+     * stream from scratch. Used when the audio-quality setting changes: a stored format
+     * still points at the stream resolved under the old quality, and the resolver serves
+     * it for as long as it has not expired. A default no-op keeps the other
+     * implementations (desktop, tests) compiling unchanged.
+     */
+    suspend fun invalidateAllFormats() {}
+
+    /**
      * Which extractor and cipher decoder produced this video's stream URLs, for the info sheet.
      *
      * Null until the video has actually been extracted in this run — it is not persisted, because it

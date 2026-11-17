@@ -12,6 +12,7 @@ import android.net.Network
 import com.maxrave.common.ASC
 import com.maxrave.common.CUSTOM_ORDER
 import com.maxrave.common.Config.ALBUM_CLICK
+import com.maxrave.common.Config.PLAYER_CACHE
 import com.maxrave.common.Config.PLAYLIST_CLICK
 import com.maxrave.common.Config.RADIO_CLICK
 import com.maxrave.common.Config.RECOVER_TRACK_QUEUE
@@ -69,6 +70,7 @@ import com.maxrave.domain.mediaservice.handler.ToastType
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.AnalyticsRepository
+import com.maxrave.domain.repository.CacheRepository
 import com.maxrave.domain.repository.DiscordRepository
 import com.maxrave.domain.repository.LocalPlaylistRepository
 import com.maxrave.domain.repository.SongRepository
@@ -148,6 +150,11 @@ internal class MediaServiceHandlerImpl(
     private val backgroundScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val context: Context = getKoin().get()
     override val player: MediaPlayerInterface = getKoin().get()
+
+    // Same getKoin() pattern as player/context above: the quality-change sweep below
+    // needs it, and threading it through createMediaServiceHandler would mean changing
+    // that expect signature and all three actuals for one dependency.
+    private val cacheRepository: CacheRepository = getKoin().get()
 
     @Volatile
     private var discordRPC: RichPresenceClient? = null
@@ -404,6 +411,28 @@ internal class MediaServiceHandlerImpl(
                 ?.registerDefaultNetworkCallback(networkCallback)
         } catch (e: Exception) {
             Logger.e(TAG, "Could not register network callback: ${e.message}")
+        }
+        // A new audio-quality choice has to reach songs that already played: their bytes
+        // sit in the player cache and their resolved stream — picked under the old
+        // quality — sits in the format table, and the resolver serves both before it
+        // ever re-resolves. Dropping both on a change makes the next play of anything
+        // fetch the newly chosen quality instead. The first emission is the stored
+        // value, not a change, so it only seeds the comparison.
+        backgroundScope.launch {
+            var lastQuality: String? = null
+            dataStoreManager.quality.distinctUntilChanged().collect { quality ->
+                val previous = lastQuality
+                lastQuality = quality
+                if (previous != null && previous != quality) {
+                    Logger.i(
+                        TAG,
+                        "Audio quality changed ($previous -> $quality): " +
+                            "clearing player cache and stored formats",
+                    )
+                    streamRepository.invalidateAllFormats()
+                    cacheRepository.clearCache(PLAYER_CACHE)
+                }
+            }
         }
         progressJob = Job()
         bufferedJob = Job()
