@@ -1202,7 +1202,17 @@ internal class MediaServiceHandlerImpl(
             }
 
             is PlayerEvent.UpdateProgress -> {
-                player.seekTo((player.duration * playerEvent.newProgress / 100).toLong())
+                val duration = player.duration
+                // While a track is still loading its duration is TIME_UNSET, and
+                // the percentage math on that sentinel overflows into a garbage
+                // position that can land past the end of the track and skip to
+                // the next one. Ignore the seek until the duration is real, and
+                // clamp the target into the track once it is.
+                if (duration > 0) {
+                    player.seekTo(
+                        (duration * playerEvent.newProgress / 100).toLong().coerceIn(0L, duration),
+                    )
+                }
             }
 
             PlayerEvent.Shuffle -> {

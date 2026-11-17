@@ -85,6 +85,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import org.koin.android.ext.koin.androidApplication
@@ -286,6 +287,9 @@ private val mediaServiceModule =
  */
 private const val STORED_URL_EXPIRY_MARGIN_SECONDS = 600L
 
+/** Longest a single stream resolution may take before the load fails into the retry path. */
+private const val STREAM_RESOLVE_TIMEOUT_MS = 20_000L
+
 @UnstableApi
 private fun provideResolvingDataSourceFactory(
     cacheDataSourceFactory: CacheDataSource.Factory,
@@ -355,65 +359,67 @@ private fun provideResolvingDataSourceFactory(
         var dataSpecReturn: DataSpec = dataSpec
         var resolved = false
         runBlocking(Dispatchers.IO) {
-            if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
-                val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                streamRepository.getNewFormat(id).lastOrNull()?.let {
-                    val videoUrl = it.videoUrl
-                    // Stored URLs are trusted until shortly before they expire instead of
-                    // being probed with a HEAD on every chunk: they only die early when
-                    // the client IP changes (the media service drops all stored formats
-                    // on a network switch for exactly that), and a URL that still turns
-                    // out dead fails the load with a 403, which the player adapter
-                    // already answers by dropping the stored format and reloading with
-                    // a fresh resolve.
-                    if (videoUrl != null && it.expiredTime > now().plusSeconds(STORED_URL_EXPIRY_MARGIN_SECONDS)) {
-                        Logger.d("Stream", videoUrl)
-                        Logger.d("Stream", "Video from format")
-                        dataSpecReturn = dataSpec.withUri(videoUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                        resolved = true
-                        return@runBlocking
+            withTimeoutOrNull(STREAM_RESOLVE_TIMEOUT_MS) {
+                if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
+                    val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                    streamRepository.getNewFormat(id).lastOrNull()?.let {
+                        val videoUrl = it.videoUrl
+                        // Stored URLs are trusted until shortly before they expire instead of
+                        // being probed with a HEAD on every chunk: they only die early when
+                        // the client IP changes (the media service drops all stored formats
+                        // on a network switch for exactly that), and a URL that still turns
+                        // out dead fails the load with a 403, which the player adapter
+                        // already answers by dropping the stored format and reloading with
+                        // a fresh resolve.
+                        if (videoUrl != null && it.expiredTime > now().plusSeconds(STORED_URL_EXPIRY_MARGIN_SECONDS)) {
+                            Logger.d("Stream", videoUrl)
+                            Logger.d("Stream", "Video from format")
+                            dataSpecReturn = dataSpec.withUri(videoUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                            resolved = true
+                            return@runBlocking
+                        }
                     }
+                    streamRepository
+                        .getStream(
+                            dataStoreManager,
+                            id,
+                            isDownloading = false,
+                            isVideo = true,
+                        ).lastOrNull()
+                        ?.let {
+                            Logger.d("Stream", it)
+                            Logger.d("Stream", "Video")
+                            dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                            resolved = true
+                        }
+                } else {
+                    streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
+                        val audioUrl = it.audioUrl
+                        // See the video branch above: no HEAD probe on stored URLs — trust
+                        // the stored expiry (with margin), invalidate on network switches,
+                        // and let the adapter's 403 handling re-resolve a dead URL.
+                        if (audioUrl != null && it.expiredTime > now().plusSeconds(STORED_URL_EXPIRY_MARGIN_SECONDS)) {
+                            Logger.d("Stream", audioUrl)
+                            Logger.d("Stream", "Audio from format")
+                            dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                            resolved = true
+                            return@runBlocking
+                        }
+                    }
+                    streamRepository
+                        .getStream(
+                            dataStoreManager,
+                            mediaId,
+                            isDownloading = false,
+                            isVideo = false,
+                        ).lastOrNull()
+                        ?.let {
+                            Logger.d("Stream", it)
+                            Logger.d("Stream", "Audio")
+                            dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                            resolved = true
+                        }
                 }
-                streamRepository
-                    .getStream(
-                        dataStoreManager,
-                        id,
-                        isDownloading = false,
-                        isVideo = true,
-                    ).lastOrNull()
-                    ?.let {
-                        Logger.d("Stream", it)
-                        Logger.d("Stream", "Video")
-                        dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                        resolved = true
-                    }
-            } else {
-                streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
-                    val audioUrl = it.audioUrl
-                    // See the video branch above: no HEAD probe on stored URLs — trust
-                    // the stored expiry (with margin), invalidate on network switches,
-                    // and let the adapter's 403 handling re-resolve a dead URL.
-                    if (audioUrl != null && it.expiredTime > now().plusSeconds(STORED_URL_EXPIRY_MARGIN_SECONDS)) {
-                        Logger.d("Stream", audioUrl)
-                        Logger.d("Stream", "Audio from format")
-                        dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                        resolved = true
-                        return@runBlocking
-                    }
-                }
-                streamRepository
-                    .getStream(
-                        dataStoreManager,
-                        mediaId,
-                        isDownloading = false,
-                        isVideo = false,
-                    ).lastOrNull()
-                    ?.let {
-                        Logger.d("Stream", it)
-                        Logger.d("Stream", "Audio")
-                        dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                        resolved = true
-                    }
             }
         }
         // getStream above is where a live broadcast is first recognised. Its HLS playlist URL must

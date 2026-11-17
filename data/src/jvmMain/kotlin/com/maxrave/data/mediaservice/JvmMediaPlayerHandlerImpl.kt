@@ -1211,7 +1211,15 @@ class JvmMediaPlayerHandlerImpl(
 
             is PlayerEvent.UpdateProgress -> {
                 resetPositionSmoothing()
-                player.seekTo((player.duration * playerEvent.newProgress / 100).toLong())
+                val duration = player.duration
+                // See the Android handler: never run the percentage math on a
+                // TIME_UNSET duration (it overflows into a garbage position that
+                // can skip past the end of the track); clamp the target as well.
+                if (duration > 0) {
+                    player.seekTo(
+                        (duration * playerEvent.newProgress / 100).toLong().coerceIn(0L, duration),
+                    )
+                }
                 if (player.isPlaying) {
                     nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
                 }

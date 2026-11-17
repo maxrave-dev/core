@@ -3391,7 +3391,17 @@ internal class CrossfadeExoPlayerAdapter(
     private fun PlaybackException.isRetryableSourceError(): Boolean =
         errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
             errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-            errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+            errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+            // Network failures get the same cure as a 403: stored stream URLs are
+            // bound to the client IP, so a connection that dies mid-load (timeout,
+            // reset, no route) often means the URL died early rather than the track
+            // being broken. Dropping the stored format and reloading re-resolves a
+            // fresh URL from the same position; retries stay bounded by
+            // maxRetryCount, and a device that is simply offline exhausts them and
+            // surfaces the error exactly as before.
+            errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+            errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
 
     private fun clearPrecacheExceptCurrentInternal() {
         Logger.d(TAG, "Clearing precache")
