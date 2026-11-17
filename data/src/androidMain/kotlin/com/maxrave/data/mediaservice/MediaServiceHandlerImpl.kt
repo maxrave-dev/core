@@ -188,7 +188,21 @@ internal class MediaServiceHandlerImpl(
                 networkWasLost = false
                 if (!resumeWhenNetworkReturns) return
                 resumeWhenNetworkReturns = false
-                coroutineScope.launch { resumePlaybackAfterReconnect() }
+                val mediaIdAtReconnect = player.currentMediaItem?.mediaId
+                coroutineScope.launch {
+                    if (!resumePlaybackAfterReconnect()) {
+                        // The system can announce the network before it is actually usable
+                        // (Wi-Fi associated, no route yet). One second chance, for the same
+                        // track only: if the user moved on or paused in the meantime, the
+                        // retry must not resurrect or disturb anything.
+                        delay(2_000)
+                        if (player.currentMediaItem?.mediaId == mediaIdAtReconnect &&
+                            player.playWhenReady
+                        ) {
+                            resumePlaybackAfterReconnect()
+                        }
+                    }
+                }
             }
         }
 
@@ -3090,12 +3104,27 @@ internal class MediaServiceHandlerImpl(
      * load that is backing off, gets the same reload a manual seek performs, at
      * once. Anything else — already playing, paused by the user, queue ended, item gone —
      * is left untouched.
+     *
+     * The stall case needs its own signal: for an outage shorter than the loader's retry
+     * window no error ever reaches this handler, and the Android player never leaves its
+     * playing state while stalled mid-track (its state machine has no mid-track buffering
+     * state), so checking isPlaying/playbackState alone declines exactly the outage this
+     * exists for — the reconnect is consumed and nothing resumes. [MediaPlayerInterface.isStalled]
+     * is that signal. Returns whether the reload was issued, so the caller can grant one
+     * second chance when the network was announced before it was usable.
      */
-    private fun resumePlaybackAfterReconnect() {
-        val mediaItem = player.currentMediaItem ?: return
-        if (!player.playWhenReady || player.isPlaying) return
+    private fun resumePlaybackAfterReconnect(): Boolean {
+        val mediaItem = player.currentMediaItem ?: return false
+        if (!player.playWhenReady) return false
         val state = player.playbackState
-        if (state != PlayerConstants.STATE_IDLE && state != PlayerConstants.STATE_BUFFERING) return
+        val stalled = player.isStalled
+        // Act in exactly the two situations a reconnect can fix:
+        //  - the player sits in its error/idle state after the loader gave up (state IDLE), or
+        //  - the player never errored at all: the loader is still retrying in the background
+        //    and the adapter still reports the track as playing/ready, but it is stalled
+        //    waiting for data (isStalled).
+        if (!stalled && state != PlayerConstants.STATE_IDLE && state != PlayerConstants.STATE_BUFFERING) return false
+        if (player.isPlaying && !stalled) return false
         // A reconnect is a fresh start for the timed recovery as well: attempts spent against
         // a dead connection do not count against the working one.
         streamRecoveryAttempts = 0
@@ -3104,13 +3133,14 @@ internal class MediaServiceHandlerImpl(
         val positionMs = player.currentPosition.coerceAtLeast(0)
         Logger.d(
             "Player Error",
-            "Connection is back: resuming ${mediaItem.mediaId} at ${positionMs}ms",
+            "Connection is back: resuming ${mediaItem.mediaId} at ${positionMs}ms (stalled=$stalled, state=$state)",
         )
         // Seek only, no prepare(): on the Android player the two-arg seekTo is the full
         // reload (and playWhenReady is already set — it is a condition above), while
         // prepare() would reload the track from 0 paused and cancel this load. See
         // tryScheduleStreamRecovery for the full explanation.
         player.seekTo(index, positionMs)
+        return true
     }
 
     override fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {

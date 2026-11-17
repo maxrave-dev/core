@@ -115,6 +115,17 @@ interface MediaPlayerInterface {
 
     // Playback state properties
     val isPlaying: Boolean
+
+    /**
+     * True while the player wants to play but is stalled waiting for data (a mid-track
+     * network stall). Distinct from [isPlaying]: a stalled player can still report itself
+     * as playing on backends whose state machine has no mid-track buffering state, so
+     * [isPlaying] alone cannot tell "playing" from "stuck". Default false on backends
+     * that cannot tell.
+     */
+    val isStalled: Boolean
+        get() = false
+
     val currentPosition: Long
     val duration: Long
     val bufferedPosition: Long

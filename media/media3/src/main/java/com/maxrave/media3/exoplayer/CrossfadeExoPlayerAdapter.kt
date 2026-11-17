@@ -1287,6 +1287,17 @@ internal class CrossfadeExoPlayerAdapter(
     override val isPlaying: Boolean
         get() = castRemotePlayer?.isPlaying ?: (internalState == InternalState.PLAYING)
 
+    // Read live, not from cachedIsLoading alone: that flag is only recalculated when the
+    // raw player's isLoading toggles, so it can still read false at the exact moment a
+    // stall is checked (entering a stall changes playbackState, not isLoading). The raw
+    // playbackState stays STATE_BUFFERING for the whole stall, including the loader's
+    // backoff gaps, so it is OR-ed in. While casting, the local player says nothing about
+    // the receiver, so the stall signal is false there.
+    override val isStalled: Boolean
+        get() = castRemotePlayer?.let { false }
+            ?: (cachedIsLoading ||
+                (currentPlayer?.playbackState == Player.STATE_BUFFERING && internalPlayWhenReady))
+
     override val currentPosition: Long
         get() = castRemotePlayer?.currentPosition ?: cachedPosition
 
@@ -1620,10 +1631,12 @@ internal class CrossfadeExoPlayerAdapter(
             )
         Logger.e(TAG, "Playback error: ${error.message}")
         listeners.forEach { it.onPlayerError(genericError) }
-        transitionToState(InternalState.ERROR)
+        // The listeners just received the real error above; the ERROR transition must not
+        // notify a second, synthetic one (see transitionToState).
+        transitionToState(InternalState.ERROR, notifyError = false)
     }
 
-    private fun transitionToState(newState: InternalState) {
+    private fun transitionToState(newState: InternalState, notifyError: Boolean = true) {
         if (internalState == newState) {
             Logger.d(TAG, "State transition ignored: already in $newState")
             return
@@ -1682,14 +1695,20 @@ internal class CrossfadeExoPlayerAdapter(
             InternalState.ERROR -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_IDLE) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
-                listeners.forEach {
-                    it.onPlayerError(
-                        PlayerError(
-                            errorCode = 403,
-                            errorCodeName = "ERROR_UNKNOWN",
-                            message = "Can not extract playable URL or playback error",
-                        ),
-                    )
+                // Only for entries into ERROR that did not already deliver an error:
+                // propagatePlayerError passes notifyError = false because it notified the
+                // real error itself — without that, every recoverable failure also surfaced
+                // as this synthetic 403 (toast + error report) while recovery was pending.
+                if (notifyError) {
+                    listeners.forEach {
+                        it.onPlayerError(
+                            PlayerError(
+                                errorCode = 403,
+                                errorCodeName = "ERROR_UNKNOWN",
+                                message = "Can not extract playable URL or playback error",
+                            ),
+                        )
+                    }
                 }
             }
         }
