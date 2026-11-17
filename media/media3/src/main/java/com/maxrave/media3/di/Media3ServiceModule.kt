@@ -376,7 +376,7 @@ private fun provideResolvingDataSourceFactory(
                             Logger.d("Stream", "Video from format")
                             dataSpecReturn = dataSpec.withUri(videoUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                             resolved = true
-                            return@runBlocking
+                            return@withTimeoutOrNull
                         }
                     }
                     streamRepository
@@ -403,7 +403,7 @@ private fun provideResolvingDataSourceFactory(
                             Logger.d("Stream", "Audio from format")
                             dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                             resolved = true
-                            return@runBlocking
+                            return@withTimeoutOrNull
                         }
                     }
                     streamRepository
