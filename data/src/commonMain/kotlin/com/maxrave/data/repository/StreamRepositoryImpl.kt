@@ -21,18 +21,23 @@ import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import com.maxrave.logger.Logger
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal class StreamRepositoryImpl(
     private val localDataSource: LocalDataSource,
     private val youTube: YouTube,
 ) : StreamRepository {
+    // For work a resolve starts but playback must not wait for (Tidal metadata).
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     override suspend fun insertNewFormat(newFormat: NewFormatEntity) =
         withContext(Dispatchers.IO) {
             localDataSource.insertNewFormat(newFormat)
@@ -205,37 +210,6 @@ internal class StreamRepositoryImpl(
                             ", expires in ${response.streamingData?.expiresInSeconds}s",
                     )
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
-                    // AutoMix metadata from Tidal official API
-                    var tidalBpm: Int? = null
-                    var tidalMusicKey: String? = null
-                    var tidalKeyScale: String? = null
-                    if (!isVideo && durationSecond != null && data.third == MediaType.Song) {
-                        val title = response.videoDetails?.title ?: ""
-                        val author = response.videoDetails?.author ?: ""
-                        val q =
-                            "$title $author"
-                                .replace(
-                                    Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
-                                    " ",
-                                ).replace(
-                                    Regex("( và | & | и | e | und |, |和| dan)"),
-                                    " ",
-                                ).replace("  ", " ")
-                                .replace(Regex("([()])"), "")
-                                .replace(".", " ")
-                                .replace("  ", " ")
-                        Logger.d("Stream", "Search Tidal metadata for: $q")
-                        youTube
-                            .searchTidalMetadata(q, durationSecond)
-                            .onSuccess { metadata ->
-                                Logger.d("Stream", "Tidal metadata: $metadata")
-                                tidalBpm = metadata.bpm
-                                tidalMusicKey = metadata.musicKey
-                                tidalKeyScale = metadata.keyScale
-                            }.onFailure {
-                                Logger.e("Stream", "Tidal metadata error: ${it.message}", it)
-                            }
-                    }
                     insertNewFormat(
                         NewFormatEntity(
                             videoId = if (VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
@@ -280,11 +254,25 @@ internal class StreamRepositoryImpl(
                             expiredTime = now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
                             audioUrl = if (muxed) response.streamingData?.hlsManifestUrl else format?.url,
                             videoUrl = if (muxed) response.streamingData?.hlsManifestUrl else videoFormat?.url,
-                            bpm = tidalBpm,
-                            musicKey = tidalMusicKey,
-                            keyScale = tidalKeyScale,
+                            bpm = null,
+                            musicKey = null,
+                            keyScale = null,
                         ),
                     )
+                    // AutoMix metadata from the Tidal official API (BPM/key) is fetched
+                    // only after the format is stored, in the background: it used to be
+                    // awaited inline here, so every fresh resolve paid a Tidal search —
+                    // plus an OAuth fetch on the first song of a run — before the stream
+                    // URL could be emitted and the player could start, for data nothing
+                    // in playback itself needs.
+                    if (!isVideo && durationSecond != null && data.third == MediaType.Song) {
+                        fetchTidalMetadataAsync(
+                            videoId = videoId,
+                            title = response.videoDetails?.title ?: "",
+                            author = response.videoDetails?.author ?: "",
+                            durationSecond = durationSecond,
+                        )
+                    }
                     if (data.first != null) {
                         emit(
                             if (muxed) {
@@ -421,6 +409,50 @@ internal class StreamRepositoryImpl(
         withContext(Dispatchers.IO) {
             val deleted = localDataSource.deleteAllNewFormats()
             Logger.d("Stream", "Invalidated all stored formats ($deleted rows)")
+        }
+    }
+
+    /**
+     * The Tidal BPM/key lookup for AutoMix, run in the background after a resolve:
+     * searches Tidal and patches the stored format row once the answer arrives. A miss
+     * or a failure just leaves the fields empty, exactly like a failed inline search did.
+     */
+    private fun fetchTidalMetadataAsync(
+        videoId: String,
+        title: String,
+        author: String,
+        durationSecond: Int,
+    ) {
+        backgroundScope.launch {
+            val q =
+                "$title $author"
+                    .replace(
+                        Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
+                        " ",
+                    ).replace(
+                        Regex("( và | & | и | e | und |, |和| dan)"),
+                        " ",
+                    ).replace("  ", " ")
+                    .replace(Regex("([()])"), "")
+                    .replace(".", " ")
+                    .replace("  ", " ")
+            Logger.d("Stream", "Search Tidal metadata for: $q")
+            youTube
+                .searchTidalMetadata(q, durationSecond)
+                .onSuccess { metadata ->
+                    Logger.d("Stream", "Tidal metadata: $metadata")
+                    localDataSource.getNewFormat(videoId)?.let { stored ->
+                        localDataSource.updateNewFormat(
+                            stored.copy(
+                                bpm = metadata.bpm,
+                                musicKey = metadata.musicKey,
+                                keyScale = metadata.keyScale,
+                            ),
+                        )
+                    }
+                }.onFailure {
+                    Logger.e("Stream", "Tidal metadata error: ${it.message}", it)
+                }
         }
     }
 }
