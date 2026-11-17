@@ -193,10 +193,18 @@ internal class MediaServiceHandlerImpl(
             override fun onAvailable(network: Network) {
                 if (!networkWasLost) return
                 networkWasLost = false
-                if (!resumeWhenNetworkReturns) return
+                val shouldResume = resumeWhenNetworkReturns
                 resumeWhenNetworkReturns = false
                 val mediaIdAtReconnect = player.currentMediaItem?.mediaId
                 coroutineScope.launch {
+                    // Stored stream URLs are bound to the IP of the network that
+                    // resolved them, so after a switch they are dead even inside
+                    // their expiry window — and the playback resolver now trusts
+                    // stored URLs instead of probing them. Drop them all first:
+                    // the resume below (and every later play) then resolves fresh
+                    // on the new network instead of finding out one 403 at a time.
+                    streamRepository.invalidateAllFormats()
+                    if (!shouldResume) return@launch
                     if (!resumePlaybackAfterReconnect()) {
                         // The system can announce the network before it is actually usable
                         // (Wi-Fi associated, no route yet). One second chance, for the same
