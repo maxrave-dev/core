@@ -130,8 +130,12 @@ internal class StreamRepositoryImpl(
                     // The fast path deciphers only the formats the chains below can pick, so
                     // it is asked for with the very itags those chains will use — and never
                     // for a muxed resolve, whose manifest formats only an extraction carries.
-                    fastAudioItag = if (muxed) null else itag,
-                    fastVideoItag = if (muxed) null else videoItag,
+                    // Fast path DISABLED (2026-11-18): on its first device build every fresh
+                    // resolve ended in a dead player, so resolves run the full extraction
+                    // until the fast attempt is diagnosed. The plumbing stays; re-enable by
+                    // restoring the two lines below to `if (muxed) null else itag/videoItag`.
+                    fastAudioItag = null,
+                    fastVideoItag = null,
                     fastIsVideo = isVideo,
                 )
                 .onSuccess { data ->

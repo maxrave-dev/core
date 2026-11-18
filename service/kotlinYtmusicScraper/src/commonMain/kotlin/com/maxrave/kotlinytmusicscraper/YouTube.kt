@@ -1979,15 +1979,22 @@ class YouTube {
 
             var response: PlayerResponse? = null
             if (fastRequested) {
+                // The fast attempt must never take the resolve down with it: an exception
+                // inside it is just another fast failure, and the extraction below runs.
                 val attempt =
-                    fastPlayerResponse(
-                        videoId,
-                        tempRes,
-                        preferredAudioLanguage,
-                        requireNotNull(fastAudioItag),
-                        requireNotNull(fastVideoItag),
-                        fastIsVideo,
-                    )
+                    runCatching {
+                        fastPlayerResponse(
+                            videoId,
+                            tempRes,
+                            preferredAudioLanguage,
+                            requireNotNull(fastAudioItag),
+                            requireNotNull(fastVideoItag),
+                            fastIsVideo,
+                        )
+                    }.getOrElse { error ->
+                        Logger.w(TAG, "YouTube Fast path threw for $videoId (${error.message}); extracting in full")
+                        FastAttempt(null, "exception")
+                    }
                 if (attempt.response != null) {
                     response = attempt.response
                     fastMark = " fast=ok"
