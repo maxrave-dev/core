@@ -1864,6 +1864,7 @@ class YouTube {
         fastAudioItag: Int? = null,
         fastVideoItag: Int? = null,
         fastIsVideo: Boolean = false,
+        fastShadow: Boolean = false,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
             val cpn =
@@ -1925,7 +1926,7 @@ class YouTube {
             val fastRequested = fastAudioItag != null && fastVideoItag != null
             var fastMark = ""
             val streamsDeferred: Deferred<List<Pair<Int, String>>>? =
-                if (fastRequested) null else startExtraction()
+                if (fastRequested && !fastShadow) null else startExtraction()
             var altClientTried = false
             var tempRes: PlayerResponse =
                 try {
@@ -1978,7 +1979,7 @@ class YouTube {
             }
 
             var response: PlayerResponse? = null
-            if (fastRequested) {
+            if (fastRequested && !fastShadow) {
                 // The fast attempt must never take the resolve down with it: an exception
                 // inside it is just another fast failure, and the extraction below runs.
                 val attempt =
@@ -2035,6 +2036,56 @@ class YouTube {
                             )
                     }
                 }
+            }
+            if (fastRequested && fastShadow && response != null) {
+                // Shadow diagnosis: the track is already resolved the full way above and
+                // plays from it; the fast attempt runs only to be compared against that
+                // result, and the verdict is recorded where the track's info sheet shows
+                // its source. match = the fast path produced the very URL the pairing
+                // produced; diff = it produced a different one; threw = it raised;
+                // empty = it produced nothing.
+                val verdict =
+                    try {
+                        val attempt =
+                            fastPlayerResponse(
+                                videoId,
+                                tempRes,
+                                preferredAudioLanguage,
+                                requireNotNull(fastAudioItag),
+                                requireNotNull(fastVideoItag),
+                                fastIsVideo,
+                            )
+                        val fastResponse = attempt.response
+                        if (fastResponse == null) {
+                            "empty"
+                        } else {
+                            val fastFormats =
+                                (fastResponse.streamingData?.formats ?: emptyList()) +
+                                    (fastResponse.streamingData?.adaptiveFormats ?: emptyList())
+                            val fastWinner =
+                                fastFormats.firstOrNull { format ->
+                                    !format.url.isNullOrEmpty() &&
+                                        (if (fastIsVideo) !format.isAudio else format.isAudio)
+                                }
+                            if (fastWinner == null) {
+                                "empty"
+                            } else {
+                                val pairedFormats =
+                                    (response.streamingData?.formats ?: emptyList()) +
+                                        (response.streamingData?.adaptiveFormats ?: emptyList())
+                                val pairedUrl =
+                                    pairedFormats.firstOrNull { it.itag == fastWinner.itag }?.url
+                                if (pairedUrl != null && pairedUrl == fastWinner.url) "match" else "diff"
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        "threw"
+                    }
+                fastMark = " shadow=$verdict"
+                ExtractSource.record(videoId, "Shadow:$verdict")
+                Logger.d(TAG, "YouTube Fast shadow for $videoId: $verdict")
             }
             if (response != null) {
                 decodedSigResponse = response
