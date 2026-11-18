@@ -33,7 +33,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -421,35 +420,36 @@ internal class LyricsCanvasRepositoryImpl(
                     spotifyClientToken = dataStoreManager.spotifyClientToken.first()
                     Logger.d("Lyrics", "Spotify tokens reused")
                 } else if (dataStoreManager.spdc.first().isNotEmpty()) {
-                    runBlocking {
-                        spotify
-                            .getClientToken()
-                            .onSuccess {
-                                Logger.d("Lyrics", "Spotify client token refreshed")
-                                dataStoreManager.setSpotifyClientTokenExpires(
-                                    (it.grantedToken.expiresAfterSeconds * 1000L) + Clock.System.now().toEpochMilliseconds(),
-                                )
-                                dataStoreManager.setSpotifyClientToken(it.grantedToken.token)
-                                spotifyClientToken = it.grantedToken.token
-                            }.onFailure {
-                                it.printStackTrace()
-                                emit(Resource.Error<Lyrics>("Not found"))
-                            }
-                    }
-                    runBlocking {
-                        spotify
-                            .getPersonalTokenWithTotp(dataStoreManager.spdc.first())
-                            .onSuccess {
-                                spotifyPersonalToken = it.accessToken
-                                dataStoreManager.setSpotifyPersonalToken(spotifyPersonalToken)
-                                dataStoreManager.setSpotifyPersonalTokenExpires(
-                                    it.accessTokenExpirationTimestampMs,
-                                )
-                            }.onFailure {
-                                it.printStackTrace()
-                                emit(Resource.Error<Lyrics>("Not found"))
-                            }
-                    }
+                    // No runBlocking here: the flow builder is already a suspend context,
+                    // so the token calls run inline like every other suspend call in this
+                    // flow. Blocking the collecting thread froze it for the whole network
+                    // round-trip, and the emit()s inside ran from the blocking coroutine
+                    // instead of the flow's own context.
+                    spotify
+                        .getClientToken()
+                        .onSuccess {
+                            Logger.d("Lyrics", "Spotify client token refreshed")
+                            dataStoreManager.setSpotifyClientTokenExpires(
+                                (it.grantedToken.expiresAfterSeconds * 1000L) + Clock.System.now().toEpochMilliseconds(),
+                            )
+                            dataStoreManager.setSpotifyClientToken(it.grantedToken.token)
+                            spotifyClientToken = it.grantedToken.token
+                        }.onFailure {
+                            it.printStackTrace()
+                            emit(Resource.Error<Lyrics>("Not found"))
+                        }
+                    spotify
+                        .getPersonalTokenWithTotp(dataStoreManager.spdc.first())
+                        .onSuccess {
+                            spotifyPersonalToken = it.accessToken
+                            dataStoreManager.setSpotifyPersonalToken(spotifyPersonalToken)
+                            dataStoreManager.setSpotifyPersonalTokenExpires(
+                                it.accessTokenExpirationTimestampMs,
+                            )
+                        }.onFailure {
+                            it.printStackTrace()
+                            emit(Resource.Error<Lyrics>("Not found"))
+                        }
                 }
                 if (spotifyPersonalToken.isNotEmpty() && spotifyClientToken.isNotEmpty()) {
                     val authToken = spotifyPersonalToken

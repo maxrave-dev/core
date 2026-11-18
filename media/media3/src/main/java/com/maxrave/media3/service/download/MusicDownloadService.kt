@@ -37,6 +37,16 @@ internal class MusicDownloadService :
 
     override fun getScheduler(): Scheduler = PlatformScheduler(this, JOB_ID)
 
+    override fun onTimeout(startId: Int) {
+        // A dataSync foreground service gets this when it outlives the system's
+        // runtime budget (API 34+). The service must stop itself promptly; left
+        // unanswered, the system stops it ungracefully. Queued downloads live in
+        // the DownloadManager's database and resume on the next start.
+        Logger.w("Download", "Download service timed out (startId=$startId); stopping")
+        super.onTimeout(startId)
+        stopSelf()
+    }
+
     override fun getForegroundNotification(
         downloads: MutableList<Download>,
         notMetRequirements: Int,

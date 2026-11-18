@@ -6,6 +6,8 @@ import com.maxrave.logger.Logger
 import io.ktor.client.call.body
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.simpmusic.lyrics.am.AMAlbumResource
 import org.simpmusic.lyrics.am.AMSongWithAlbum
 import org.simpmusic.lyrics.am.parseAMHlsVariants
@@ -35,6 +37,12 @@ class SimpMusicLyricsClient {
 
     private val hmacService = Hmac("HmacSHA256", "simpmusic-lyrics")
     private val lyricsService = SimpMusicLyrics()
+
+    // Guards the shared insert/rate-limit state below: this client is shared, and the
+    // check-then-set in the insert calls (and the flag writes in bodyOrThrow) raced
+    // whenever two calls overlapped.
+    private val stateMutex = Mutex()
+
     private var insertingLyrics: Pair<String?, Boolean> = (null to false)
     private val isInsertingLyrics: Boolean
         get() = insertingLyrics.second
@@ -63,13 +71,15 @@ class SimpMusicLyricsClient {
 
     suspend fun insertLyrics(lyricsBody: LyricsBody): Result<LyricsResponse> =
         runCatching {
-            if (tooManyRequest) {
-                throw IllegalStateException("Too many requests, please wait before trying again.")
+            stateMutex.withLock {
+                if (tooManyRequest) {
+                    throw IllegalStateException("Too many requests, please wait before trying again.")
+                }
+                if (isInsertingLyrics && insertingLyrics.first == lyricsBody.videoId) {
+                    throw IllegalStateException("Already inserting lyrics, please wait until the current operation is complete.")
+                }
+                insertingLyrics = lyricsBody.videoId to true
             }
-            if (isInsertingLyrics && insertingLyrics.first == lyricsBody.videoId) {
-                throw IllegalStateException("Already inserting lyrics, please wait until the current operation is complete.")
-            }
-            insertingLyrics = lyricsBody.videoId to true
             val hmacTimestamp =
                 hmacService.getMacTimestampPair(
                     HmacUri.BASE_HMAC_URI,
@@ -82,10 +92,12 @@ class SimpMusicLyricsClient {
             if (translatedLyricsBody.language.length != 2) {
                 throw IllegalArgumentException("Language code must be a 2-letter code")
             }
-            if (isInsertingTranslatedLyrics && insertingTranslatedLyrics.first == translatedLyricsBody.videoId) {
-                throw IllegalStateException("Already inserting translated lyrics, please wait until the current operation is complete.")
+            stateMutex.withLock {
+                if (isInsertingTranslatedLyrics && insertingTranslatedLyrics.first == translatedLyricsBody.videoId) {
+                    throw IllegalStateException("Already inserting translated lyrics, please wait until the current operation is complete.")
+                }
+                insertingTranslatedLyrics = translatedLyricsBody.videoId to true
             }
-            insertingTranslatedLyrics = translatedLyricsBody.videoId to true
             val hmacTimestamp =
                 hmacService.getMacTimestampPair(
                     HmacUri.TRANSLATED_HMAC_URI,
@@ -275,10 +287,10 @@ class SimpMusicLyricsClient {
 
     private suspend inline fun <reified T> HttpResponse.bodyOrThrow(): T {
         if (this.status.value == 429) {
-            tooManyRequest = true
+            stateMutex.withLock { tooManyRequest = true }
             Logger.e(TAG, "Too many requests: ${this.status.value}")
         } else {
-            tooManyRequest = false
+            stateMutex.withLock { tooManyRequest = false }
         }
         try {
             val data = body<BaseResponse<T>>()

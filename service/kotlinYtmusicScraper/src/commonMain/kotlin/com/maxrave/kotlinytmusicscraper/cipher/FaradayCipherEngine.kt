@@ -98,12 +98,27 @@ class FaradayCipherEngine(
         nParameters: List<String>,
     ): DecodeResult = operationMutex.withLock { decodeLocked(playerId, signatures, nParameters) }
 
+    /**
+     * Pay the one-time setup ahead of the first [decode]: the current player id, the remote
+     * table, the player script download and the QuickJS solver build. Everything lands in
+     * the same caches [decode] reads, so a warmed engine makes the first real decode cheap.
+     * A failed warm-up changes nothing — every step already answers null on failure, and the
+     * first decode then simply pays the cost itself.
+     */
+    suspend fun warmUp() {
+        operationMutex.withLock {
+            val info = playerInfoLocked() ?: return@withLock
+            solverFor(info.playerId)
+        }
+    }
+
     private suspend fun decodeLocked(
         playerId: String,
         signatures: List<String>,
         nParameters: List<String>,
     ): DecodeResult {
         if (signatures.isEmpty() && nParameters.isEmpty()) return DecodeResult(emptyMap(), emptyMap())
+        val startedAtMs = Clock.System.now().toEpochMilliseconds()
         val solver = solverFor(playerId) ?: return DecodeResult(emptyMap(), emptyMap())
         return DecodeResult(
             signatures =
@@ -118,7 +133,18 @@ class FaradayCipherEngine(
                     .mapNotNull { challenge ->
                         solver.solveN(challenge)?.let { challenge to it }
                     }.toMap(),
-        )
+        ).also {
+            logger.d(
+                TAG,
+                "decode batch in ${Clock.System.now().toEpochMilliseconds() - startedAtMs}ms",
+                details =
+                    mapOf(
+                        "player" to playerId,
+                        "signatures" to signatures.size.toString(),
+                        "nParameters" to nParameters.size.toString(),
+                    ),
+            )
+        }
     }
 
     /**

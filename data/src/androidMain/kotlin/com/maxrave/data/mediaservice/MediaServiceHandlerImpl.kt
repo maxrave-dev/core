@@ -9,6 +9,7 @@ import android.media.audiofx.AudioEffect
 import android.media.audiofx.LoudnessEnhancer
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.SystemClock
 import com.maxrave.common.ASC
 import com.maxrave.common.CUSTOM_ORDER
 import com.maxrave.common.Config.ALBUM_CLICK
@@ -134,6 +135,11 @@ private const val MAX_STREAM_RECOVERY_ATTEMPTS = 6
 private const val STREAM_RECOVERY_DELAY_MS = 2_000L
 private const val MAX_STREAM_RECOVERY_DELAY_MS = 15_000L
 
+// Attempt on which a track that is fully in the player cache gets that cached copy dropped:
+// it never needed the network to play, so failing this many times in a row points at the
+// cached bytes themselves rather than at the connection (see tryScheduleStreamRecovery).
+private const val CACHE_SELF_HEAL_ATTEMPT = 3
+
 private fun streamRecoveryDelayMs(attempt: Int): Long =
     minOf(STREAM_RECOVERY_DELAY_MS * (1L shl (attempt - 1)), MAX_STREAM_RECOVERY_DELAY_MS)
 
@@ -175,6 +181,16 @@ internal class MediaServiceHandlerImpl(
 
     @Volatile
     private var resumeWhenNetworkReturns = false
+
+    // PlayTiming (read only when debug logging is on): when the current track was asked
+    // for, so the player callbacks below can report how long prepare and the wait for the
+    // first sound took. Cleared once the playing line is out, so a resume does not
+    // re-report the same track.
+    @Volatile
+    private var playTimingStartMs: Long = 0L
+
+    @Volatile
+    private var playTimingVideoId: String? = null
 
     private val networkCallback =
         object : ConnectivityManager.NetworkCallback() {
@@ -419,6 +435,19 @@ internal class MediaServiceHandlerImpl(
                 ?.registerDefaultNetworkCallback(networkCallback)
         } catch (e: Exception) {
             Logger.e(TAG, "Could not register network callback: ${e.message}")
+        }
+        // Pay the stream decipher's one-time setup (current player id, remote table,
+        // player script, QuickJS solver) now, in the background, instead of inside the
+        // first track's resolution. Silent on purpose: a failed warm-up only means the
+        // first play pays the cost itself, exactly as before.
+        backgroundScope.launch {
+            try {
+                streamRepository.warmUpDecoder()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logger.d(TAG, "Decoder warm-up failed: ${e.message}")
+            }
         }
         // A new audio-quality choice has to reach songs that already played: their bytes
         // sit in the player cache and their resolved stream — picked under the old
@@ -2458,6 +2487,10 @@ internal class MediaServiceHandlerImpl(
             showToast(ToastType.ExplicitContent)
             return
         }
+        if (Logger.debugLoggingEnabled) {
+            playTimingStartMs = SystemClock.elapsedRealtime()
+            playTimingVideoId = track.videoId
+        }
         songRepository.insertSong(track.toSongEntity()).singleOrNull()?.let {
             Logger.d(TAG, "Inserted song: ${track.title}")
         }
@@ -2881,6 +2914,13 @@ internal class MediaServiceHandlerImpl(
 
             PlayerConstants.STATE_READY -> {
                 Logger.d(TAG, "onPlaybackStateChanged: Ready")
+                val timingVideoId = playTimingVideoId
+                if (Logger.debugLoggingEnabled && timingVideoId != null) {
+                    Logger.d(
+                        TAG,
+                        "PlayTiming id=$timingVideoId ready=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
+                    )
+                }
                 _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
             }
 
@@ -2902,6 +2942,15 @@ internal class MediaServiceHandlerImpl(
             streamRecoveryAttempts = 0
             streamRecoveryJob?.cancel()
             resumeWhenNetworkReturns = false
+            audioTrackRecoveryMediaId = null
+            val timingVideoId = playTimingVideoId
+            if (Logger.debugLoggingEnabled && timingVideoId != null) {
+                Logger.d(
+                    TAG,
+                    "PlayTiming id=$timingVideoId playing=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
+                )
+                playTimingVideoId = null
+            }
             startProgressUpdate()
             nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
         } else {
@@ -3050,8 +3099,25 @@ internal class MediaServiceHandlerImpl(
     private var streamRecoveryMediaId: String? = null
     private var streamRecoveryJob: Job? = null
 
+    /** Item that already spent its single AudioTrack recovery attempt (see onPlayerError). */
+    private var audioTrackRecoveryMediaId: String? = null
+
     override fun onPlayerError(error: PlayerError) {
         Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
+        // An AudioTrack failure (Media3's 5xxx family: init/write) is not a stream
+        // problem — the route or the track died under a healthy player — but one
+        // reload is the only recovery that exists for it, so it gets exactly one
+        // attempt through the same path, once per failure episode (the guard is
+        // reset when playback reaches playing again, like the stream attempts).
+        if (isAudioTrackError(error.errorCode)) {
+            val mediaId = player.currentMediaItem?.mediaId
+            if (mediaId != null && audioTrackRecoveryMediaId != mediaId) {
+                audioTrackRecoveryMediaId = mediaId
+                if (tryScheduleStreamRecovery()) {
+                    return
+                }
+            }
+        }
         if (isRecoverableStreamError(error.errorCode) && tryScheduleStreamRecovery()) {
             // The timed attempts are now pending; if the connection itself comes back first,
             // the network callback resumes at once instead of waiting them out.
@@ -3076,8 +3142,8 @@ internal class MediaServiceHandlerImpl(
             // Media3 PlaybackException codes, passed through unchanged by the player adapters
             // (only the timeout is remapped, to the same value). A fresh prepare re-runs the
             // stream resolver, which replaces an expired or 403 URL, and a dropped connection
-            // is usually back by the time it runs. File and permission errors are deliberately
-            // absent: re-preparing cannot fix a missing or unreadable local file.
+            // is usually back by the time it runs. Permission errors (2006) are deliberately
+            // absent: re-preparing cannot fix a file the app may not read.
             PlayerConstants.ERROR_CODE_TIMEOUT,
             // ERROR_CODE_IO_UNSPECIFIED is the catch-all the data source reports when the
             // connection drops before or during stream URL resolution — in on-device testing
@@ -3089,10 +3155,22 @@ internal class MediaServiceHandlerImpl(
             2001, // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
             2002, // ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
             2004, // ERROR_CODE_IO_BAD_HTTP_STATUS
+            // The adapter already retries these two on its own layer; they were missing
+            // here, so once the adapter gave up they went straight to toast + pause while
+            // the codes above got this layer's backed-off attempts as well. 2005 in the
+            // streaming path is the playback cache losing a span mid-read (or the
+            // resolver's bare-id cache hit going stale), not a missing user file, and
+            // 3001 is a non-media answer (an HTML error page) that a fresh resolve
+            // replaces — both are exactly what a re-prepare fixes.
+            2005, // ERROR_CODE_IO_FILE_NOT_FOUND
+            3001, // ERROR_CODE_PARSING_CONTAINER_MALFORMED
             -> true
 
             else -> false
         }
+
+    /** Media3's 5000-range codes are all AudioTrack failures (5001 init, 5002 write). */
+    private fun isAudioTrackError(errorCode: Int): Boolean = errorCode in 5000..5999
 
     /**
      * Schedules one recovery attempt for the item that just failed and returns true when an
@@ -3115,6 +3193,27 @@ internal class MediaServiceHandlerImpl(
         val positionMs = player.currentPosition.coerceAtLeast(0)
         val wasPlayWhenReady = player.playWhenReady
         val mediaId = mediaItem.mediaId
+        if (attempt == CACHE_SELF_HEAL_ATTEMPT) {
+            // A track that sits in the player cache in full never needs the network to
+            // play, so a third failure in a row points at the cached copy itself (a span
+            // or index entry gone bad): every later attempt would read the same bytes
+            // and fail the same way — the "only clearing the cache by hand fixes it"
+            // case. Drop the cached copy and the stored format now, so the reload this
+            // attempt has just scheduled re-resolves from the network instead. Only the
+            // playback cache is cleared, and only when the track is fully cached in it;
+            // downloads are the user's own copies and are never dropped here.
+            val videoId = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
+            coroutineScope.launch {
+                if (cacheRepository.getFullyCachedSongIds().contains(videoId)) {
+                    Logger.w(
+                        "Player Error",
+                        "Stream for $mediaId keeps failing while fully cached; dropping the cached copy to re-resolve",
+                    )
+                    cacheRepository.removeCachedSong(videoId)
+                    streamRepository.invalidateFormat(videoId)
+                }
+            }
+        }
         streamRecoveryJob?.cancel()
         streamRecoveryJob =
             coroutineScope.launch {

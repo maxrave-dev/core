@@ -26,4 +26,11 @@ expect class Extractor() {
      * live stream never carries, so a perfectly good live extraction looked like a failed one.
      */
     fun liveHlsUrl(videoId: String): String?
+
+    /**
+     * Pay the local decoder's one-time setup (current player id, remote player table,
+     * player script, QuickJS solver) ahead of the first extraction that needs it, so the
+     * first play does not have to. Platforms without a local decoder do nothing.
+     */
+    fun warmUp()
 }

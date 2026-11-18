@@ -344,11 +344,15 @@ internal class LocalPlaylistRepositoryImpl(
                             }.onFailure { continueParam = null }
                     }
                     if (listContent.isEmpty()) {
+                        // Terminal: without the return the flow went on to mark the
+                        // playlist Synced and emit Success after this Error.
                         emit(LocalResource.Error("Can't get setVideoId"))
+                        return@flow
                     }
                     val parsed = parseSetVideoId(ytPlaylistId, listContent)
                     if (parsed.isEmpty()) {
                         emit(LocalResource.Error("Can't get setVideoId"))
+                        return@flow
                     }
                     parsed.forEach { setVideoId ->
                         localDataSource.insertSetVideoId(setVideoId)

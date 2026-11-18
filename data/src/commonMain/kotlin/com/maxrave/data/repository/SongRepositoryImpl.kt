@@ -394,7 +394,7 @@ internal class SongRepositoryImpl(
         }
 
     override suspend fun getSongInfoEntity(videoId: String): Flow<SongInfoEntity?> =
-        flow { emit(localDataSource.getSongInfo(videoId)) }.flowOn(Dispatchers.Main)
+        flow { emit(localDataSource.getSongInfo(videoId)) }.flowOn(Dispatchers.IO)
 
     override suspend fun recoverQueue(temp: List<Track>) {
         val queueEntity = QueueEntity(listTrack = temp)

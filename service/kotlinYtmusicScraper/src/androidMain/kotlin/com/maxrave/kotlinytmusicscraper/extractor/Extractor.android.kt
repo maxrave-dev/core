@@ -31,6 +31,8 @@ actual class Extractor {
         YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
     }
 
+    actual fun warmUp() = faradayDecoder.warmUp()
+
     actual fun logIn(cookie: String?) {
         ServiceList.YouTube.tokens = cookie ?: ""
     }
@@ -43,12 +45,20 @@ actual class Extractor {
         // 403 used to skip straight to BravePipe. Driving the two as separate attempts is what
         // stops that jump.
 
+        // A tier that produced only audio (an upload or episode with no video streams at all)
+        // is not a complete result, but it is a playable one: the first such result is kept
+        // aside and used when no tier — BravePipe included — produces a complete one.
+        var audioOnlyResult: List<Pair<Int, String>>? = null
+        val collectAudioOnly: (List<Pair<Int, String>>) -> Unit = { streams ->
+            if (audioOnlyResult == null) audioOnlyResult = streams
+        }
+
         // Tier 1 — ciphers solved locally.
         // Re-registered every time: PipePipe drops the local decoder for good the first time it
         // throws, and the getter is package-private so its state cannot be read from here. Setting
         // it again turns "disabled forever" into "skipped for one track".
         YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
-        pipePipeStreams(videoId, LOCAL_TIER)?.let { return it }
+        pipePipeStreams(videoId, LOCAL_TIER, collectAudioOnly)?.let { return it }
 
         // Tier 2 — same extractor with no local decoder at all, so every challenge is solved at
         // api.pipepipe.dev. This is the tier a 403 from tier 1 must reach.
@@ -59,10 +69,16 @@ actual class Extractor {
         // PipePipe's own `disableLocalDecoder` does exactly this but is private, which is why it
         // cannot simply be called from here.
         YoutubeApiDecoder.setLocalDecoder(null)
-        pipePipeStreams(videoId, REMOTE_TIER)?.let { return it }
+        pipePipeStreams(videoId, REMOTE_TIER, collectAudioOnly)?.let { return it }
 
         // Tier 3 — a different extractor entirely.
-        return braveStreams(videoId)
+        val braveResult = braveStreams(videoId)
+        if (braveResult.isNotEmpty()) return braveResult
+        // No tier produced a complete result; an audio-only one still plays.
+        return audioOnlyResult?.also {
+            ExtractSource.record(videoId, "PipePipe · audio-only")
+            Logger.d(TAG, "extract source=PipePipe audio-only fallback itags=${it.map { pair -> pair.first }} for $videoId")
+        } ?: emptyList()
     }
 
     actual fun liveHlsUrl(videoId: String): String? {
@@ -108,6 +124,7 @@ actual class Extractor {
     private fun pipePipeStreams(
         videoId: String,
         tier: String,
+        onAudioOnlyResult: (List<Pair<Int, String>>) -> Unit = {},
     ): List<Pair<Int, String>>? {
         try {
             val streamInfo =
@@ -117,16 +134,22 @@ actual class Extractor {
                 streamsList.mapNotNull {
                     (it.itagItem?.id ?: return@mapNotNull null) to it.content
                 }
-            if (!pipeResult.hasRequiredItags()) {
+            val complete = pipeResult.hasRequiredItags()
+            if (!complete && !pipeResult.hasAudioItag()) {
                 Logger.d(TAG, "PipePipe[$tier] missing required itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null
             }
-            if (!pipeResult.headCheckRandomStream()) {
-                Logger.d(TAG, "PipePipe[$tier] stream URL HEAD check failed (non 2xx) for $videoId")
-                // A rejected URL is the one symptom of a stale player table: the signature is
-                // well-formed and still wrong, so nothing threw on the way here. Only the on-device
-                // table can go stale, so only that tier is worth invalidating.
-                if (tier == LOCAL_TIER) faradayDecoder.invalidate()
+            // No HEAD probe on a random URL before accepting the tier: it taxed every
+            // extraction with a serial round-trip, and one dead URL (or a failed HEAD)
+            // discarded a result whose chosen URL might be perfectly fine. A deciphered
+            // URL that turns out dead is found by the player's own load now, which answers
+            // a 403 by dropping the stored format and re-resolving — the stale local player
+            // table surfaces that way too, instead of being sniffed out here.
+            if (!complete) {
+                // Audio with no video at all: playable (the player response's audio formats
+                // pair with these URLs), but a complete result from a later tier is better,
+                // so this goes to the caller as a fallback and the tiers keep going.
+                onAudioOnlyResult(pipeResult)
                 return null
             }
             val label = if (tier == LOCAL_TIER) faradayDecoder.lastOutcomeLabel else REMOTE_TIER

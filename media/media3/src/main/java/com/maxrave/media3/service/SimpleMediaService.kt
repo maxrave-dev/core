@@ -132,7 +132,15 @@ internal class SimpleMediaService :
         session: MediaSession,
         startInForegroundRequired: Boolean,
     ) {
-        super.onUpdateNotification(session, startInForegroundRequired)
+        try {
+            super.onUpdateNotification(session, startInForegroundRequired)
+        } catch (e: Exception) {
+            // The framework's notification provider performs the foreground promotion;
+            // if the system refuses it (Android 12+ restrictions on a cold start via a
+            // widget or a headset button), the exception used to escape the service
+            // uncaught. Log it instead of crashing the playback service over it.
+            Logger.e("Service", "onUpdateNotification failed", e)
+        }
     }
 
     @UnstableApi

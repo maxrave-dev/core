@@ -183,7 +183,7 @@ internal class DownloadUtils(
             dataSourceFactory,
             Executor(Runnable::run),
         ).apply {
-            maxParallelDownloads = 20
+            maxParallelDownloads = 5
             minRetryCount = 3
             addListener(
                 MusicDownloadService.TerminalStateNotificationHelper(
@@ -241,12 +241,7 @@ internal class DownloadUtils(
                 .setData(title.toByteArray())
                 .setCustomCacheKey(videoId)
                 .build()
-        DownloadService.sendAddDownload(
-            context,
-            MusicDownloadService::class.java,
-            downloadRequest,
-            false,
-        )
+        sendAddDownload(downloadRequest)
         if (isVideo) {
             val id = MERGING_DATA_TYPE.VIDEO + videoId
             val downloadRequestVideo =
@@ -255,12 +250,26 @@ internal class DownloadUtils(
                     .setData("Video $title".toByteArray())
                     .setCustomCacheKey(id)
                     .build()
+            sendAddDownload(downloadRequestVideo)
+        }
+    }
+
+    /**
+     * [DownloadService.sendAddDownload] starts the download service; with the app in the
+     * background (a smart download queued by a sync, say) the start is refused with an
+     * [IllegalStateException] on Android 8+/12+, which used to crash the caller. The
+     * request is dropped instead — it can be queued again from the foreground.
+     */
+    private fun sendAddDownload(request: DownloadRequest) {
+        try {
             DownloadService.sendAddDownload(
                 context,
                 MusicDownloadService::class.java,
-                downloadRequestVideo,
+                request,
                 false,
             )
+        } catch (e: IllegalStateException) {
+            Logger.e("Download", "Could not start the download service for ${request.id}", e)
         }
     }
 

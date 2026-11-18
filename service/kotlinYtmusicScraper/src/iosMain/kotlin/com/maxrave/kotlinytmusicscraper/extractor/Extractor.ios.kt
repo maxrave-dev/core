@@ -13,6 +13,8 @@ actual class Extractor {
 
     actual fun liveHlsUrl(videoId: String): String? = null
 
+    actual fun warmUp() {}
+
     actual fun mergeAudioVideoDownload(filePath: String): DownloadProgress = DownloadProgress.failed("Not supported on iOS")
 
     actual fun saveAudioWithThumbnail(

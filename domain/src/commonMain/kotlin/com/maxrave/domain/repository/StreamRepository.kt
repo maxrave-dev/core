@@ -63,6 +63,14 @@ interface StreamRepository {
     suspend fun invalidateAllFormats() {}
 
     /**
+     * Warm the stream decipher pipeline (current player id, remote player table, player
+     * script, QuickJS solver) ahead of the first play, so the first resolution does not
+     * pay that one-time setup inside the play path. A default no-op keeps the other
+     * implementations (desktop, tests) compiling unchanged.
+     */
+    suspend fun warmUpDecoder() {}
+
+    /**
      * Which extractor and cipher decoder produced this video's stream URLs, for the info sheet.
      *
      * Null until the video has actually been extracted in this run — it is not persisted, because it

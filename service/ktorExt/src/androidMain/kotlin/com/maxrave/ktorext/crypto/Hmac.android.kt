@@ -30,7 +30,12 @@ actual class Hmac actual constructor(algorithm: String, secretKey: String) {
      * @param data The data to generate HMAC for
      * @return Base64 encoded HMAC token
      */
-    actual fun generateHmac(data: String): String = Base64.getEncoder().encodeToString(mac.doFinal(data.toByteArray()))
+    actual fun generateHmac(data: String): String =
+        // javax.crypto.Mac is not thread-safe: concurrent calls on this one shared
+        // instance corrupt the digest state mid-computation. Serialize on the Mac.
+        synchronized(mac) {
+            Base64.getEncoder().encodeToString(mac.doFinal(data.toByteArray()))
+        }
 
     /**
      * Validate HMAC token for given data

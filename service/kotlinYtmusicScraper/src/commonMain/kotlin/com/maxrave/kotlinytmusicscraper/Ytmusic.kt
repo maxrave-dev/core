@@ -283,6 +283,9 @@ class Ytmusic {
 
     fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
 
+    /** Warm the extractor's local decoder ahead of the first play; see [Extractor.warmUp]. */
+    fun warmUpExtractor() = extractor.warmUp()
+
     fun getLiveHlsUrl(videoId: String): String? = extractor.liveHlsUrl(videoId)
 
     fun mergeAudioVideoDownload(filePath: String): DownloadProgress = extractor.mergeAudioVideoDownload(filePath)

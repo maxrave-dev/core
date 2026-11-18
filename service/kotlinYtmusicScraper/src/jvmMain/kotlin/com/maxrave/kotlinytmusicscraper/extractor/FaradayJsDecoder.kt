@@ -98,6 +98,9 @@ internal class FaradayJsDecoder : YoutubeJavaScriptDecoder {
     /** Discard the cached player table and solver after the CDN rejected a URL we deciphered. */
     fun invalidate() = runBlocking { engine.invalidate() }
 
+    /** Pay the engine's one-time setup ahead of the first decode; see [FaradayCipherEngine.warmUp]. */
+    fun warmUp() = runBlocking { engine.warmUp() }
+
     private val bridgedLogger =
         InnerTubeLogger { event ->
             val message = event.message + event.details.entries.joinToString(prefix = " [", postfix = "]") { "${it.key}=${it.value}" }
