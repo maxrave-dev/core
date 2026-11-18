@@ -39,6 +39,7 @@ import io.ktor.client.engine.ProxyConfig
 import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.plugins.HttpRedirect
 import io.ktor.client.plugins.HttpResponseValidator
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
@@ -191,7 +192,12 @@ class Ytmusic {
             }
             install(Logging) {
                 logger = io.ktor.client.plugins.logging.Logger.DEFAULT
-                level = LogLevel.ALL
+                level = if (Logger.debugLoggingEnabled) LogLevel.ALL else LogLevel.NONE
+            }
+            install(HttpTimeout) {
+                connectTimeoutMillis = 15_000
+                requestTimeoutMillis = 30_000
+                socketTimeoutMillis = 30_000
             }
             install(ContentNegotiation) {
                 protobuf()

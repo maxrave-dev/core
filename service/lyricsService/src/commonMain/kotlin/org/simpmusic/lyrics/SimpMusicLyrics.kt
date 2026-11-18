@@ -7,6 +7,7 @@ import com.maxrave.logger.Logger
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.ProxyConfig
 import io.ktor.client.plugins.HttpSend
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.cache.HttpCache
 import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -71,6 +72,11 @@ class SimpMusicLyrics {
                 brotli(1.0F)
                 gzip(0.9F)
                 deflate(0.8F)
+            }
+            install(HttpTimeout) {
+                connectTimeoutMillis = 15_000
+                requestTimeoutMillis = 30_000
+                socketTimeoutMillis = 30_000
             }
             defaultRequest {
                 url("https://api-lyrics.simpmusic.org/v1")
