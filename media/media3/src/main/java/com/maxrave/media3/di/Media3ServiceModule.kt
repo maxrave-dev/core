@@ -107,19 +107,16 @@ private val mediaServiceModule =
         // Service
         // CoroutineScope for service
         single<CoroutineScope>(
-            createdAtStart = true,
             qualifier = named(SERVICE_SCOPE),
         ) {
             CoroutineScope(Dispatchers.Main + SupervisorJob())
         }
         // Cache
-        single<DatabaseProvider>(
-            createdAtStart = true,
-        ) {
+        single<DatabaseProvider> {
             provideDatabaseProvider(androidContext())
         }
         // Player Cache
-        single<SimpleCache>(qualifier = named(PLAYER_CACHE), createdAtStart = true) {
+        single<SimpleCache>(qualifier = named(PLAYER_CACHE)) {
             provideSimpleCache(
                 context = androidContext(),
                 cacheName = "exoplayer",
@@ -128,7 +125,7 @@ private val mediaServiceModule =
             )
         }
         // Download Cache
-        single<SimpleCache>(qualifier = named(DOWNLOAD_CACHE), createdAtStart = true) {
+        single<SimpleCache>(qualifier = named(DOWNLOAD_CACHE)) {
             provideSimpleCache(
                 context = androidContext(),
                 cacheName = "download",
@@ -137,7 +134,7 @@ private val mediaServiceModule =
             )
         }
         // Spotify Canvas Cache
-        single<SimpleCache>(qualifier = named(CANVAS_CACHE), createdAtStart = true) {
+        single<SimpleCache>(qualifier = named(CANVAS_CACHE)) {
             provideSimpleCache(
                 context = androidContext(),
                 cacheName = "spotifyCanvas",
@@ -146,7 +143,7 @@ private val mediaServiceModule =
             )
         }
         // DownloadUtils
-        single<DownloadHandler>(createdAtStart = true) {
+        single<DownloadHandler> {
             DownloadUtils(
                 context = androidContext(),
                 playerCache = get(named(PLAYER_CACHE)),
@@ -159,11 +156,11 @@ private val mediaServiceModule =
         }
 
         // AudioAttributes
-        single<AudioAttributes>(createdAtStart = true) {
+        single<AudioAttributes> {
             provideAudioAttributes()
         }
 
-        single<MergingMediaSourceFactory>(createdAtStart = true) {
+        single<MergingMediaSourceFactory> {
             provideMergingMediaSource(
                 androidContext(),
                 get(named(DOWNLOAD_CACHE)),
@@ -174,7 +171,7 @@ private val mediaServiceModule =
             )
         }
 
-        single<DefaultRenderersFactory>(createdAtStart = true) {
+        single<DefaultRenderersFactory> {
             provideRendererFactory(androidContext())
         }
 
@@ -189,7 +186,7 @@ private val mediaServiceModule =
         }
 
         // CoilBitmapLoader
-        single<CoilBitmapLoader>(createdAtStart = true) {
+        single<CoilBitmapLoader> {
             provideCoilBitmapLoader(androidContext(), get(named(SERVICE_SCOPE)))
         }
 
@@ -233,7 +230,7 @@ private val mediaServiceModule =
             )
         }
 
-        single<MediaPlayerInterface>(createdAtStart = true) {
+        single<MediaPlayerInterface> {
             CrossfadeExoPlayerAdapter(
                 context = androidContext(),
                 coroutineScope = get(named(SERVICE_SCOPE)),
@@ -258,7 +255,7 @@ private val mediaServiceModule =
         }
 
         // MediaSession Callback for main player
-        single<MediaLibrarySession.Callback>(createdAtStart = true) {
+        single<MediaLibrarySession.Callback> {
             SimpleMediaSessionCallback(
                 androidApplication(),
                 get<CoroutineScope>(named(SERVICE_SCOPE)),
@@ -272,7 +269,7 @@ private val mediaServiceModule =
             )
         }
 
-        single<CacheRepository>(createdAtStart = true) {
+        single<CacheRepository> {
             CacheRepositoryImpl(
                 playerCache = get(named(PLAYER_CACHE)),
                 downloadCache = get(named(DOWNLOAD_CACHE)),
