@@ -130,16 +130,9 @@ internal class StreamRepositoryImpl(
                     // The fast path deciphers only the formats the chains below can pick, so
                     // it is asked for with the very itags those chains will use — and never
                     // for a muxed resolve, whose manifest formats only an extraction carries.
-                    // SHADOW MODE (2026-11-18): the fast attempt runs inside player() only
-                    // AFTER the full extraction has resolved the track, and never serves
-                    // playback; it records a verdict ("Shadow:match/diff/threw/empty") on
-                    // the track's info sheet, so the build whose fast path killed every
-                    // fresh resolve can be diagnosed from real device resolves. To turn
-                    // the diagnosis off, pass null for both itags again.
                     fastAudioItag = if (muxed) null else itag,
                     fastVideoItag = if (muxed) null else videoItag,
                     fastIsVideo = isVideo,
-                    fastShadow = true,
                 )
                 .onSuccess { data ->
                     val response = data.second
