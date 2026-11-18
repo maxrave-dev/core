@@ -95,44 +95,6 @@ internal class FaradayJsDecoder : YoutubeJavaScriptDecoder {
         return YoutubeApiDecoder.BatchDecodeResult(result.signatures, result.nParameters)
     }
 
-    /**
-     * Solve ONLY the given raw `signatureCipher`s with this decoder's existing engine and
-     * assemble their stream URLs — the fast path in `YouTube.player`, which deciphers the few
-     * formats a resolve actually picks instead of every format a full extraction carries.
-     *
-     * Deliberately partial, unlike [decodeBatch]: a cipher whose signature (or whose `n`) comes
-     * back unsolved is simply absent from the result, because the caller walks fallback chains
-     * and reads absence as "this candidate failed". Throwing here would throw away the
-     * candidates that DID solve along with the ones that did not. An empty result — no player
-     * metadata, nothing parseable, nothing solved — is the caller's signal to extract in full.
-     */
-    suspend fun decipherUrls(ciphers: List<String>): Map<String, String> {
-        val wanted = ciphers.distinct()
-        if (wanted.isEmpty()) return emptyMap()
-        val parsed =
-            wanted.mapNotNull { cipher ->
-                parseSignatureCipher(cipher)?.let { cipher to it }
-            }
-        if (parsed.isEmpty()) return emptyMap()
-        val info = engine.playerInfo() ?: return emptyMap()
-        val result =
-            engine.decode(
-                info.playerId,
-                parsed.map { it.second.signature },
-                parsed.mapNotNull { it.second.nParameter },
-            )
-        return parsed.mapNotNull { (cipher, parts) ->
-            val signature = result.signatures[parts.signature] ?: return@mapNotNull null
-            val nParameter =
-                parts.nParameter?.let { challenge ->
-                    result.nParameters[challenge] ?: return@mapNotNull null
-                }
-            runCatching { parts.assembleUrl(signature, nParameter) }
-                .getOrNull()
-                ?.let { url -> cipher to url }
-        }.toMap()
-    }
-
     /** Discard the cached player table and solver after the CDN rejected a URL we deciphered. */
     fun invalidate() = runBlocking { engine.invalidate() }
 

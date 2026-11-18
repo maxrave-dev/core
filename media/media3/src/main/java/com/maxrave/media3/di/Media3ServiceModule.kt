@@ -98,7 +98,6 @@ import org.koin.dsl.module
 import org.simpmusic.cast.initCast
 import org.simpmusic.cast.wrapWithCastPlayer
 import java.net.Proxy
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -293,14 +292,6 @@ private const val STORED_URL_EXPIRY_MARGIN_SECONDS = 600L
 private const val STREAM_RESOLVE_TIMEOUT_MS = 20_000L
 
 /**
- * Encode (itag) each resolver instance last served per media id — see the encode-mixing
- * guard in provideResolvingDataSourceFactory. File-level on purpose: the player, the
- * merging factory, the waveform reader and the track precache each build their own
- * resolver instance over the same caches, and the record only means anything shared.
- */
-private val servedEncodeByMediaId = ConcurrentHashMap<String, Int>()
-
-/**
  * Whether the active network is up and validated. An unmeasurable state (no connectivity
  * service, no capabilities to read) counts as online: failing open keeps every odd network
  * working exactly as before, and only the definitely-offline case fails fast.
@@ -325,31 +316,6 @@ private fun provideResolvingDataSourceFactory(
     coroutineScope: CoroutineScope,
 ): DataSource.Factory {
     val chunkLength = 10 * 512 * 1024L
-    // Encode-mixing guard. The caches above this resolver are keyed by media id alone, so
-    // nothing stops CacheDataSource stitching spans of one encode (itag) of a song with
-    // upstream bytes of another: it fills a read's holes from the network and serves whatever
-    // spans it already holds for the rest. Encodes of the same song differ in cuts and exact
-    // length, so the stitch is audible — a piece of the song jumps or vanishes mid-playback,
-    // with no pause and the position display untouched. The stored format's itag is the
-    // encode a resolve serves, so before a network resolve hands its URL over, the song's
-    // player-cache spans are dropped whenever the encode about to be served is not the one
-    // this session last served for it — or the session has not served it yet and cannot
-    // vouch for the spans already on disk (the cache outlives both the process and the
-    // format row, which the media service drops on a network switch). The read that follows
-    // is then one encode end to end. Audio path only: the video branch resolves through its
-    // own prefixed format row whose itag is a video itag, and the downloaded path returns
-    // before the network section, so downloadCache and downloaded songs are never touched.
-    fun dropStaleEncodeSpans(
-        mediaId: String,
-        servedItag: Int,
-    ) {
-        if (servedEncodeByMediaId[mediaId] == servedItag) return
-        if (playerCache.getCachedBytes(mediaId, 0, Long.MAX_VALUE) > 0) {
-            Logger.w("Stream", "Dropping player cache for $mediaId: spans are not encode $servedItag")
-            playerCache.removeResource(mediaId)
-        }
-        servedEncodeByMediaId[mediaId] = servedItag
-    }
     return ResolvingDataSource.Factory(cacheDataSourceFactory) { dataSpec ->
         val mediaId = dataSpec.key ?: error("No media id")
         val videoId = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
@@ -460,7 +426,6 @@ private fun provideResolvingDataSourceFactory(
                         if (audioUrl != null && it.expiredTime > now().plusSeconds(STORED_URL_EXPIRY_MARGIN_SECONDS)) {
                             Logger.d("Stream", audioUrl)
                             Logger.d("Stream", "Audio from format")
-                            dropStaleEncodeSpans(mediaId, it.itag)
                             dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                             resolved = true
                             return@withTimeoutOrNull
@@ -476,12 +441,6 @@ private fun provideResolvingDataSourceFactory(
                         ?.let {
                             Logger.d("Stream", it)
                             Logger.d("Stream", "Audio")
-                            // getStream stored the format it served before its flow
-                            // completed (insertNewFormat runs ahead of the collectors), so
-                            // the row just read back carries this URL's encode.
-                            streamRepository.getNewFormat(mediaId).lastOrNull()?.itag?.let { servedItag ->
-                                dropStaleEncodeSpans(mediaId, servedItag)
-                            }
                             dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                             resolved = true
                         }

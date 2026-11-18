@@ -5,10 +5,8 @@ import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
-import com.maxrave.kotlinytmusicscraper.extractor.audioTrackRank
 import com.maxrave.kotlinytmusicscraper.extractor.contentLengthOf
 import com.maxrave.kotlinytmusicscraper.extractor.orderByAudioTrack
-import com.maxrave.kotlinytmusicscraper.extractor.parseSignatureCipher
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
 import com.maxrave.kotlinytmusicscraper.models.AlbumItem
 import com.maxrave.kotlinytmusicscraper.models.Artist
@@ -107,9 +105,7 @@ import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -1500,186 +1496,6 @@ class YouTube {
         }
     }
 
-    /** The outcome of one fast-path attempt: the response it built, or why there is none. */
-    private data class FastAttempt(
-        val response: PlayerResponse?,
-        val failureReason: String,
-    )
-
-    /**
-     * The fast path of a streaming resolve: decipher ONLY the formats the caller's selection
-     * chains can pick, straight off the player response this resolve already fetched, instead
-     * of running a full extraction — which fetches a second player response of its own and
-     * deciphers every format in it (15–25 signatures, in series, on the decoder's one thread).
-     *
-     * The chains below are `StreamRepositoryImpl.getStream`'s, in its order, over this same
-     * response: audio is the requested itag, then its high-quality twin, then the best-bitrate
-     * audio present; video is the requested itag, then 720p, then 360p, then the first
-     * non-audio format. A candidate counts as solved when it already carries a plain URL or
-     * its cipher deciphers — the same "has a URL" test the selection applies after a full
-     * pairing. Only the winning itags keep a URL in the returned response, mirroring the
-     * pairing, which overwrites every other format's URL with null, so the selection
-     * downstream sees exactly the winners and re-picks them. The video winner is deciphered
-     * even for an audio resolve, because the stored format row keeps its URL.
-     *
-     * Anything missing — a refused response, no formats, the intent's chain solving nothing —
-     * comes back as a [FastAttempt] with no response, and the caller runs the extraction
-     * exactly as before. Live and muxed resolves never reach here (their callers do not pass
-     * the fast-path itags), and neither do downloads, which pick by bitrate over the whole
-     * response and would be starved by a response carrying only two URLs.
-     */
-    private suspend fun fastPlayerResponse(
-        videoId: String,
-        tempRes: PlayerResponse,
-        preferredAudioLanguage: String?,
-        audioItag: Int,
-        videoItag: Int,
-        isVideo: Boolean,
-    ): FastAttempt {
-        if (tempRes.playabilityStatus.status != "OK") return FastAttempt(null, "refused")
-        val streamingData = tempRes.streamingData ?: return FastAttempt(null, "no-streaming-data")
-        val allFormats =
-            (streamingData.formats ?: emptyList()) + streamingData.adaptiveFormats
-        if (allFormats.isEmpty()) return FastAttempt(null, "no-formats")
-
-        val winners = mutableMapOf<Int, String>()
-
-        val audioSteps =
-            mutableListOf<List<PlayerResponse.StreamingData.Format>>()
-        audioSteps += allFormats.filter { it.itag == audioItag }
-        ITAG.highQualityTwinOf(audioItag)?.let { twin ->
-            audioSteps += allFormats.filter { it.itag == twin }
-        }
-        // The last resort, best first: the audio formats in the selection's own preference
-        // order (bitrate descending, stable, so the first one is the very format its
-        // maxByOrNull would pick), grouped by itag in that order and capped so a response
-        // full of unsolvable audio cannot turn the shortcut into a batch decode.
-        audioSteps +=
-            allFormats
-                .filter { it.isAudio }
-                .sortedByDescending { it.bitrate }
-                .groupBy { it.itag }
-                .values
-                .take(3)
-        val audioSolved = solveChain(audioSteps, preferredAudioLanguage, winners)
-
-        val videoSteps =
-            mutableListOf<List<PlayerResponse.StreamingData.Format>>()
-        videoSteps += allFormats.filter { it.itag == videoItag }
-        videoSteps += allFormats.filter { it.itag == ITAG.VIDEO_720P }
-        videoSteps += allFormats.filter { it.itag == ITAG.VIDEO_360P }
-        videoSteps +=
-            allFormats
-                .filter { format -> !format.isAudio }
-                .groupBy { format -> format.itag }
-                .values
-                .take(3)
-        val videoSolved = solveChain(videoSteps, preferredAudioLanguage, winners)
-
-        // The non-intent chain solving nothing is a shape the full path produces too — an
-        // audio-only upload has no video winner — so only the intent's chain is load-bearing.
-        val intentSolved = if (isVideo) videoSolved else audioSolved
-        if (!intentSolved) {
-            return FastAttempt(null, if (isVideo) "video-chain" else "audio-chain")
-        }
-
-        val response =
-            tempRes.copy(
-                streamingData =
-                    streamingData.copy(
-                        formats =
-                            streamingData.formats?.map { format ->
-                                format.withFastWinnerUrl(winners)
-                            },
-                        adaptiveFormats =
-                            streamingData.adaptiveFormats.map { format ->
-                                format.withFastWinnerUrl(winners)
-                            },
-                    ),
-            )
-        ExtractSource.record(videoId, "Fast · local")
-        Logger.d(TAG, "YouTube Fast found URL for $videoId (itags=${winners.keys})")
-        return FastAttempt(response, "ok")
-    }
-
-    /**
-     * Walk one selection chain in order and record the first step that solves into [winners].
-     * Steps are itag groups; an itag already tried in this chain is not tried again when a
-     * later, broader step contains it once more.
-     */
-    private suspend fun solveChain(
-        steps: List<List<PlayerResponse.StreamingData.Format>>,
-        preferredAudioLanguage: String?,
-        winners: MutableMap<Int, String>,
-    ): Boolean {
-        val triedItags = mutableSetOf<Int>()
-        for (step in steps) {
-            val itag = step.firstOrNull()?.itag ?: continue
-            if (!triedItags.add(itag)) continue
-            val url = solveItagUrl(step, preferredAudioLanguage) ?: continue
-            winners[itag] = url
-            return true
-        }
-        return false
-    }
-
-    /**
-     * One chain step: every response entry under a single itag, solved to at most one URL.
-     *
-     * A multi-track video lists up to 25 audio tracks under the SAME itag, and the pairing
-     * collapses them to the first URL after [orderByAudioTrack] — so the entries are ranked
-     * the same way here, by the `xtags` inside each entry's own URL (a cipher's inner URL,
-     * before anything is deciphered), and only the winner is deciphered. The first entry that
-     * already carries a plain URL, or whose cipher the local decoder solves, wins; two failed
-     * deciphers end the step, because a decoder that cannot solve the top-ranked track of an
-     * itag is not going to solve the rest of it either.
-     */
-    private suspend fun solveItagUrl(
-        entries: List<PlayerResponse.StreamingData.Format>,
-        preferredAudioLanguage: String?,
-    ): String? {
-        val ranked =
-            entries
-                .mapNotNull { format ->
-                    val rankUrl =
-                        format.url
-                            ?: format.signatureCipher?.let { cipher ->
-                                parseSignatureCipher(cipher)?.baseUrl
-                            }
-                            ?: return@mapNotNull null
-                    format to rankUrl
-                }.sortedBy { (_, rankUrl) -> audioTrackRank(rankUrl, preferredAudioLanguage) }
-        var failedDeciphers = 0
-        for ((format, _) in ranked) {
-            format.url?.let { return it }
-            val cipher = format.signatureCipher ?: continue
-            val solved = ytMusic.decipherUrls(listOf(cipher))[cipher]
-            if (solved != null) return solved
-            failedDeciphers++
-            if (failedDeciphers >= 2) return null
-        }
-        return null
-    }
-
-    /**
-     * This format as the fast path hands it to the selection: a winning itag carries its
-     * assembled URL — and the byte length that URL names, like the pairing — while every
-     * other format carries none, which is what the pairing does to formats it has no URL for.
-     */
-    private fun PlayerResponse.StreamingData.Format.withFastWinnerUrl(
-        winners: Map<Int, String>,
-    ): PlayerResponse.StreamingData.Format {
-        val winnerUrl = winners[itag]
-        return if (winnerUrl != null) {
-            copy(
-                url = winnerUrl,
-                contentLength = contentLengthOf(winnerUrl) ?: contentLength,
-            )
-        } else {
-            copy(url = null)
-        }
-    }
-
     fun isManifestUrl(url: String): Boolean = url.contains(".m3u8") || url.contains(".mpd") || url.contains("manifest")
 
     /**
@@ -1862,9 +1678,6 @@ class YouTube {
         playlistId: String? = null,
         noLogIn: Boolean = false,
         preferredAudioLanguage: String? = null,
-        fastAudioItag: Int? = null,
-        fastVideoItag: Int? = null,
-        fastIsVideo: Boolean = false,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
             val cpn =
@@ -1903,16 +1716,8 @@ class YouTube {
             // extraction that fails degrades to the empty list the serial path would have
             // ended with anyway. The deferred is a child of the caller's job, so cancelling
             // the resolution cancels it too.
-            //
-            // A resolve that asked for the fast path is the exception: its extraction starts
-            // only when the fast attempt has failed outright. The extraction's decode batch
-            // holds the decoder's lock for the whole batch, so an extraction started
-            // alongside would race the fast attempt's handful of deciphers for that lock and
-            // could hand the win back to the slow path; a failed attempt pays the extraction
-            // serially instead, which is the accepted price of trying.
-            val extractionScope = CoroutineScope(coroutineContext)
-            val startExtraction: () -> Deferred<List<Pair<Int, String>>> = {
-                extractionScope.async(Dispatchers.IO) {
+            val streamsDeferred =
+                CoroutineScope(coroutineContext).async(Dispatchers.IO) {
                     try {
                         ytMusic.getNewPipePlayer(videoId)
                     } catch (e: CancellationException) {
@@ -1922,11 +1727,6 @@ class YouTube {
                         emptyList()
                     }
                 }
-            }
-            val fastRequested = fastAudioItag != null && fastVideoItag != null
-            var fastMark = ""
-            val streamsDeferred: Deferred<List<Pair<Int, String>>>? =
-                if (fastRequested) null else startExtraction()
             var altClientTried = false
             var tempRes: PlayerResponse =
                 try {
@@ -1962,7 +1762,7 @@ class YouTube {
             // check comes before anything that requires an OK status.
             if (tempRes.videoDetails?.isLive == true) {
                 // The parallel extraction above is useless to a live broadcast; drop it.
-                streamsDeferred?.cancel()
+                streamsDeferred.cancel()
                 // tempRes carries an hlsManifestUrl of its own, and it is deliberately not used: the
                 // web clients' live playlists load, but every segment is refused with 403.
                 val liveHlsUrl =
@@ -1978,63 +1778,35 @@ class YouTube {
                 return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
             }
 
-            var response: PlayerResponse? = null
-            if (fastRequested) {
-                // The fast attempt must never take the resolve down with it: an exception
-                // inside it is just another fast failure, and the extraction below runs.
-                val attempt =
-                    runCatching {
-                        fastPlayerResponse(
-                            videoId,
-                            tempRes,
-                            preferredAudioLanguage,
-                            requireNotNull(fastAudioItag),
-                            requireNotNull(fastVideoItag),
-                            fastIsVideo,
-                        )
-                    }.getOrElse { error ->
-                        Logger.w(TAG, "YouTube Fast path threw for $videoId (${error.message}); extracting in full")
-                        FastAttempt(null, "exception")
-                    }
-                if (attempt.response != null) {
-                    response = attempt.response
-                    fastMark = " fast=ok"
-                } else {
-                    fastMark = " fast=fallback(${attempt.failureReason})"
-                    Logger.d(TAG, "YouTube Fast path failed for $videoId (${attempt.failureReason}); extracting in full")
-                }
+            val streams = streamsDeferred.await()
+            if (timingEnabled) {
+                extractorMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
             }
-            if (response == null) {
-                val streams = (streamsDeferred ?: startExtraction()).await()
-                if (timingEnabled) {
-                    extractorMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
-                }
-                response = newPipePlayer(videoId, tempRes, preferredAudioLanguage, streams)
-                if (response == null && !altClientTried && tempRes.playabilityStatus.status != "OK") {
-                    // WEB_REMIX refused this track (bot check, region, age gate), so the first
-                    // newPipePlayer call came back without using the extractor's URLs. One attempt
-                    // with the ANDROID client's response: the extractor pairs its own URLs onto
-                    // whichever response it is given, and other clients are often not refused. The
-                    // refused response keeps supplying the playback tracking.
-                    altClientTried = true
-                    val altRes =
-                        try {
-                            fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Logger.w(TAG, "ANDROID player request failed for $videoId (${e.message})")
-                            null
-                        }
-                    if (altRes != null && altRes.playabilityStatus.status == "OK") {
-                        response =
-                            newPipePlayer(
-                                videoId,
-                                altRes.copy(playbackTracking = tempRes.playbackTracking),
-                                preferredAudioLanguage,
-                                streams,
-                            )
+            var response = newPipePlayer(videoId, tempRes, preferredAudioLanguage, streams)
+            if (response == null && !altClientTried && tempRes.playabilityStatus.status != "OK") {
+                // WEB_REMIX refused this track (bot check, region, age gate), so the first
+                // newPipePlayer call came back without using the extractor's URLs. One attempt
+                // with the ANDROID client's response: the extractor pairs its own URLs onto
+                // whichever response it is given, and other clients are often not refused. The
+                // refused response keeps supplying the playback tracking.
+                altClientTried = true
+                val altRes =
+                    try {
+                        fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Logger.w(TAG, "ANDROID player request failed for $videoId (${e.message})")
+                        null
                     }
+                if (altRes != null && altRes.playabilityStatus.status == "OK") {
+                    response =
+                        newPipePlayer(
+                            videoId,
+                            altRes.copy(playbackTracking = tempRes.playbackTracking),
+                            preferredAudioLanguage,
+                            streams,
+                        )
                 }
             }
             if (response != null) {
@@ -2047,7 +1819,7 @@ class YouTube {
             if (timingEnabled) {
                 Logger.d(
                     TAG,
-                    "PlayTiming id=$videoId post=${playerResponseMs}ms extractor=${extractorMs}ms total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms$fastMark",
+                    "PlayTiming id=$videoId post=${playerResponseMs}ms extractor=${extractorMs}ms total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
                 )
             }
             val firstThumb =
