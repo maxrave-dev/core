@@ -127,11 +127,13 @@ internal class StreamRepositoryImpl(
                     videoId,
                     noLogIn = muxed,
                     preferredAudioLanguage = dataStoreManager.preferredAudioLanguage.first(),
-                    // The fast path deciphers only the formats the chains below can pick, so
-                    // it is asked for with the very itags those chains will use — and never
-                    // for a muxed resolve, whose manifest formats only an extraction carries.
-                    fastAudioItag = if (muxed) null else itag,
-                    fastVideoItag = if (muxed) null else videoItag,
+                    // Fast path OFF at origin (2026-11-18 bisect): the combined build
+                    // (fast path serving + encode guard) revived the build-#29 symptom —
+                    // songs not playing at all. Playback goes back to the proven full
+                    // path while the guard stays in, so the next test build separates
+                    // the two suspects. Re-enable by restoring the itag arguments.
+                    fastAudioItag = null,
+                    fastVideoItag = null,
                     fastIsVideo = isVideo,
                 )
                 .onSuccess { data ->
