@@ -11,6 +11,8 @@ actual class Extractor {
 
     actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> = emptyList()
 
+    actual suspend fun decipherUrls(ciphers: List<String>): Map<String, String> = emptyMap()
+
     actual fun liveHlsUrl(videoId: String): String? = null
 
     actual fun warmUp() {}

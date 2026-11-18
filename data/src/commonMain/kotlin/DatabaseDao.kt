@@ -828,7 +828,7 @@ interface DatabaseDao {
     suspend fun getPlaylistPairOfSong(
         videoId: String,
         localPlaylistId: Long,
-    ): PairSongLocalPlaylist
+    ): PairSongLocalPlaylist?
 
     @Query("SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId ORDER BY position ASC LIMIT :limit OFFSET :offset")
     suspend fun getPlaylistPairSong(
