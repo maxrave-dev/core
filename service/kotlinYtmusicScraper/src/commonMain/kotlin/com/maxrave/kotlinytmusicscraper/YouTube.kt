@@ -109,6 +109,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -2038,13 +2039,17 @@ class YouTube {
                 }
             }
             if (fastRequested && fastShadow && response != null) {
-                // Shadow diagnosis: the track is already resolved the full way above and
-                // plays from it; the fast attempt runs only to be compared against that
-                // result, and the verdict is recorded where the track's info sheet shows
-                // its source. match = the fast path produced the very URL the pairing
-                // produced; diff = it produced a different one; threw = it raised;
-                // empty = it produced nothing.
-                val verdict =
+                // Shadow diagnosis, round 2: the track is already resolved the full way
+                // above and plays from it. The fast attempt runs only to be judged, and
+                // the judgement is whether its assembled URL actually answers a ranged
+                // request — a string comparison against the pairing's URL cannot judge
+                // it, because the two URLs are minted by different responses and always
+                // differ in expiry and host. The probe runs after the resolve, off the
+                // playback path, and its verdict replaces the track's recorded source:
+                // Probe:206 = the fast URL is alive (the fast path was never the
+                // killer); Probe:403 = it is dead on arrival. Parameter names the
+                // pairing's URL carries that the fast one lacks ride along after a Δ.
+                val shadowOutcome =
                     try {
                         val attempt =
                             fastPlayerResponse(
@@ -2056,36 +2061,60 @@ class YouTube {
                                 fastIsVideo,
                             )
                         val fastResponse = attempt.response
-                        if (fastResponse == null) {
-                            "empty"
-                        } else {
-                            val fastFormats =
-                                (fastResponse.streamingData?.formats ?: emptyList()) +
-                                    (fastResponse.streamingData?.adaptiveFormats ?: emptyList())
-                            val fastWinner =
+                        val fastWinner =
+                            fastResponse?.let {
+                                val fastFormats =
+                                    (it.streamingData?.formats ?: emptyList()) +
+                                        (it.streamingData?.adaptiveFormats ?: emptyList())
                                 fastFormats.firstOrNull { format ->
                                     !format.url.isNullOrEmpty() &&
                                         (if (fastIsVideo) !format.isAudio else format.isAudio)
                                 }
-                            if (fastWinner == null) {
-                                "empty"
-                            } else {
-                                val pairedFormats =
-                                    (response.streamingData?.formats ?: emptyList()) +
-                                        (response.streamingData?.adaptiveFormats ?: emptyList())
-                                val pairedUrl =
-                                    pairedFormats.firstOrNull { it.itag == fastWinner.itag }?.url
-                                if (pairedUrl != null && pairedUrl == fastWinner.url) "match" else "diff"
                             }
+                        when {
+                            fastResponse == null -> "empty" to null
+                            fastWinner?.url == null -> "empty" to null
+                            else -> "winner" to fastWinner
                         }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        "threw"
+                        "threw" to null
                     }
-                fastMark = " shadow=$verdict"
-                ExtractSource.record(videoId, "Shadow:$verdict")
-                Logger.d(TAG, "YouTube Fast shadow for $videoId: $verdict")
+                val (shadowKind, shadowWinner) = shadowOutcome
+                if (shadowKind == "winner" && shadowWinner?.url != null) {
+                    val pairedFormats =
+                        (response.streamingData?.formats ?: emptyList()) +
+                            (response.streamingData?.adaptiveFormats ?: emptyList())
+                    val pairedUrl = pairedFormats.firstOrNull { it.itag == shadowWinner.itag }?.url
+                    val missingParams =
+                        if (pairedUrl != null) {
+                            runCatching {
+                                URLBuilder(pairedUrl).parameters.names() -
+                                    URLBuilder(shadowWinner.url).parameters.names()
+                            }.getOrNull() ?: emptySet()
+                        } else {
+                            emptySet()
+                        }
+                    val paramNote =
+                        if (missingParams.isEmpty()) "" else " Δ" + missingParams.joinToString(",")
+                    val probeTarget = shadowWinner.url
+                    CoroutineScope(Dispatchers.IO).launch {
+                        val code =
+                            try {
+                                probeHttpStatus(probeTarget)?.toString() ?: "skip"
+                            } catch (e: Exception) {
+                                "net"
+                            }
+                        ExtractSource.record(videoId, "Probe:$code$paramNote")
+                        Logger.d(TAG, "YouTube Fast shadow probe for $videoId: $code$paramNote")
+                    }
+                    fastMark = " shadow=probe"
+                } else {
+                    fastMark = " shadow=$shadowKind"
+                    ExtractSource.record(videoId, "Shadow:$shadowKind")
+                    Logger.d(TAG, "YouTube Fast shadow for $videoId: $shadowKind")
+                }
             }
             if (response != null) {
                 decodedSigResponse = response
