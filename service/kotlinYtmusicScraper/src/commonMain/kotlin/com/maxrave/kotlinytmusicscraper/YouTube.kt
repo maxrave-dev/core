@@ -2039,16 +2039,16 @@ class YouTube {
                 }
             }
             if (fastRequested && fastShadow && response != null) {
-                // Shadow diagnosis, round 2: the track is already resolved the full way
-                // above and plays from it. The fast attempt runs only to be judged, and
-                // the judgement is whether its assembled URL actually answers a ranged
-                // request — a string comparison against the pairing's URL cannot judge
-                // it, because the two URLs are minted by different responses and always
-                // differ in expiry and host. The probe runs after the resolve, off the
-                // playback path, and its verdict replaces the track's recorded source:
-                // Probe:206 = the fast URL is alive (the fast path was never the
-                // killer); Probe:403 = it is dead on arrival. Parameter names the
-                // pairing's URL carries that the fast one lacks ride along after a Δ.
+                // Shadow diagnosis, round 3: the track is already resolved the full way
+                // above and plays from it; the fast attempt runs only to be judged, off
+                // the playback path, and its verdict replaces the track's recorded
+                // source. Round 2 showed the assembled URL is dead on arrival (403) and
+                // that the one parameter the pairing's URL carries that the fast one
+                // lacks is cpn. This round probes three variants in one pass: the plain
+                // URL as assembled, the same URL with this resolve's cpn appended, and
+                // a winner assembled the same way from the ANDROID client's response
+                // (also probed with cpn appended). Any variant answering 206 is a URL
+                // shape the fast path could actually serve.
                 val shadowOutcome =
                     try {
                         val attempt =
@@ -2083,31 +2083,43 @@ class YouTube {
                     }
                 val (shadowKind, shadowWinner) = shadowOutcome
                 if (shadowKind == "winner" && shadowWinner?.url != null) {
-                    val pairedFormats =
-                        (response.streamingData?.formats ?: emptyList()) +
-                            (response.streamingData?.adaptiveFormats ?: emptyList())
-                    val pairedUrl = pairedFormats.firstOrNull { it.itag == shadowWinner.itag }?.url
-                    val missingParams =
-                        if (pairedUrl != null) {
-                            runCatching {
-                                URLBuilder(pairedUrl).parameters.names() -
-                                    URLBuilder(shadowWinner.url).parameters.names()
-                            }.getOrNull() ?: emptySet()
-                        } else {
-                            emptySet()
-                        }
-                    val paramNote =
-                        if (missingParams.isEmpty()) "" else " Δ" + missingParams.joinToString(",")
-                    val probeTarget = shadowWinner.url
+                    val winnerUrl = shadowWinner.url
                     CoroutineScope(Dispatchers.IO).launch {
-                        val code =
+                        suspend fun probe(url: String): String =
                             try {
-                                probeHttpStatus(probeTarget)?.toString() ?: "skip"
+                                probeHttpStatus(url)?.toString() ?: "skip"
                             } catch (e: Exception) {
                                 "net"
                             }
-                        ExtractSource.record(videoId, "Probe:$code$paramNote")
-                        Logger.d(TAG, "YouTube Fast shadow probe for $videoId: $code$paramNote")
+                        val plainCode = probe(winnerUrl)
+                        val cpnCode = probe("$winnerUrl&cpn=$cpn")
+                        val andCode =
+                            runCatching {
+                                val andResponse =
+                                    fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
+                                val andAttempt =
+                                    fastPlayerResponse(
+                                        videoId,
+                                        andResponse,
+                                        preferredAudioLanguage,
+                                        requireNotNull(fastAudioItag),
+                                        requireNotNull(fastVideoItag),
+                                        fastIsVideo,
+                                    )
+                                val andFormats =
+                                    (andAttempt.response?.streamingData?.formats ?: emptyList()) +
+                                        (andAttempt.response?.streamingData?.adaptiveFormats ?: emptyList())
+                                val andWinner =
+                                    andFormats.firstOrNull { format ->
+                                        !format.url.isNullOrEmpty() &&
+                                            (if (fastIsVideo) !format.isAudio else format.isAudio)
+                                    }
+                                val andUrl = andWinner?.url
+                                if (andUrl == null) "skip" else probe("$andUrl&cpn=$cpn")
+                            }.getOrElse { "skip" }
+                        val verdict = "Probe:$plainCode cpn:$cpnCode and:$andCode"
+                        ExtractSource.record(videoId, verdict)
+                        Logger.d(TAG, "YouTube Fast shadow probe for $videoId: $verdict")
                     }
                     fastMark = " shadow=probe"
                 } else {
