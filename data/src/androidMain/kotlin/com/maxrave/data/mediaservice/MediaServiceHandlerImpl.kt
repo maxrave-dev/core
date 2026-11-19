@@ -1136,7 +1136,18 @@ internal class MediaServiceHandlerImpl(
                 var sinceLastPositionSaveMs = 0L
                 while (true) {
                     delay(tickIntervalMs)
-                    _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
+                    // A load in progress is not progress. While the player reports
+                    // BUFFERING (a fresh track still loading, e.g. with no network), a
+                    // Progress publish is read by the view model as "not loading"
+                    // whenever the track's duration is already known from metadata —
+                    // which it always is — so the bar froze at 0:00 over a track that
+                    // had not loaded a single byte. Publish Buffering instead; the
+                    // position persistence below is unaffected.
+                    if (player.playbackState == PlayerConstants.STATE_BUFFERING) {
+                        _simpleMediaState.value = SimpleMediaState.Buffering(player.currentPosition)
+                    } else {
+                        _simpleMediaState.value = SimpleMediaState.Progress(player.currentPosition)
+                    }
                     sinceLastPositionSaveMs += tickIntervalMs
                     if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
                         sinceLastPositionSaveMs = 0
@@ -2921,7 +2932,17 @@ internal class MediaServiceHandlerImpl(
                         "PlayTiming id=$timingVideoId ready=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
                     )
                 }
-                _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
+                if (player.currentPosition == 0L && player.bufferedPosition == 0L && !player.isPlaying) {
+                    // The adapter maps its READY and PAUSED states to STATE_READY
+                    // alike, and a track whose load died (no network) can land here
+                    // without a single buffered byte. Publishing Ready cleared the
+                    // UI's loading flag and left a static bar at 0:00 over a track
+                    // that never started. Nothing buffered and nothing playing
+                    // means it is still waiting: say Buffering instead.
+                    _simpleMediaState.value = SimpleMediaState.Buffering(player.currentPosition)
+                } else {
+                    _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
+                }
             }
 
             else -> {
@@ -3357,14 +3378,21 @@ internal class MediaServiceHandlerImpl(
                     SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
             }
         } else {
-            if (player.playbackState == PlayerConstants.STATE_BUFFERING) {
+            if (player.playbackState == PlayerConstants.STATE_BUFFERING ||
+                player.playbackState == PlayerConstants.STATE_IDLE ||
+                (player.currentPosition == 0L && player.bufferedPosition == 0L && !player.isPlaying)
+            ) {
                 // The loader stopped because it cannot proceed (no network, a retry
                 // backoff), not because the track is ready. Publishing Ready here
                 // would clear the loading flag and leave the player UI showing a
                 // static bar over a stall that is still waiting on the network.
-                // Stay silent instead: the last Loading/Buffering state stands —
-                // and the buffered poll keeps running — until the player really
-                // reaches STATE_READY or the track changes.
+                // The same holds when the adapter reports STATE_IDLE (its ERROR
+                // state maps to IDLE) and when it reports STATE_READY with zero
+                // bytes buffered and nothing playing — a load that died before it
+                // started. Stay silent instead: the last Loading/Buffering state
+                // stands — and the buffered poll keeps running — until the player
+                // really reaches STATE_READY with something buffered, or the
+                // track changes.
                 return
             }
             stopBufferedUpdate()

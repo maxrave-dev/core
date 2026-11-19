@@ -174,6 +174,19 @@ actual class Extractor {
                 return null
             }
             if (!complete) {
+                // Audio-only results skipped the HEAD check above (it only runs on
+                // complete ones), so a dead audio URL could be kept aside unverified
+                // and end up as the fallback handed to the player. Check it here
+                // too. A rejection means the same stale player table as a complete
+                // result's rejection, so the local tier is invalidated the same way.
+                if (!pipeResult.headCheckRandomStream()) {
+                    Logger.d(TAG, "PipePipe[$tier] audio-only stream URL HEAD check failed (non 2xx) for $videoId")
+                    if (tier == LOCAL_TIER) {
+                        faradayDecoder.invalidate()
+                        localTierBrokenUntilMs = System.currentTimeMillis() + LOCAL_TIER_SKIP_MS
+                    }
+                    return null
+                }
                 // Audio with no video at all: playable (the player response's audio formats
                 // pair with these URLs), but a complete result from a later tier is better,
                 // so this goes to the caller as a fallback and the tiers keep going.
@@ -195,13 +208,26 @@ actual class Extractor {
             val streamInfo =
                 BraveStreamInfo.getInfo(BraveServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
             val streamsList = streamInfo.audioStreams + streamInfo.videoStreams + streamInfo.videoOnlyStreams
-            streamsList
-                .mapNotNull {
+            val braveResult =
+                streamsList.mapNotNull {
                     (it.itagItem?.id ?: return@mapNotNull null) to it.content
-                }.also {
-                    ExtractSource.record(videoId, "BravePipe")
-                    Logger.d(TAG, "extract source=BravePipe itags=${it.map { pair -> pair.first }} for $videoId")
                 }
+            // BravePipe results used to be returned with no health check at all, so a
+            // dead URL from this tier went straight to the player and surfaced as a
+            // 403 there. Apply the same random-stream HEAD check the PipePipe tiers
+            // use; on failure return nothing, so the caller can still fall back to a
+            // verified audio-only result instead of a dead complete one.
+            if (braveResult.isNotEmpty() && !braveResult.headCheckRandomStream()) {
+                Logger.d(TAG, "BravePipe stream URL HEAD check failed (non 2xx) for $videoId")
+                emptyList()
+            } else {
+                braveResult.also {
+                    if (it.isNotEmpty()) {
+                        ExtractSource.record(videoId, "BravePipe")
+                        Logger.d(TAG, "extract source=BravePipe itags=${it.map { pair -> pair.first }} for $videoId")
+                    }
+                }
+            }
         }.onFailure {
             Logger.w(TAG, "BravePipe extractor failed for $videoId: ${it.message}")
         }.getOrElse { emptyList() }
