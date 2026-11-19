@@ -15,7 +15,6 @@ import com.maxrave.domain.extension.isBefore
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.extension.plusSeconds
 import com.maxrave.domain.manager.DataStoreManager
-import com.maxrave.domain.repository.CacheRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
@@ -36,45 +35,12 @@ import kotlinx.coroutines.withContext
 internal class StreamRepositoryImpl(
     private val localDataSource: LocalDataSource,
     private val youTube: YouTube,
-    private val cacheRepository: CacheRepository,
 ) : StreamRepository {
     // For work a resolve starts but playback must not wait for (Tidal metadata).
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     override suspend fun insertNewFormat(newFormat: NewFormatEntity) =
         withContext(Dispatchers.IO) {
-            val previous = localDataSource.getNewFormat(newFormat.videoId)
             localDataSource.insertNewFormat(newFormat)
-            // Encode-change invalidation, deliberately HERE and not in the player's
-            // resolver: this insert is the one place the stored encode actually changes,
-            // and the player cache above it is keyed by media id alone, so spans written
-            // from the previous encode would otherwise be stitched together with bytes
-            // of the new one — same song, two encodes, audible as a piece of the track
-            // jumping or vanishing mid-playback with the position display untouched.
-            // Dropping the spans here is safe in a way dropping them in the resolver
-            // never was: no read of the new encode has started yet (the caller emits
-            // the stream URL only after this returns), and an encode change is exactly
-            // when the player is about to (re)load the track anyway. A resolve that
-            // keeps the same itag and content length keeps its spans — a plain URL
-            // refresh must not cost a re-download. Player cache only: removeCachedSong
-            // never touches the download cache, so downloads are unaffected.
-            if (previous != null &&
-                (
-                    previous.itag != newFormat.itag ||
-                        (
-                            previous.contentLength != null &&
-                                newFormat.contentLength != null &&
-                                previous.contentLength != newFormat.contentLength
-                            )
-                    )
-            ) {
-                Logger.w(
-                    "Stream",
-                    "Encode changed for ${newFormat.videoId}: itag ${previous.itag} -> ${newFormat.itag}, " +
-                        "dropping its player cache spans",
-                )
-                cacheRepository.removeCachedSong(newFormat.videoId.removePrefix(MERGING_DATA_TYPE.VIDEO))
-            }
         }
 
     override suspend fun warmUpDecoder() =
