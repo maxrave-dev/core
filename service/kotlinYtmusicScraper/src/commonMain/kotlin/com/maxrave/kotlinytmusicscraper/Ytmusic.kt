@@ -283,6 +283,9 @@ class Ytmusic {
 
     fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
 
+    /** Decipher only the given ciphers with the local decoder; see [Extractor.decipherUrls]. */
+    suspend fun decipherUrls(ciphers: List<String>): Map<String, String> = extractor.decipherUrls(ciphers)
+
     /** Warm the extractor's local decoder ahead of the first play; see [Extractor.warmUp]. */
     fun warmUpExtractor() = extractor.warmUp()
 

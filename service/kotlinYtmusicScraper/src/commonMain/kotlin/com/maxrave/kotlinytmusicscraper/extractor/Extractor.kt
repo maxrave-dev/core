@@ -18,6 +18,18 @@ expect class Extractor() {
     fun newPipePlayer(videoId: String): List<Pair<Int, String>>
 
     /**
+     * Decipher ONLY the given raw `signatureCipher`s with the platform's local decoder and
+     * assemble their stream URLs, without running an extraction — the fast path a streaming
+     * resolve takes when it already knows which formats it is going to pick.
+     *
+     * Returns a map from each input cipher to its assembled URL holding ONLY the ciphers that
+     * were solved completely; a cipher missing from the map failed, and an empty map means the
+     * fast path is unavailable (no local decoder on this platform, no player metadata, nothing
+     * solved), so the caller falls back to [newPipePlayer] exactly as before.
+     */
+    suspend fun decipherUrls(ciphers: List<String>): Map<String, String>
+
+    /**
      * The HLS playlist of a video that is broadcasting live right now, or null when no extractor
      * produced one.
      *
