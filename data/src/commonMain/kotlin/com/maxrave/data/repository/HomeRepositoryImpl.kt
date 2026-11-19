@@ -69,6 +69,15 @@ internal class HomeRepositoryImpl(
         flow {
             runCatching {
                 val limit = dataStoreManager.homeLimit.first()
+                // Apply the stored login cookie to the scraper before asking for Home. On a
+                // cold start the cookie collector in CommonRepositoryImpl races this first
+                // load; when the load won, YouTube answered with the signed-out Home and
+                // nothing refetched after the cookie landed, so the user had to reload by
+                // hand to see their own shelves.
+                val storedCookie = dataStoreManager.cookie.first()
+                if (storedCookie.isNotEmpty() && youTube.cookie != storedCookie) {
+                    youTube.cookie = storedCookie
+                }
                 youTube
                     .customQuery(browseId = "FEmusic_home", params = params)
                     .onSuccess { result ->
