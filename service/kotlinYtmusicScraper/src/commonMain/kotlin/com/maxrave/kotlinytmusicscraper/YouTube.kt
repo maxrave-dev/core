@@ -1790,27 +1790,66 @@ class YouTube {
                 extractorMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
             }
             var response = newPipePlayer(videoId, tempRes, preferredAudioLanguage, streams)
-            if (response == null && !altClientTried && tempRes.playabilityStatus.status != "OK") {
-                // WEB_REMIX refused this track (bot check, region, age gate), so the first
-                // newPipePlayer call came back without using the extractor's URLs. One attempt
-                // with the ANDROID client's response: the extractor pairs its own URLs onto
-                // whichever response it is given, and other clients are often not refused. The
-                // refused response keeps supplying the playback tracking.
-                altClientTried = true
-                val altRes =
-                    try {
-                        fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Logger.w(TAG, "ANDROID player request failed for $videoId (${e.message})")
-                        null
+            // The retries below pair the extractor's URLs onto another response, so they
+            // only make sense when the extractor produced URLs at all.
+            var altRes: PlayerResponse? = null
+            if (response == null && streams.isNotEmpty()) {
+                if (!altClientTried) {
+                    // The first pairing produced nothing: either WEB_REMIX refused this
+                    // track (bot check, region, age gate), so newPipePlayer never paired
+                    // at all, or it paired zero formats because none of this response's
+                    // itags matched the extractor's URLs. One attempt with the ANDROID
+                    // client's response: the extractor pairs its own URLs onto whichever
+                    // response it is given, other clients are often not refused, and a
+                    // different response carries a different format list that may match
+                    // where this one did not. The refused response keeps supplying the
+                    // playback tracking.
+                    altClientTried = true
+                    altRes =
+                        try {
+                            fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Logger.w(TAG, "ANDROID player request failed for $videoId (${e.message})")
+                            null
+                        }
+                    if (altRes != null && altRes.playabilityStatus.status == "OK") {
+                        response =
+                            newPipePlayer(
+                                videoId,
+                                altRes.copy(playbackTracking = tempRes.playbackTracking),
+                                preferredAudioLanguage,
+                                streams,
+                            )
                     }
-                if (altRes != null && altRes.playabilityStatus.status == "OK") {
+                }
+                // Forcing only changes anything when the response was actually refused:
+                // pairing an OK response again with the same URLs would fail the same way.
+                if (response == null && (altRes ?: tempRes).playabilityStatus.status != "OK") {
+                    // Last resort: every client response was refused, yet the extractor
+                    // produced URLs. The anonymous ones (VISIONOS) do not depend on this
+                    // session's playability verdict, and a refusal aimed at the logged-in
+                    // clients does not necessarily apply to them — the pattern of issue
+                    // #2861, where exactly those URLs were being thrown away here. Pair
+                    // over the refused response with the status forced to OK, the same
+                    // trick asLiveStream uses for live broadcasts, and let the player's
+                    // own load decide: a URL that turns out dead surfaces as a load
+                    // error, which the recovery layers already answer by dropping the
+                    // stored format and re-resolving.
+                    val refused = (altRes ?: tempRes).copy(playbackTracking = tempRes.playbackTracking)
+                    Logger.w(
+                        TAG,
+                        "Pairing extractor URLs over the refused response for $videoId " +
+                            "(status=${refused.playabilityStatus.status}) as a last resort",
+                    )
                     response =
                         newPipePlayer(
                             videoId,
-                            altRes.copy(playbackTracking = tempRes.playbackTracking),
+                            refused.copy(
+                                playabilityStatus =
+                                    refused.playabilityStatus.copy(status = "OK", reason = null),
+                            ),
                             preferredAudioLanguage,
                             streams,
                         )
