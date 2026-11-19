@@ -139,12 +139,14 @@ actual class Extractor {
                 Logger.d(TAG, "PipePipe[$tier] missing required itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null
             }
-            // No HEAD probe on a random URL before accepting the tier: it taxed every
-            // extraction with a serial round-trip, and one dead URL (or a failed HEAD)
-            // discarded a result whose chosen URL might be perfectly fine. A deciphered
-            // URL that turns out dead is found by the player's own load now, which answers
-            // a 403 by dropping the stored format and re-resolving — the stale local player
-            // table surfaces that way too, instead of being sniffed out here.
+            if (complete && !pipeResult.headCheckRandomStream()) {
+                Logger.d(TAG, "PipePipe[$tier] stream URL HEAD check failed (non 2xx) for $videoId")
+                // A rejected URL is the one symptom of a stale player table: the signature is
+                // well-formed and still wrong, so nothing threw on the way here. Only the on-device
+                // table can go stale, so only that tier is worth invalidating.
+                if (tier == LOCAL_TIER) faradayDecoder.invalidate()
+                return null
+            }
             if (!complete) {
                 // Audio with no video at all: playable (the player response's audio formats
                 // pair with these URLs), but a complete result from a later tier is better,
