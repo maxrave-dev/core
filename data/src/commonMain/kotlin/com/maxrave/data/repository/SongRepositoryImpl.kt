@@ -348,17 +348,17 @@ internal class SongRepositoryImpl(
                 downloadHandler.downloadTrack(videoId, song.title, song.thumbnails.orEmpty())
             }
         }
-//        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
-//            if (likeStatus == 1) {
-//                addToYouTubeLiked(videoId).collect { result ->
-//                    Logger.d(TAG, "updateLikeStatus -> addToYouTubeLiked: $result")
-//                }
-//            } else {
-//                removeFromYouTubeLiked(videoId).collect { result ->
-//                    Logger.d(TAG, "updateLikeStatus -> removeFromYouTubeLiked: $result")
-//                }
-//            }
-//        }
+        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+            if (likeStatus == 1) {
+                addToYouTubeLiked(videoId).collect { result ->
+                    Logger.d(TAG, "updateLikeStatus -> addToYouTubeLiked: $result")
+                }
+            } else {
+                removeFromYouTubeLiked(videoId).collect { result ->
+                    Logger.d(TAG, "updateLikeStatus -> removeFromYouTubeLiked: $result")
+                }
+            }
+        }
     }
 
     override fun updateSongInLibrary(
