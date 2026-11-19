@@ -348,15 +348,16 @@ internal class SongRepositoryImpl(
                 downloadHandler.downloadTrack(videoId, song.title, song.thumbnails.orEmpty())
             }
         }
-        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
-            if (likeStatus == 1) {
-                addToYouTubeLiked(videoId).collect { result ->
-                    Logger.d(TAG, "updateLikeStatus -> addToYouTubeLiked: $result")
-                }
-            } else {
-                removeFromYouTubeLiked(videoId).collect { result ->
-                    Logger.d(TAG, "updateLikeStatus -> removeFromYouTubeLiked: $result")
-                }
+        // Always mirror the like to the signed-in YouTube account — there is no settings
+        // toggle for this; the user asked for it to be simply on. Signed out, the calls
+        // fail quietly and only the local like stands.
+        if (likeStatus == 1) {
+            addToYouTubeLiked(videoId).collect { result ->
+                Logger.d(TAG, "updateLikeStatus -> addToYouTubeLiked: $result")
+            }
+        } else {
+            removeFromYouTubeLiked(videoId).collect { result ->
+                Logger.d(TAG, "updateLikeStatus -> removeFromYouTubeLiked: $result")
             }
         }
     }
