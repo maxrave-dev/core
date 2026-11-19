@@ -20,10 +20,23 @@ private const val TAG = "Extractor"
 private const val LOCAL_TIER = "local"
 private const val REMOTE_TIER = "pipepipe.dev"
 
+// How long the local tier stays skipped after its stream URLs are rejected once. The remote
+// tier keeps working in the meantime; the local tier is retried when the deadline passes.
+private const val LOCAL_TIER_SKIP_MS = 10 * 60 * 1000L
+
 actual class Extractor {
     private var newPipeDownloader = NewPipeDownloaderImpl(proxy = null)
     private var braveNewPipeDownloader = BraveNewPipeDownloaderImpl(proxy = null)
     private val faradayDecoder = FaradayJsDecoder()
+
+    // Set when the local tier's stream URLs are rejected (see pipePipeStreams): until this
+    // deadline the local tier is skipped, because retrying it on every track would pay a full
+    // local extraction plus a from-scratch solver rebuild and fail the same way again. The
+    // remote tier is used instead and is still HEAD-checked on every track.
+    @Volatile
+    private var localTierBrokenUntilMs: Long = 0L
+
+    private fun localTierSkipped(): Boolean = System.currentTimeMillis() < localTierBrokenUntilMs
 
     actual fun init() {
         NewPipe.init(newPipeDownloader)
@@ -57,8 +70,14 @@ actual class Extractor {
         // Re-registered every time: PipePipe drops the local decoder for good the first time it
         // throws, and the getter is package-private so its state cannot be read from here. Setting
         // it again turns "disabled forever" into "skipped for one track".
-        YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
-        pipePipeStreams(videoId, LOCAL_TIER, collectAudioOnly)?.let { return it }
+        // Skipped while a recent rejection is still fresh (see localTierBrokenUntilMs): the
+        // remote tier below serves those tracks instead.
+        if (localTierSkipped()) {
+            Logger.d(TAG, "PipePipe[$LOCAL_TIER] skipped for $videoId (stream URLs rejected recently)")
+        } else {
+            YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
+            pipePipeStreams(videoId, LOCAL_TIER, collectAudioOnly)?.let { return it }
+        }
 
         // Tier 2 — same extractor with no local decoder at all, so every challenge is solved at
         // api.pipepipe.dev. This is the tier a 403 from tier 1 must reach.
@@ -83,8 +102,10 @@ actual class Extractor {
 
     actual fun liveHlsUrl(videoId: String): String? {
         // The same three tiers as newPipePlayer, in the same order and for the same reasons.
-        YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
-        pipePipeLiveHlsUrl(videoId, LOCAL_TIER)?.let { return it }
+        if (!localTierSkipped()) {
+            YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
+            pipePipeLiveHlsUrl(videoId, LOCAL_TIER)?.let { return it }
+        }
         YoutubeApiDecoder.setLocalDecoder(null)
         pipePipeLiveHlsUrl(videoId, REMOTE_TIER)?.let { return it }
         return braveLiveHlsUrl(videoId)
@@ -144,7 +165,12 @@ actual class Extractor {
                 // A rejected URL is the one symptom of a stale player table: the signature is
                 // well-formed and still wrong, so nothing threw on the way here. Only the on-device
                 // table can go stale, so only that tier is worth invalidating.
-                if (tier == LOCAL_TIER) faradayDecoder.invalidate()
+                if (tier == LOCAL_TIER) {
+                    faradayDecoder.invalidate()
+                    // Until the deadline, newPipePlayer skips this tier instead of paying a
+                    // doomed local extraction (plus a solver rebuild) on every track.
+                    localTierBrokenUntilMs = System.currentTimeMillis() + LOCAL_TIER_SKIP_MS
+                }
                 return null
             }
             if (!complete) {
