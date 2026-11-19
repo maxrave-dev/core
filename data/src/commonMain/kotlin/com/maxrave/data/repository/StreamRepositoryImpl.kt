@@ -85,9 +85,42 @@ internal class StreamRepositoryImpl(
                     .player(videoId)
                     .onSuccess { triple ->
                         val response = triple.second
+                        // The renewal must carry the fresh URLs too. It used to extend
+                        // expiredTime and swap the tracking data but keep the old
+                        // audioUrl/videoUrl — URLs that had already expired — so the
+                        // row claimed to be valid for hours more while holding dead
+                        // links, and the next play from it met a phantom 403.
+                        val formatList = mutableListOf<PlayerResponse.StreamingData.Format>()
+                        formatList.addAll(
+                            response.streamingData?.formats?.filter { it.url.isNullOrEmpty().not() } ?: emptyList(),
+                        )
+                        formatList.addAll(
+                            response.streamingData?.adaptiveFormats?.filter { it.url.isNullOrEmpty().not() }
+                                ?: emptyList(),
+                        )
+                        val freshAudio = formatList.find { it.itag == oldFormat.itag }
+                        val freshVideo =
+                            formatList.find { it.itag == ITAG.VIDEO_720P }
+                                ?: formatList.find { it.itag == ITAG.VIDEO_360P }
+                                ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
+                        val hlsManifestUrl = response.streamingData?.hlsManifestUrl
+                        val wasMuxed = oldFormat.audioUrl?.let { youTube.isManifestUrl(it) } == true
                         localDataSource.updateNewFormat(
                             oldFormat.copy(
                                 expiredTime = now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
+                                audioUrl =
+                                    if (wasMuxed && hlsManifestUrl != null) {
+                                        hlsManifestUrl
+                                    } else {
+                                        freshAudio?.url ?: oldFormat.audioUrl
+                                    },
+                                videoUrl =
+                                    if (wasMuxed && hlsManifestUrl != null) {
+                                        hlsManifestUrl
+                                    } else {
+                                        freshVideo?.url ?: oldFormat.videoUrl
+                                    },
+                                contentLength = freshAudio?.contentLength ?: oldFormat.contentLength,
                                 playbackTrackingVideostatsPlaybackUrl =
                                     response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
                                         "https://s.youtube.com",

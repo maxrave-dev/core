@@ -3339,6 +3339,11 @@ internal class MediaServiceHandlerImpl(
      * Loading again. `_simpleMediaState` is a StateFlow collected from another thread, so those
      * writes conflate and the UI settled on Loading even when buffering had just *finished* —
      * leaving a spinner over playback that was already running.
+     *
+     * One exception: when loading stops while the player is still BUFFERING, nothing is
+     * published at all. That stop means the loader cannot proceed (no network, a retry
+     * backoff), not that the track is ready — a Ready there would clear the UI's loading
+     * flag and leave a static bar over a stall that is still waiting on the network.
      */
     override fun onIsLoadingChanged(isLoading: Boolean) {
         if (isLoading) {
@@ -3352,6 +3357,16 @@ internal class MediaServiceHandlerImpl(
                     SimpleMediaState.Loading(player.bufferedPercentage, player.duration)
             }
         } else {
+            if (player.playbackState == PlayerConstants.STATE_BUFFERING) {
+                // The loader stopped because it cannot proceed (no network, a retry
+                // backoff), not because the track is ready. Publishing Ready here
+                // would clear the loading flag and leave the player UI showing a
+                // static bar over a stall that is still waiting on the network.
+                // Stay silent instead: the last Loading/Buffering state stands —
+                // and the buffered poll keeps running — until the player really
+                // reaches STATE_READY or the track changes.
+                return
+            }
             stopBufferedUpdate()
             _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
         }
