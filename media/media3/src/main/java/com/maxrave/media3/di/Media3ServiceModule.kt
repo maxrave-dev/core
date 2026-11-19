@@ -5,8 +5,6 @@ import android.content.Context
 import android.content.Context.BIND_AUTO_CREATE
 import android.content.Intent
 import android.content.ServiceConnection
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.IBinder
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
@@ -291,20 +289,6 @@ private const val STORED_URL_EXPIRY_MARGIN_SECONDS = 600L
 /** Longest a single stream resolution may take before the load fails into the retry path. */
 private const val STREAM_RESOLVE_TIMEOUT_MS = 20_000L
 
-/**
- * Whether the active network is up and validated. An unmeasurable state (no connectivity
- * service, no capabilities to read) counts as online: failing open keeps every odd network
- * working exactly as before, and only the definitely-offline case fails fast.
- */
-private fun hasValidatedConnection(context: Context): Boolean {
-    val connectivityManager =
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
-    val capabilities =
-        connectivityManager.getNetworkCapabilities(connectivityManager.activeNetwork) ?: return true
-    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-}
-
 @UnstableApi
 private fun provideResolvingDataSourceFactory(
     context: Context,
@@ -371,15 +355,6 @@ private fun provideResolvingDataSourceFactory(
             // Capping to chunkLength forces a re-check at every chunk boundary, so a
             // cache that shrinks under us falls back to resolving a real URL.
             return@Factory dataSpec.subrange(dataSpec.uriPositionOffset, chunkLength)
-        }
-        // Past the two cache checks, resolving is a network round-trip (a stored-format
-        // lookup, then the player request and the extractor). Without a validated
-        // connection it can only fail, and it used to fail slowly — the 20s resolver
-        // timeout below, once per recovery attempt. Fail at once instead and let the
-        // recovery layers (and the resume-on-reconnect) do their job.
-        if (!hasValidatedConnection(context)) {
-            Logger.w("Stream", "No validated connection; not resolving $mediaId")
-            throw java.io.IOException("No validated network connection to resolve stream for $mediaId")
         }
         var dataSpecReturn: DataSpec = dataSpec
         var resolved = false
