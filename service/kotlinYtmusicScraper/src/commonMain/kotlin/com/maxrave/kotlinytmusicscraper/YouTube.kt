@@ -116,6 +116,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
@@ -138,6 +139,10 @@ import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 private const val TAG = "YouTubeScraper"
+
+/** Cap on one Innertube player request: a hung POST falls to the alternate client inside the
+ * resolver budget instead of eating the whole budget while the resolver waits on it. */
+private const val PLAYER_REQUEST_TIMEOUT_MS = 10_000L
 
 /**
  * Special thanks to [z-huang/InnerTune](https://github.com/z-huang/InnerTune)
@@ -1570,61 +1575,63 @@ class YouTube {
         cpn: String,
         signatureTimestamp: Int,
     ): PlayerResponse =
-        ytMusic
-            .player(client, videoId, playlistId, cpn, signatureTimestamp)
-            .body<PlayerResponse>()
-            .let {
-                val fexp =
-                    it.streamingData
-                        ?.serverAbrStreamingUrl
-                        ?.toKmpUri()
-                        ?.getQueryParameter("fexp")
-                val playbackTracking = it.playbackTracking
-                it.copy(
-                    playbackTracking =
-                        playbackTracking?.copy(
-                            atrUrl =
-                                playbackTracking.atrUrl?.copy(
-                                    baseUrl =
-                                        playbackTracking.atrUrl.baseUrl
-                                            ?.toKmpUri()
-                                            ?.buildUpon()
-                                            ?.apply {
-                                                if (fexp != null) {
-                                                    appendQueryParameter("fexp", fexp)
-                                                }
-                                            }?.build()
-                                            ?.toString(),
-                                ),
-                            videostatsPlaybackUrl =
-                                playbackTracking.videostatsPlaybackUrl?.copy(
-                                    baseUrl =
-                                        playbackTracking.videostatsPlaybackUrl.baseUrl
-                                            ?.toKmpUri()
-                                            ?.buildUpon()
-                                            ?.apply {
-                                                if (fexp != null) {
-                                                    appendQueryParameter("fexp", fexp)
-                                                }
-                                            }?.build()
-                                            ?.toString(),
-                                ),
-                            videostatsWatchtimeUrl =
-                                playbackTracking.videostatsWatchtimeUrl?.copy(
-                                    baseUrl =
-                                        playbackTracking.videostatsWatchtimeUrl.baseUrl
-                                            ?.toKmpUri()
-                                            ?.buildUpon()
-                                            ?.apply {
-                                                if (fexp != null) {
-                                                    appendQueryParameter("fexp", fexp)
-                                                }
-                                            }?.build()
-                                            ?.toString(),
-                                ),
-                        ),
-                )
-            }
+        withTimeoutOrNull(PLAYER_REQUEST_TIMEOUT_MS) {
+            ytMusic
+                .player(client, videoId, playlistId, cpn, signatureTimestamp)
+                .body<PlayerResponse>()
+                .let {
+                    val fexp =
+                        it.streamingData
+                            ?.serverAbrStreamingUrl
+                            ?.toKmpUri()
+                            ?.getQueryParameter("fexp")
+                    val playbackTracking = it.playbackTracking
+                    it.copy(
+                        playbackTracking =
+                            playbackTracking?.copy(
+                                atrUrl =
+                                    playbackTracking.atrUrl?.copy(
+                                        baseUrl =
+                                            playbackTracking.atrUrl.baseUrl
+                                                ?.toKmpUri()
+                                                ?.buildUpon()
+                                                ?.apply {
+                                                    if (fexp != null) {
+                                                        appendQueryParameter("fexp", fexp)
+                                                    }
+                                                }?.build()
+                                                ?.toString(),
+                                    ),
+                                videostatsPlaybackUrl =
+                                    playbackTracking.videostatsPlaybackUrl?.copy(
+                                        baseUrl =
+                                            playbackTracking.videostatsPlaybackUrl.baseUrl
+                                                ?.toKmpUri()
+                                                ?.buildUpon()
+                                                ?.apply {
+                                                    if (fexp != null) {
+                                                        appendQueryParameter("fexp", fexp)
+                                                    }
+                                                }?.build()
+                                                ?.toString(),
+                                    ),
+                                videostatsWatchtimeUrl =
+                                    playbackTracking.videostatsWatchtimeUrl?.copy(
+                                        baseUrl =
+                                            playbackTracking.videostatsWatchtimeUrl.baseUrl
+                                                ?.toKmpUri()
+                                                ?.buildUpon()
+                                                ?.apply {
+                                                    if (fexp != null) {
+                                                        appendQueryParameter("fexp", fexp)
+                                                    }
+                                                }?.build()
+                                                ?.toString(),
+                                    ),
+                            ),
+                    )
+                }
+        } ?: throw Exception("Player request timed out after $PLAYER_REQUEST_TIMEOUT_MS ms")
 
     /** Types a player request that failed on both clients: an HTTP answer means YouTube refused; no answer means the network did. */
     private fun playerRequestFailure(
@@ -1640,7 +1647,7 @@ class YouTube {
         } else {
             StreamResolutionException(
                 StreamResolutionException.Reason.NO_NETWORK,
-                "The player request for $videoId never got an answer (${error.message})",
+                "The player request for $videoId never got an answer (${error::class.simpleName}: ${error.message})",
                 error,
             )
         }
