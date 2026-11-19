@@ -127,12 +127,6 @@ internal class StreamRepositoryImpl(
                     videoId,
                     noLogIn = muxed,
                     preferredAudioLanguage = dataStoreManager.preferredAudioLanguage.first(),
-                    // The fast path deciphers only the formats the chains below can pick, so
-                    // it is asked for with the very itags those chains will use — and never
-                    // for a muxed resolve, whose manifest formats only an extraction carries.
-                    fastAudioItag = if (muxed) null else itag,
-                    fastVideoItag = if (muxed) null else videoItag,
-                    fastIsVideo = isVideo,
                 )
                 .onSuccess { data ->
                     val response = data.second
@@ -140,11 +134,8 @@ internal class StreamRepositoryImpl(
                     LiveStreamRegistry.recordLiveStatus(videoId, isLive)
                     // The song row follows, so the LIVE badge and the download gate know too —
                     // including when a broadcast has ended and its recording downloads normally.
-                    // Where a URL is emitted below, that write waits until after the emit:
-                    // nothing the player starts from waits on it, and this flow's collectors
-                    // read the row only once the flow has completed.
+                    localDataSource.updateSongLiveStatus(videoId, isLive)
                     if (isLive && isDownloading) {
-                        localDataSource.updateSongLiveStatus(videoId, isLive)
                         // Nothing to save: handing an endless HLS playlist to a downloader stores
                         // the playlist text as if it were the song. Emitting nothing fails the
                         // download where the caller resolves its URL.
@@ -160,7 +151,6 @@ internal class StreamRepositoryImpl(
                         val liveHlsUrl = response.streamingData?.hlsManifestUrl
                         Logger.i("Stream", "$videoId: live stream, HLS URL ${if (liveHlsUrl == null) "missing" else "found"}")
                         emit(liveHlsUrl)
-                        localDataSource.updateSongLiveStatus(videoId, isLive)
                         return@onSuccess
                     }
                     Logger.d(
@@ -225,7 +215,7 @@ internal class StreamRepositoryImpl(
                             ", expires in ${response.streamingData?.expiresInSeconds}s",
                     )
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
-                    val newFormat =
+                    insertNewFormat(
                         NewFormatEntity(
                             videoId = if (VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
                             itag = format?.itag ?: itag,
@@ -272,32 +262,8 @@ internal class StreamRepositoryImpl(
                             bpm = null,
                             musicKey = null,
                             keyScale = null,
-                        )
-                    val streamUrl =
-                        if (muxed) {
-                            response.streamingData?.hlsManifestUrl
-                        } else {
-                            val chosenUrl = format?.url
-                            val chosenLength = format?.contentLength ?: 10000000
-                            when {
-                                chosenUrl == null -> null
-                                youTube.isManifestUrl(chosenUrl) ->
-                                    if (data.first != null) chosenUrl.plus("&cpn=${data.first}") else chosenUrl
-                                data.first != null ->
-                                    chosenUrl.plus("&cpn=${data.first}&range=0-$chosenLength")
-                                else -> chosenUrl.plus("&range=0-$chosenLength")
-                            }
-                        }
-                    // The URL leaves before the database writes: the player starts from it
-                    // alone, while the live-status write and the format row only matter to
-                    // later readers — and every collector of this flow takes its last value
-                    // and reads the stored row only after the flow completes, so both writes
-                    // still land before any of them looks. The emitted value never carried
-                    // anything from the database: the URL, the cpn and the length all come
-                    // from the response above.
-                    emit(streamUrl)
-                    localDataSource.updateSongLiveStatus(videoId, isLive)
-                    insertNewFormat(newFormat)
+                        ),
+                    )
                     // AutoMix metadata from the Tidal official API (BPM/key) is fetched
                     // only after the format is stored, in the background: it used to be
                     // awaited inline here, so every fresh resolve paid a Tidal search —
@@ -310,6 +276,35 @@ internal class StreamRepositoryImpl(
                             title = response.videoDetails?.title ?: "",
                             author = response.videoDetails?.author ?: "",
                             durationSecond = durationSecond,
+                        )
+                    }
+                    if (data.first != null) {
+                        emit(
+                            if (muxed) {
+                                response.streamingData?.hlsManifestUrl
+                            } else {
+                                format?.url?.let { url ->
+                                    if (youTube.isManifestUrl(url)) {
+                                        url.plus("&cpn=${data.first}")
+                                    } else {
+                                        url.plus("&cpn=${data.first}&range=0-${format.contentLength ?: 10000000}")
+                                    }
+                                }
+                            },
+                        )
+                    } else {
+                        emit(
+                            if (muxed) {
+                                response.streamingData?.hlsManifestUrl
+                            } else {
+                                format?.url?.let { url ->
+                                    if (youTube.isManifestUrl(url)) {
+                                        url
+                                    } else {
+                                        url.plus("&range=0-${format.contentLength ?: 10000000}")
+                                    }
+                                }
+                            },
                         )
                     }
                 }.onFailure {

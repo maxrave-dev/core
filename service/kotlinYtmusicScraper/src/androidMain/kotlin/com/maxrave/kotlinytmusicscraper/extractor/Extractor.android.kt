@@ -33,8 +33,6 @@ actual class Extractor {
 
     actual fun warmUp() = faradayDecoder.warmUp()
 
-    actual suspend fun decipherUrls(ciphers: List<String>): Map<String, String> = faradayDecoder.decipherUrls(ciphers)
-
     actual fun logIn(cookie: String?) {
         ServiceList.YouTube.tokens = cookie ?: ""
     }
