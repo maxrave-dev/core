@@ -15,6 +15,7 @@ import com.maxrave.domain.extension.isBefore
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.extension.plusSeconds
 import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.domain.repository.CacheRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
@@ -35,11 +36,31 @@ import kotlinx.coroutines.withContext
 internal class StreamRepositoryImpl(
     private val localDataSource: LocalDataSource,
     private val youTube: YouTube,
+    private val cacheRepository: CacheRepository,
 ) : StreamRepository {
     // For work a resolve starts but playback must not wait for (Tidal metadata).
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     override suspend fun insertNewFormat(newFormat: NewFormatEntity) =
         withContext(Dispatchers.IO) {
+            // Encode guard: the playback cache is keyed only by media id, so when a
+            // re-resolve stores a different encode under an id that already has cached
+            // spans — another itag, or the same itag at another content length — the
+            // player stitches old and new bytes together and the track skips mid-play.
+            // Drop the cached spans here, before the new row (and its URL) is emitted.
+            val stored = localDataSource.getNewFormat(newFormat.videoId)
+            if (stored != null &&
+                (stored.itag != newFormat.itag ||
+                    (stored.contentLength != null &&
+                        newFormat.contentLength != null &&
+                        stored.contentLength != newFormat.contentLength))
+            ) {
+                Logger.w(
+                    "Stream",
+                    "Encode changed for ${newFormat.videoId}: itag ${stored.itag} -> ${newFormat.itag}, " +
+                        "contentLength ${stored.contentLength} -> ${newFormat.contentLength}; evicting cached spans",
+                )
+                cacheRepository.removeCachedSong(newFormat.videoId.removePrefix(MERGING_DATA_TYPE.VIDEO))
+            }
             localDataSource.insertNewFormat(newFormat)
         }
 

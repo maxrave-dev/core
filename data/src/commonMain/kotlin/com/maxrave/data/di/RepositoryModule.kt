@@ -117,7 +117,7 @@ val repositoryModule =
         }
 
         single<StreamRepository> {
-            StreamRepositoryImpl(get(), get())
+            StreamRepositoryImpl(get(), get(), get())
         }
 
         single<UpdateRepository> {
