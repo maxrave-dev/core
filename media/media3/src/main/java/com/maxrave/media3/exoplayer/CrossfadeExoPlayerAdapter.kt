@@ -767,14 +767,24 @@ internal class CrossfadeExoPlayerAdapter(
                     if (longPauseVideoId != null) {
                         Logger.w(TAG, "Play: resuming after a long pause; reloading $longPauseVideoId with a fresh URL")
                         internalPlayWhenReady = true
-                        try {
-                            streamRepository.invalidateFormat(longPauseVideoId)
-                            streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$longPauseVideoId")
-                            precachedPlayers.remove(longPauseVideoId)?.let { cleanupPrecachedEntryInternal(it) }
-                            loadAndPlayTrackInternal(localCurrentMediaItemIndex, cachedPosition.coerceAtLeast(0L), shouldPlay = true)
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
-                            Logger.e(TAG, "Play: reload after long pause failed: ${e.message}", e)
+                        pausedAtMs = 0L
+                        val targetIndex = localCurrentMediaItemIndex
+                        val resumePos = cachedPosition.coerceAtLeast(0L)
+                        adapterScope.launch {
+                            if (playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId != longPauseVideoId) {
+                                return@launch
+                            }
+                            try {
+                                streamRepository.invalidateFormat(longPauseVideoId)
+                                streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$longPauseVideoId")
+                                precachedPlayers.remove(longPauseVideoId)?.let { cleanupPrecachedEntryInternal(it) }
+                                if (playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId == longPauseVideoId) {
+                                    loadAndPlayTrackInternal(targetIndex, resumePos, shouldPlay = internalPlayWhenReady)
+                                }
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Logger.e(TAG, "Play: reload after long pause failed: ${e.message}", e)
+                            }
                         }
                     } else {
                         currentPlayer?.let { player ->
@@ -834,14 +844,23 @@ internal class CrossfadeExoPlayerAdapter(
                     if (errorVideoId != null) {
                         Logger.w(TAG, "Play: reloading current track from ERROR state")
                         internalPlayWhenReady = true
-                        try {
-                            streamRepository.invalidateFormat(errorVideoId)
-                            streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$errorVideoId")
-                            precachedPlayers.remove(errorVideoId)?.let { cleanupPrecachedEntryInternal(it) }
-                            loadAndPlayTrackInternal(localCurrentMediaItemIndex, cachedPosition.coerceAtLeast(0L), shouldPlay = true)
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e
-                            Logger.e(TAG, "Play: reload from ERROR failed: ${e.message}", e)
+                        val targetIndex = localCurrentMediaItemIndex
+                        val resumePos = cachedPosition.coerceAtLeast(0L)
+                        adapterScope.launch {
+                            if (playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId != errorVideoId) {
+                                return@launch
+                            }
+                            try {
+                                streamRepository.invalidateFormat(errorVideoId)
+                                streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$errorVideoId")
+                                precachedPlayers.remove(errorVideoId)?.let { cleanupPrecachedEntryInternal(it) }
+                                if (playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId == errorVideoId) {
+                                    loadAndPlayTrackInternal(targetIndex, resumePos, shouldPlay = internalPlayWhenReady)
+                                }
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                Logger.e(TAG, "Play: reload from ERROR failed: ${e.message}", e)
+                            }
                         }
                     } else {
                         Logger.w(TAG, "Play: Called in ERROR state with no current track")
@@ -2067,7 +2086,9 @@ internal class CrossfadeExoPlayerAdapter(
             // Eagerly load audio metadata for auto crossfade calculations
             // so it's available when position updates check the trigger threshold
             if (crossfadeEnabled && crossfadeDurationMs == DataStoreManager.CROSSFADE_DURATION_AUTO) {
-                loadAudioMetaIfNeeded(videoId)
+                adapterScope.launch {
+                    loadAudioMetaIfNeeded(videoId)
+                }
             }
 
             // Trigger precaching
