@@ -97,7 +97,7 @@ val repositoryModule =
         }
 
         single<LyricsCanvasRepository> {
-            LyricsCanvasRepositoryImpl(get(), get(), get(), get(), get())
+            LyricsCanvasRepositoryImpl(get(), get(), get(), get(), get(), get())
         }
 
         single<PlaylistRepository> {

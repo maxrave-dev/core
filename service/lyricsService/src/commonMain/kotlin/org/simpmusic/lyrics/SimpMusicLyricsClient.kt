@@ -194,14 +194,20 @@ class SimpMusicLyricsClient(
         q_artist: String,
         duration: Int?,
     ) = suspendRunCatching {
-        val rs =
-            lyricsService
-                .searchLrclibLyrics(
-                    q_track = q_track,
-                    q_artist = q_artist,
-                ).body<List<LrclibObject>>()
-        val lrclibObject = selectLrclibLyricsRecord(rs, duration)
-        lrclibObject?.let { parseLrclibLyrics(it) }
+        val response =
+            lyricsService.searchLrclibLyrics(
+                q_track = q_track,
+                q_artist = q_artist,
+            )
+        when (response.status.value) {
+            404, 204 -> null
+            in 200..299 -> {
+                val rs = response.body<List<LrclibObject>>()
+                val lrclibObject = selectLrclibLyricsRecord(rs, duration)
+                lrclibObject?.let { parseLrclibLyrics(it) }
+            }
+            else -> throw SimpMusicLyricsApiException(response.status.value, "LRCLIB failed: ${response.status.value}")
+        }
     }
 
     suspend fun searchBetterLyrics(
@@ -209,14 +215,17 @@ class SimpMusicLyricsClient(
         q_artist: String,
         durationSeconds: Int?,
     ) = suspendRunCatching {
-        val rs =
-            lyricsService
-                .searchBetterLyrics(
-                    q_track = q_track,
-                    q_artist = q_artist,
-                    durationSeconds = durationSeconds?.takeIf { it > 0 },
-                ).body<BetterLyricsResponse>()
-        rs.ttml
+        val response =
+            lyricsService.searchBetterLyrics(
+                q_track = q_track,
+                q_artist = q_artist,
+                durationSeconds = durationSeconds?.takeIf { it > 0 },
+            )
+        when (response.status.value) {
+            404, 204 -> null
+            in 200..299 -> response.body<BetterLyricsResponse>().ttml
+            else -> throw SimpMusicLyricsApiException(response.status.value, "BetterLyrics failed: ${response.status.value}")
+        }
     }
 
     suspend fun searchAMArtist(

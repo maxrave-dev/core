@@ -6,6 +6,8 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.artist.ArtistEditorial
 import com.maxrave.domain.data.model.canvas.CanvasResult
 import com.maxrave.domain.data.model.metadata.Lyrics
+import com.maxrave.domain.lyrics.LyricsLookupRequest
+import com.maxrave.domain.lyrics.LyricsResolutionEvent
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.utils.Resource
 import kotlinx.coroutines.flow.Flow
@@ -116,4 +118,6 @@ interface LyricsCanvasRepository {
         translatedLyrics: Lyrics,
         language: String,
     ): Flow<Resource<String>>
+
+    fun resolveLyrics(request: LyricsLookupRequest): Flow<LyricsResolutionEvent>
 }
