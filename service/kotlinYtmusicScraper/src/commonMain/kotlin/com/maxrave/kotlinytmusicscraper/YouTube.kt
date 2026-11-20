@@ -115,6 +115,7 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -1726,7 +1727,7 @@ class YouTube {
             val streamsDeferred =
                 CoroutineScope(coroutineContext).async(Dispatchers.IO) {
                     try {
-                        ytMusic.getNewPipePlayer(videoId)
+                        ytMusic.getNewPipePlayer(videoId) { !isActive }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {

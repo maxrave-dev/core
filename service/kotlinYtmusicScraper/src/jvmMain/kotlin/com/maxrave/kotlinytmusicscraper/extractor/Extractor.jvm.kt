@@ -36,7 +36,12 @@ actual class Extractor {
         ServiceList.YouTube.tokens = cookie ?: ""
     }
 
-    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
+    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> = newPipePlayer(videoId) { false }
+
+    actual fun newPipePlayer(
+        videoId: String,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> {
         // Three attempts, kept separate on purpose. PipePipe's own local-then-server fallback lives
         // inside a single StreamInfo call and only fires when the local decoder THROWS — but the
         // failure that actually happens is a stale player table, where the signature is well-formed
@@ -52,12 +57,16 @@ actual class Extractor {
             if (audioOnlyResult == null) audioOnlyResult = streams
         }
 
+        if (isCancelled()) return emptyList()
+
         // Tier 1 — ciphers solved locally.
         // Re-registered every time: PipePipe drops the local decoder for good the first time it
         // throws, and the getter is package-private so its state cannot be read from here. Setting
         // it again turns "disabled forever" into "skipped for one track".
         YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
         pipePipeStreams(videoId, LOCAL_TIER, collectAudioOnly)?.let { return it }
+
+        if (isCancelled()) return emptyList()
 
         // Tier 2 — same extractor with no local decoder at all, so every challenge is solved at
         // api.pipepipe.dev. This is the tier a 403 from tier 1 must reach.
@@ -69,6 +78,8 @@ actual class Extractor {
         // cannot simply be called from here.
         YoutubeApiDecoder.setLocalDecoder(null)
         pipePipeStreams(videoId, REMOTE_TIER, collectAudioOnly)?.let { return it }
+
+        if (isCancelled()) return emptyList()
 
         // Tier 3 — a different extractor entirely.
         val braveResult = braveStreams(videoId)

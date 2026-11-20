@@ -22,9 +22,9 @@ private const val LOCAL_TIER = "local"
 private const val REMOTE_TIER = "pipepipe.dev"
 private const val BRAVE_TIER = "brave"
 
-// How long the local tier stays skipped after its stream URLs are rejected once. The remote
-// tier keeps working in the meantime; the local tier is retried when the deadline passes.
+// How long a PipePipe tier stays skipped after its stream URLs fail HEAD verification.
 private const val LOCAL_TIER_SKIP_MS = 10 * 60 * 1000L
+private const val REMOTE_TIER_SKIP_MS = 10 * 60 * 1000L
 
 // Once a tier passes a real HEAD check, skip the synchronous HEAD probe for subsequent fresh
 // tracks on that same tier for up to 5 minutes. Revoked immediately on any player rejection.
@@ -49,12 +49,18 @@ actual class Extractor {
 
     // Set when the local tier's stream URLs are rejected (see pipePipeStreams): until this
     // deadline the local tier is skipped, because retrying it on every track would pay a full
-    // local extraction plus a from-scratch solver rebuild and fail the same way again. The
-    // remote tier is used instead and is verified under its own trust window.
+    // local extraction plus a from-scratch solver rebuild and fail the same way again.
     @Volatile
     private var localTierBrokenUntilMs: Long = 0L
 
+    // Set when api.pipepipe.dev's stream URLs also fail HEAD verification, so subsequent fresh
+    // tracks go straight to BravePipe instead of wasting ~1.8s per song failing PipePipe first.
+    @Volatile
+    private var remoteTierBrokenUntilMs: Long = 0L
+
     private fun localTierSkipped(): Boolean = System.currentTimeMillis() < localTierBrokenUntilMs
+
+    private fun remoteTierSkipped(): Boolean = SystemClock.elapsedRealtime() < remoteTierBrokenUntilMs
 
     private fun isTierTrusted(tier: String): Boolean =
         synchronized(trustLock) {
@@ -128,6 +134,7 @@ actual class Extractor {
             braveTierTrustedUntilMs = 0L
             unverifiedExtracts.clear()
         }
+        remoteTierBrokenUntilMs = 0L
     }
 
     actual fun onStreamRejected(videoId: String) {
@@ -145,10 +152,17 @@ actual class Extractor {
         if (rejectedTier == LOCAL_TIER) {
             faradayDecoder.invalidate()
             localTierBrokenUntilMs = System.currentTimeMillis() + LOCAL_TIER_SKIP_MS
+        } else if (rejectedTier == REMOTE_TIER) {
+            remoteTierBrokenUntilMs = SystemClock.elapsedRealtime() + REMOTE_TIER_SKIP_MS
         }
     }
 
-    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
+    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> = newPipePlayer(videoId) { false }
+
+    actual fun newPipePlayer(
+        videoId: String,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> {
         // Three attempts, kept separate on purpose. PipePipe's own local-then-server fallback lives
         // inside a single StreamInfo call and only fires when the local decoder THROWS — but the
         // failure that actually happens is a stale player table, where the signature is well-formed
@@ -167,6 +181,8 @@ actual class Extractor {
         var winner: TierExtract? = null
 
         try {
+            if (isCancelled()) return emptyList()
+
             // Tier 1 — ciphers solved locally.
             // Re-registered every time: PipePipe drops the local decoder for good the first time it
             // throws, and the getter is package-private so its state cannot be read from here. Setting
@@ -178,11 +194,13 @@ actual class Extractor {
                 Logger.d(TAG, "PipePipe[$LOCAL_TIER] skipped for $videoId (stream URLs rejected recently)")
             } else {
                 YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
-                pipePipeStreams(videoId, LOCAL_TIER, attempts, collectAudioOnly)?.let {
+                pipePipeStreams(videoId, LOCAL_TIER, attempts, isCancelled, collectAudioOnly)?.let {
                     winner = it
                     return it.streams
                 }
             }
+
+            if (isCancelled()) return emptyList()
 
             // Tier 2 — same extractor with no local decoder at all, so every challenge is solved at
             // api.pipepipe.dev. This is the tier a 403 from tier 1 must reach.
@@ -192,17 +210,34 @@ actual class Extractor {
             // the API path when it is absent (verified in the bytecode of the pinned f8982ca9e7 jar).
             // PipePipe's own `disableLocalDecoder` does exactly this but is private, which is why it
             // cannot simply be called from here.
-            YoutubeApiDecoder.setLocalDecoder(null)
-            pipePipeStreams(videoId, REMOTE_TIER, attempts, collectAudioOnly)?.let {
-                winner = it
-                return it.streams
+            val remoteSkipped = remoteTierSkipped()
+            if (remoteSkipped) {
+                attempts.add("$REMOTE_TIER:skipped")
+                Logger.d(TAG, "PipePipe[$REMOTE_TIER] skipped for $videoId (stream URLs rejected recently)")
+            } else {
+                YoutubeApiDecoder.setLocalDecoder(null)
+                pipePipeStreams(videoId, REMOTE_TIER, attempts, isCancelled, collectAudioOnly)?.let {
+                    winner = it
+                    return it.streams
+                }
             }
 
+            if (isCancelled()) return emptyList()
+
             // Tier 3 — a different extractor entirely.
-            braveStreams(videoId, attempts)?.let {
+            braveStreams(videoId, attempts, isCancelled)?.let {
                 winner = it
                 return it.streams
             }
+            if (remoteSkipped && !isCancelled()) {
+                YoutubeApiDecoder.setLocalDecoder(null)
+                pipePipeStreams(videoId, REMOTE_TIER, attempts, isCancelled, collectAudioOnly)?.let {
+                    remoteTierBrokenUntilMs = 0L
+                    winner = it
+                    return it.streams
+                }
+            }
+            if (isCancelled()) return emptyList()
             // No tier produced a complete result; an audio-only one still plays.
             return audioOnlyResult?.also {
                 winner = it
@@ -210,13 +245,15 @@ actual class Extractor {
                 Logger.d(TAG, "extract source=PipePipe audio-only fallback itags=${it.streams.map { pair -> pair.first }} for $videoId")
             }?.streams ?: emptyList()
         } finally {
-            val resolved = winner
-            if (resolved?.unverifiedTier != null) {
-                recordUnverified(videoId, resolved.unverifiedTier)
-            } else {
-                clearUnverified(videoId)
+            if (!isCancelled()) {
+                val resolved = winner
+                if (resolved?.unverifiedTier != null) {
+                    recordUnverified(videoId, resolved.unverifiedTier)
+                } else {
+                    clearUnverified(videoId)
+                }
+                ExtractTiming.record(videoId, attempts.joinToString(" -> "))
             }
-            ExtractTiming.record(videoId, attempts.joinToString(" -> "))
         }
     }
 
@@ -266,6 +303,7 @@ actual class Extractor {
         videoId: String,
         tier: String,
         attempts: MutableList<String>,
+        isCancelled: () -> Boolean = { false },
         onAudioOnlyResult: (TierExtract) -> Unit = {},
     ): TierExtract? {
         val startedAtMs = SystemClock.elapsedRealtime()
@@ -273,6 +311,10 @@ actual class Extractor {
             val streamInfo =
                 StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
             val extractMs = SystemClock.elapsedRealtime() - startedAtMs
+            if (isCancelled()) {
+                attempts.add("$tier:cancelled/${extractMs}ms")
+                return null
+            }
             val streamsList = streamInfo.audioStreams + streamInfo.videoStreams + streamInfo.videoOnlyStreams
             val pipeResult =
                 streamsList.mapNotNull {
@@ -301,15 +343,18 @@ actual class Extractor {
                         TAG,
                         "PipePipe[$tier] ${if (complete) "stream" else "audio-only"} URL HEAD check failed (non 2xx) for $videoId",
                     )
-                    // A rejected URL is the one symptom of a stale player table: the signature is
-                    // well-formed and still wrong, so nothing threw on the way here. Only the on-device
-                    // table can go stale, so only that tier is worth invalidating.
+                    // A rejected URL is the one symptom of a stale player table / dead client:
+                    // invalidate local decoder or put that tier into temporary skip cooldown.
                     if (tier == LOCAL_TIER) {
                         faradayDecoder.invalidate()
-                        // Until the deadline, newPipePlayer skips this tier instead of paying a
-                        // doomed local extraction (plus a solver rebuild) on every track.
                         localTierBrokenUntilMs = System.currentTimeMillis() + LOCAL_TIER_SKIP_MS
+                    } else if (tier == REMOTE_TIER) {
+                        remoteTierBrokenUntilMs = SystemClock.elapsedRealtime() + REMOTE_TIER_SKIP_MS
                     }
+                    return null
+                }
+                if (isCancelled()) {
+                    attempts.add("$tier:cancelled/${extractMs}ms")
                     return null
                 }
                 markTierTrusted(tier)
@@ -340,12 +385,17 @@ actual class Extractor {
     private fun braveStreams(
         videoId: String,
         attempts: MutableList<String>,
+        isCancelled: () -> Boolean = { false },
     ): TierExtract? {
         val startedAtMs = SystemClock.elapsedRealtime()
         return runCatching {
             val streamInfo =
                 BraveStreamInfo.getInfo(BraveServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
             val extractMs = SystemClock.elapsedRealtime() - startedAtMs
+            if (isCancelled()) {
+                attempts.add("$BRAVE_TIER:cancelled/${extractMs}ms")
+                return@runCatching null
+            }
             val streamsList = streamInfo.audioStreams + streamInfo.videoStreams + streamInfo.videoOnlyStreams
             val braveResult =
                 streamsList.mapNotNull {
@@ -368,6 +418,10 @@ actual class Extractor {
                     clearTierTrust(BRAVE_TIER)
                     attempts.add("$BRAVE_TIER:headFail=${headMs}ms/${extractMs}ms")
                     Logger.d(TAG, "BravePipe stream URL HEAD check failed (non 2xx) for $videoId")
+                    return@runCatching null
+                }
+                if (isCancelled()) {
+                    attempts.add("$BRAVE_TIER:cancelled/${extractMs}ms")
                     return@runCatching null
                 }
                 markTierTrusted(BRAVE_TIER)

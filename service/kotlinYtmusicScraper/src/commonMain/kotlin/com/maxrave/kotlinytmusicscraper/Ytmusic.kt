@@ -281,7 +281,10 @@ class Ytmusic {
             "SAPISIDHASH ${currentTime}_$sapisidHash"
         }
 
-    fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
+    fun getNewPipePlayer(
+        videoId: String,
+        isCancelled: () -> Boolean = { false },
+    ): List<Pair<Int, String>> = extractor.newPipePlayer(videoId, isCancelled)
 
     /** Warm the extractor's local decoder ahead of the first play; see [Extractor.warmUp]. */
     fun warmUpExtractor() = extractor.warmUp()

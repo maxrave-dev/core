@@ -11,6 +11,11 @@ actual class Extractor {
 
     actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> = emptyList()
 
+    actual fun newPipePlayer(
+        videoId: String,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> = emptyList()
+
     actual fun liveHlsUrl(videoId: String): String? = null
 
     actual fun warmUp() {}
