@@ -28,6 +28,10 @@ actual class Extractor {
 
     actual fun warmUp() = faradayDecoder.warmUp()
 
+    actual fun onStreamRejected(videoId: String) {}
+
+    actual fun clearHeadTrust() {}
+
     actual fun logIn(cookie: String?) {
         ServiceList.YouTube.tokens = cookie ?: ""
     }

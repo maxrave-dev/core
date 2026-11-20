@@ -2118,6 +2118,9 @@ internal class CrossfadeExoPlayerAdapter(
                             val resumePositionMs = cachedPosition.coerceAtLeast(0L)
                             adapterScope.launch {
                                 try {
+                                    // Notify extractor before re-resolving so a trusted tier whose HEAD check was
+                                    // skipped revokes its trust window and self-heals immediately.
+                                    streamRepository.onStreamRejected(currentVideoId)
                                     // Invalidate cached format so ResolvingDataSource fetches a fresh URL
                                     streamRepository.invalidateFormat(currentVideoId)
                                     streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$currentVideoId")
@@ -3470,6 +3473,7 @@ internal class CrossfadeExoPlayerAdapter(
                                                         "(fire $watchdogFireCount/$STALL_WATCHDOG_MAX_FIRES)",
                                                 )
                                                 try {
+                                                    streamRepository.onStreamRejected(stallVideoId)
                                                     streamRepository.invalidateFormat(stallVideoId)
                                                     streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$stallVideoId")
                                                 } catch (e: Exception) {
@@ -3610,6 +3614,7 @@ internal class CrossfadeExoPlayerAdapter(
                 Logger.w(TAG, "Precache source error (attempt $attempts/$maxRetryCount) for $videoId: ${error.errorCodeName}")
                 adapterScope.launch {
                     try {
+                        streamRepository.onStreamRejected(videoId)
                         streamRepository.invalidateFormat(videoId)
                         streamRepository.invalidateFormat("${MERGING_DATA_TYPE.VIDEO}$videoId")
                         // Promoted or released while the format was being dropped: nothing left to retry.

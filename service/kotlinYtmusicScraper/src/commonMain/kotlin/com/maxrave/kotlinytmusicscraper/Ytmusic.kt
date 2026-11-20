@@ -286,6 +286,10 @@ class Ytmusic {
     /** Warm the extractor's local decoder ahead of the first play; see [Extractor.warmUp]. */
     fun warmUpExtractor() = extractor.warmUp()
 
+    fun onStreamRejected(videoId: String) = extractor.onStreamRejected(videoId)
+
+    fun clearExtractorTrust() = extractor.clearHeadTrust()
+
     fun getLiveHlsUrl(videoId: String): String? = extractor.liveHlsUrl(videoId)
 
     fun mergeAudioVideoDownload(filePath: String): DownloadProgress = extractor.mergeAudioVideoDownload(filePath)

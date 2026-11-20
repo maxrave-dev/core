@@ -33,4 +33,10 @@ expect class Extractor() {
      * first play does not have to. Platforms without a local decoder do nothing.
      */
     fun warmUp()
+
+    /** Signals that URLs extracted for [videoId] failed playback, revoking HEAD trust if skipped. */
+    fun onStreamRejected(videoId: String)
+
+    /** Clears trusted-tier windows (e.g., on network switch or account change). */
+    fun clearHeadTrust()
 }

@@ -476,6 +476,7 @@ internal class StreamRepositoryImpl(
     }
 
     override suspend fun invalidateAllFormats() {
+        youTube.clearExtractorTrust()
         withContext(Dispatchers.IO) {
             val deleted = localDataSource.deleteAllNewFormats()
             Logger.d("Stream", "Invalidated all stored formats ($deleted rows)")
@@ -498,6 +499,10 @@ internal class StreamRepositoryImpl(
         if (current.first != videoId) return null
         lastUnrecoverableError = null
         return current.second
+    }
+
+    override fun onStreamRejected(videoId: String) {
+        youTube.onStreamRejected(videoId.removePrefix(MERGING_DATA_TYPE.VIDEO))
     }
 
     /**

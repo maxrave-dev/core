@@ -15,6 +15,10 @@ actual class Extractor {
 
     actual fun warmUp() {}
 
+    actual fun onStreamRejected(videoId: String) {}
+
+    actual fun clearHeadTrust() {}
+
     actual fun mergeAudioVideoDownload(filePath: String): DownloadProgress = DownloadProgress.failed("Not supported on iOS")
 
     actual fun saveAudioWithThumbnail(

@@ -5,6 +5,7 @@ import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
+import com.maxrave.kotlinytmusicscraper.extractor.ExtractTiming
 import com.maxrave.kotlinytmusicscraper.extractor.contentLengthOf
 import com.maxrave.kotlinytmusicscraper.extractor.orderByAudioTrack
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
@@ -1709,10 +1710,9 @@ class YouTube {
                             .date
                     epoch.daysUntil(today)
                 }
-            // PlayTiming marks, read only when debug logging is on: when the player response
-            // landed and when the extractor landed, against the start of this resolution, so
-            // a slow start can be split into its halves instead of guessed at.
-            val timingEnabled = Logger.debugLoggingEnabled
+            // PlayTiming marks: when the player response landed and when the extractor landed,
+            // against the start of this resolution, so a slow start can be split into its
+            // stages and tiers in both debug and release app logs.
             val resolveStartMs = Clock.System.now().toEpochMilliseconds()
             var playerResponseMs = 0L
             var extractorMs = 0L
@@ -1760,9 +1760,7 @@ class YouTube {
                     }
                 }
 
-            if (timingEnabled) {
-                playerResponseMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
-            }
+            playerResponseMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
 
             // A live broadcast has no fixed-length formats to decode: it plays from one HLS
             // playlist. videoDetails is present even on a response this client was refused, so the
@@ -1776,19 +1774,15 @@ class YouTube {
                     liveStreamHlsUrl(videoId)
                         ?: ytMusic.getLiveHlsUrl(videoId)
                         ?: throw RuntimeException("No live HLS URL found for $videoId")
-                if (timingEnabled) {
-                    Logger.d(
-                        TAG,
-                        "PlayTiming id=$videoId live post=${playerResponseMs}ms total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
-                    )
-                }
+                Logger.i(
+                    "PlayTiming",
+                    "id=$videoId live post=${playerResponseMs}ms total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
+                )
                 return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
             }
 
             val streams = streamsDeferred.await()
-            if (timingEnabled) {
-                extractorMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
-            }
+            extractorMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
             var response = newPipePlayer(videoId, tempRes, preferredAudioLanguage, streams)
             // The retries below pair the extractor's URLs onto another response, so they
             // only make sense when the extractor produced URLs at all.
@@ -1861,13 +1855,18 @@ class YouTube {
             } else {
                 Logger.d(TAG, "YouTube Player no URL found")
             }
-            if (decodedSigResponse == null) throw noStreamFailure(videoId, tempRes)
-            if (timingEnabled) {
-                Logger.d(
-                    TAG,
-                    "PlayTiming id=$videoId post=${playerResponseMs}ms extractor=${extractorMs}ms total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
+            val tierSummary = ExtractTiming.consume(videoId) ?: "none"
+            if (decodedSigResponse == null) {
+                Logger.w(
+                    "PlayTiming",
+                    "id=$videoId fail post=${playerResponseMs}ms extractor=${extractorMs}ms tier=[$tierSummary] alt=$altClientTried total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
                 )
+                throw noStreamFailure(videoId, tempRes)
             }
+            Logger.i(
+                "PlayTiming",
+                "id=$videoId post=${playerResponseMs}ms extractor=${extractorMs}ms tier=[$tierSummary] alt=$altClientTried total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
+            )
             val firstThumb =
                 decodedSigResponse.videoDetails
                     ?.thumbnail
@@ -2624,6 +2623,10 @@ class YouTube {
 
     /** Warm the stream decipher pipeline ahead of the first play; see [Ytmusic.warmUpExtractor]. */
     fun warmUpDecoder() = ytMusic.warmUpExtractor()
+
+    fun onStreamRejected(videoId: String) = ytMusic.onStreamRejected(videoId)
+
+    fun clearExtractorTrust() = ytMusic.clearExtractorTrust()
 
     companion object {
         const val MAX_GET_QUEUE_SIZE = 1000

@@ -76,6 +76,9 @@ interface StreamRepository {
      */
     fun consumeLastUnrecoverableError(videoId: String): String? = null
 
+    /** Notifies the extractor that a resolved stream for [videoId] failed playback, revoking HEAD trust. */
+    fun onStreamRejected(videoId: String) {}
+
     /**
      * Warm the stream decipher pipeline (current player id, remote player table, player
      * script, QuickJS solver) ahead of the first play, so the first resolution does not

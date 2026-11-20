@@ -39,3 +39,33 @@ object ExtractSource {
 
     fun of(videoId: String): String? = sources[videoId]
 }
+
+object ExtractTiming {
+    private const val MAX_ENTRIES = 32
+
+    @Volatile
+    private var timings: Map<String, String> = emptyMap()
+
+    fun record(
+        videoId: String,
+        timing: String,
+    ) {
+        if (videoId.isEmpty()) return
+        val updated = LinkedHashMap<String, String>(timings)
+        updated.remove(videoId)
+        updated[videoId] = timing
+        while (updated.size > MAX_ENTRIES) {
+            updated.remove(updated.keys.firstOrNull() ?: break)
+        }
+        timings = updated
+    }
+
+    fun consume(videoId: String): String? {
+        val current = timings
+        val value = current[videoId] ?: return null
+        val updated = LinkedHashMap<String, String>(current)
+        updated.remove(videoId)
+        timings = updated
+        return value
+    }
+}
