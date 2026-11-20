@@ -2376,35 +2376,45 @@ class YouTube {
     suspend fun getYouTubeCaption(
         videoId: String,
         preferLang: String,
-    ) = runCatching {
-        val ytWeb = ytMusic.player(WEB, videoId, null, null).body<YouTubeInitialPage>()
-        val baseCaption =
-            ytMusic
-                .getYouTubeCaption(
-                    ytWeb.captions?.playerCaptionsTracklistRenderer?.captionTracks?.firstOrNull()?.baseUrl?.replace(
-                        "&fmt=srv3",
-                        "",
-                    ) ?: "",
-                ).body<Transcript>()
-                .tryDecodeText()
-        val translateCaption =
-            try {
+    ): Result<Pair<Transcript, Transcript?>> =
+        try {
+            val ytWeb = ytMusic.player(WEB, videoId, null, null).body<YouTubeInitialPage>()
+            val baseUrl =
+                ytWeb.captions
+                    ?.playerCaptionsTracklistRenderer
+                    ?.captionTracks
+                    ?.firstOrNull()
+                    ?.baseUrl
+                    ?.replace("&fmt=srv3", "")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return Result.failure(NoSuchElementException("No captions found for $videoId"))
+            val baseCaption =
                 ytMusic
-                    .getYouTubeCaption(
-                        "${
-                            ytWeb.captions?.playerCaptionsTracklistRenderer?.captionTracks?.firstOrNull()?.baseUrl?.replace(
-                                "&fmt=srv3",
-                                "",
-                            )
-                        }&tlang=$preferLang",
-                    ).body<Transcript>()
+                    .getYouTubeCaption(baseUrl)
+                    .body<Transcript>()
                     .tryDecodeText()
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
-        return@runCatching baseCaption to translateCaption
-    }
+            val translateCaption =
+                if (preferLang.isNotBlank()) {
+                    try {
+                        ytMusic
+                            .getYouTubeCaption("$baseUrl&tlang=$preferLang")
+                            .body<Transcript>()
+                            .tryDecodeText()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        null
+                    }
+                } else {
+                    null
+                }
+            Result.success(baseCaption to translateCaption)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
 
     suspend fun scrapeYouTube(videoId: String) =
         runCatching {

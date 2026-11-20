@@ -1,34 +1,101 @@
 package org.simpmusic.lyrics.parser
 
 import com.maxrave.domain.extension.decodeHtmlEntities
+import com.maxrave.logger.Logger
 import org.simpmusic.lyrics.domain.Lyrics
 
-fun parseSyncedLyrics(data: String): Lyrics {
-    val regex = Regex("\\[(\\d{2}):(\\d{2})\\.(\\d{2})\\](.+)")
-    val lines = data.lines()
-    val linesLyrics = ArrayList<Lyrics.LyricsX.Line>()
-    lines.map { line ->
-        val matchResult = regex.matchEntire(line)
-        if (matchResult != null) {
-            val minutes = matchResult.groupValues[1].toLong()
-            val seconds = matchResult.groupValues[2].toLong()
-            val milliseconds = matchResult.groupValues[3].toLong()
-            val timeInMillis = minutes * 60_000L + seconds * 1000L + milliseconds
-            // Trim, don't drop a fixed first character. Most providers leave a space after
-            // "]", but LRCLIB packs the text right against it — "[00:27.12]boy, you got me"
-            // — so removeRange(0, 1) ate the first letter of every single line.
-            val rawContent = matchResult.groupValues[4]
-            val content = if (rawContent.isBlank()) "♫" else rawContent.trimStart()
-            linesLyrics.add(
+private const val TAG = "LrcTextParser"
+
+private val LRC_ID_TAG_REGEX = Regex("""\[([A-Za-z#][^:\]]*):(.*)\]""")
+private val LRC_LINE_TIME_LIKE_REGEX = Regex("""\[\d+:\d[\d:.]*\]""")
+private val LRC_LINE_TIME_REGEX = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]""")
+private val RICH_SYNC_LINE_REGEX = Regex("""^\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.+)$""")
+private val RICH_SYNC_WORD_TAG_REGEX = Regex("""<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>""")
+private val VOICE_MARKER_REGEX = Regex("""^v\d+:""")
+
+private fun parseFractionMs(fraction: String): Long =
+    when (fraction.length) {
+        0 -> 0L
+        1 -> (fraction.toLongOrNull() ?: 0L) * 100L
+        2 -> (fraction.toLongOrNull() ?: 0L) * 10L
+        else -> (fraction.take(3).toLongOrNull() ?: 0L)
+    }
+
+private fun MatchResult.parseLrcTimeMs(): Long? {
+    val minutes = groupValues[1].toLongOrNull() ?: return null
+    val seconds = groupValues[2].toLongOrNull() ?: return null
+    if (seconds >= 60L) return null
+    return minutes * 60_000L + seconds * 1000L + parseFractionMs(groupValues[3])
+}
+
+/**
+ * Tolerant line-level LRC parser:
+ * - Supports `[m:ss]`, `[mm:ss.x]`, `[mm:ss.xx]`, `[mm:ss.xxx]`, `[mmm:ss.xxx]`, and `[mm:ss:xx]`
+ *   with proper sub-second scaling (`1 -> *100`, `2 -> *10`, `3 -> ms`).
+ * - Supports multiple timestamps per line, `[offset:+/-ms]`, and empty timed lines (`♫`).
+ * - Ignores metadata ID tags and returns lines sorted ascending by timestamp.
+ */
+fun parseLrc(data: String): Lyrics {
+    if (data.isBlank()) {
+        return Lyrics(lyrics = Lyrics.LyricsX(lines = emptyList(), syncType = "LINE_SYNCED"))
+    }
+    var offsetMs = 0L
+    val parsed = ArrayList<Pair<Long, String>>()
+
+    for (rawLine in data.lines()) {
+        val trimmed = rawLine.trim()
+        if (trimmed.isEmpty()) continue
+
+        val tagMatch = LRC_ID_TAG_REGEX.matchEntire(trimmed)
+        if (tagMatch != null) {
+            val (key, value) = tagMatch.destructured
+            if (key.equals("offset", ignoreCase = true)) {
+                value.trim().toLongOrNull()?.let { offsetMs = it }
+            }
+            continue
+        }
+
+        val times = ArrayList<Long>(2)
+        var badTime = false
+        var pos = 0
+        while (true) {
+            var probe = pos
+            while (probe < trimmed.length && trimmed[probe] == ' ' && times.isNotEmpty()) {
+                probe++
+            }
+            val likeMatch = LRC_LINE_TIME_LIKE_REGEX.find(trimmed, probe)?.takeIf { it.range.first == probe } ?: break
+            val ms = LRC_LINE_TIME_REGEX.matchEntire(likeMatch.value)?.parseLrcTimeMs()
+            if (ms == null) {
+                badTime = true
+            } else {
+                times.add(ms)
+            }
+            pos = likeMatch.range.last + 1
+        }
+        if (badTime || times.isEmpty()) continue
+
+        val rest = trimmed.substring(pos)
+        val content = if (rest.isBlank()) "♫" else decodeHtmlEntities(rest.trimStart())
+        times.forEach { rawMs ->
+            parsed.add(rawMs to content)
+        }
+    }
+
+    val linesLyrics =
+        parsed
+            .map { (rawMs, content) ->
+                val shifted = (rawMs - offsetMs).coerceAtLeast(0L)
+                shifted to content
+            }.sortedBy { it.first }
+            .map { (timeInMillis, content) ->
                 Lyrics.LyricsX.Line(
                     endTimeMs = "0",
                     startTimeMs = timeInMillis.toString(),
                     syllables = listOf(),
-                    words = decodeHtmlEntities(content),
-                ),
-            )
-        }
-    }
+                    words = content,
+                )
+            }
+
     return Lyrics(
         lyrics =
             Lyrics.LyricsX(
@@ -37,6 +104,8 @@ fun parseSyncedLyrics(data: String): Lyrics {
             ),
     )
 }
+
+fun parseSyncedLyrics(data: String): Lyrics = parseLrc(data)
 
 fun parseRichSyncLyrics(data: String): Lyrics {
     // Unescape JSON string if needed (remove quotes and replace \n with actual newlines)
@@ -50,74 +119,86 @@ fun parseRichSyncLyrics(data: String): Lyrics {
             .replace("\\r", "\r")
             .replace("\\t", "\t")
 
-    // Handle different line separators (Unix \n, Windows \r\n, Mac \r)
     val lines = unescapedData.lines()
-    // Skip offset line if present (starts with [offset:)
-    val lyricsLines =
-        lines.filter { line ->
-            line.isNotBlank() && !line.trim().startsWith("[offset:")
-        }
+    var offsetMs = 0L
+    val lyricsLines = ArrayList<String>(lines.size)
 
-    println("[parseRichSyncLyrics] Total lines: ${lines.size}, Filtered lines: ${lyricsLines.size}")
-    if (lyricsLines.isNotEmpty()) {
-        println("[parseRichSyncLyrics] First line sample: ${lyricsLines.first()}")
+    for (rawLine in lines) {
+        val trimmed = rawLine.trim()
+        if (trimmed.isEmpty()) continue
+        val tagMatch = LRC_ID_TAG_REGEX.matchEntire(trimmed)
+        if (tagMatch != null) {
+            val (key, value) = tagMatch.destructured
+            if (key.equals("offset", ignoreCase = true)) {
+                value.trim().toLongOrNull()?.let { offsetMs = it }
+            }
+            continue
+        }
+        lyricsLines.add(trimmed)
     }
 
-    // Regex to match [MM:SS.mm] format (flexible with 1-2 digits)
-    val regex = Regex("\\[(\\d{1,2}):(\\d{2})\\.(\\d{2,3})\\](.+)")
-    // Strip a leading voice marker (e.g. "v1:", "v2:") that some lyrics
-    // providers prepend before the first word timestamp, so it doesn't leak
-    // into the word content and stick to the first word.
-    val voiceMarkerRegex = Regex("""^v\d+:""")
-    val linesLyrics = ArrayList<Lyrics.LyricsX.Line>()
+    val parsedEntries = ArrayList<Pair<Long, String>>(lyricsLines.size)
+    var hasWordTiming = false
+    var failedCount = 0
 
-    lyricsLines.forEachIndexed { index, line ->
-        val matchResult = regex.matchEntire(line.trim())
+    lyricsLines.forEach { line ->
+        val matchResult = RICH_SYNC_LINE_REGEX.matchEntire(line)
         if (matchResult != null) {
-            val minutes = matchResult.groupValues[1].toLongOrNull() ?: 0L
-            val seconds = matchResult.groupValues[2].toLongOrNull() ?: 0L
-            val centiseconds = matchResult.groupValues[3].toLongOrNull() ?: 0L
-
-            // Convert to milliseconds
-            // If centiseconds has 3 digits (milliseconds), use directly
-            // If 2 digits (centiseconds), multiply by 10
-            val millisPart = if (matchResult.groupValues[3].length == 3) centiseconds else centiseconds * 10
-            val timeInMillis = minutes * 60_000L + seconds * 1000L + millisPart
-
-            // Keep the rich sync content as-is (with <MM:SS.mm> word format)
-            val content =
+            val rawLineMs = matchResult.parseLrcTimeMs()
+            if (rawLineMs == null) {
+                failedCount++
+                return@forEach
+            }
+            var content =
                 matchResult.groupValues[4]
                     .trimStart()
-                    .replace(voiceMarkerRegex, "")
+                    .replace(VOICE_MARKER_REGEX, "")
                     .trimStart()
 
             if (content.isNotBlank()) {
-                linesLyrics.add(
-                    Lyrics.LyricsX.Line(
-                        endTimeMs = "0",
-                        startTimeMs = timeInMillis.toString(),
-                        syllables = listOf(),
-                        words = content,
-                    ),
-                )
+                val containsWordTags = RICH_SYNC_WORD_TAG_REGEX.containsMatchIn(content)
+                if (containsWordTags) {
+                    hasWordTiming = true
+                    if (offsetMs != 0L) {
+                        content =
+                            RICH_SYNC_WORD_TAG_REGEX.replace(content) { wordMatch ->
+                                val rawWordMs = wordMatch.parseLrcTimeMs() ?: return@replace wordMatch.value
+                                val shiftedWordMs = (rawWordMs - offsetMs).coerceAtLeast(0L)
+                                "<${formatMsToLrc(shiftedWordMs)}>"
+                            }
+                    }
+                }
+                val shiftedLineMs = (rawLineMs - offsetMs).coerceAtLeast(0L)
+                parsedEntries.add(shiftedLineMs to content)
             }
         } else {
-            if (index < 3) { // Only log first 3 failed matches to avoid spam
-                println("[parseRichSyncLyrics] Line $index failed to match: '${line.take(100)}'")
-            }
+            failedCount++
         }
     }
 
-    println("[parseRichSyncLyrics] Parsed ${linesLyrics.size} lines successfully")
+    val linesLyrics =
+        parsedEntries
+            .sortedBy { it.first }
+            .map { (timeInMillis, content) ->
+                Lyrics.LyricsX.Line(
+                    endTimeMs = "0",
+                    startTimeMs = timeInMillis.toString(),
+                    syllables = listOf(),
+                    words = content,
+                )
+            }
+
+    Logger.d(TAG, "parseRichSyncLyrics parsed=${linesLyrics.size} skipped=$failedCount hasWordTiming=$hasWordTiming")
 
     return Lyrics(
         lyrics =
             Lyrics.LyricsX(
                 lines = linesLyrics,
-                syncType = "RICH_SYNCED",
+                syncType = if (hasWordTiming) "RICH_SYNCED" else "LINE_SYNCED",
             ),
     )
 }
+
 
 /**
  * Parse TTML (Timed Text Markup Language) lyrics from BetterLyrics.
@@ -244,9 +325,18 @@ private fun formatMsToLrc(ms: Long): String {
 }
 
 fun parseUnsyncedLyrics(data: String): Lyrics {
+    if (data.isBlank()) {
+        return Lyrics(
+            lyrics =
+                Lyrics.LyricsX(
+                    lines = emptyList(),
+                    syncType = "UNSYNCED",
+                ),
+        )
+    }
     val lines = data.lines()
-    val linesLyrics = ArrayList<Lyrics.LyricsX.Line>()
-    lines.map { line ->
+    val linesLyrics = ArrayList<Lyrics.LyricsX.Line>(lines.size)
+    lines.forEach { line ->
         linesLyrics.add(
             Lyrics.LyricsX.Line(
                 endTimeMs = "0",
