@@ -317,6 +317,8 @@ class Ytmusic {
 
     fun clearExtractorTrust() = extractor.clearHeadTrust()
 
+    fun isStreamUrlReachable(url: String): Boolean = extractor.isStreamUrlReachable(url)
+
     fun getLiveHlsUrl(videoId: String): String? = extractor.liveHlsUrl(videoId)
 
     fun mergeAudioVideoDownload(filePath: String): DownloadProgress = extractor.mergeAudioVideoDownload(filePath)
@@ -512,8 +514,9 @@ class Ytmusic {
         playlistId: String?,
         cpn: String?,
         signatureTimestamp: Int? = null,
+        setLogin: Boolean = true,
     ) = httpClient.post("player") {
-        ytClient(client, setLogin = true)
+        ytClient(client, setLogin = setLogin)
         setBody(
             PlayerBody(
                 context =

@@ -33,7 +33,9 @@ import com.maxrave.kotlinytmusicscraper.models.YTItem
 import com.maxrave.kotlinytmusicscraper.models.YTItemType
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.IOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5_SIMPLY
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB_REMIX
 import com.maxrave.kotlinytmusicscraper.models.YouTubeLocale
@@ -158,6 +160,7 @@ private const val PLAYER_REQUEST_TIMEOUT_MS = 10_000L
 
 class YouTube {
     private val ytMusic = Ytmusic()
+    private val directTempRejectedIds = kotlinx.coroutines.flow.MutableStateFlow<Set<String>>(emptySet())
 
     private val tidalTokenMutex = Mutex()
     private var tidalAccessToken: String? = null
@@ -1577,10 +1580,11 @@ class YouTube {
         playlistId: String?,
         cpn: String,
         signatureTimestamp: Int,
+        setLogin: Boolean = true,
     ): PlayerResponse =
         withTimeoutOrNull(PLAYER_REQUEST_TIMEOUT_MS) {
             ytMusic
-                .player(client, videoId, playlistId, cpn, signatureTimestamp)
+                .player(client, videoId, playlistId, cpn, signatureTimestamp, setLogin = setLogin)
                 .body<PlayerResponse>()
                 .let {
                     val fexp =
@@ -1804,31 +1808,73 @@ class YouTube {
             // only make sense when the extractor produced URLs at all.
             var altRes: PlayerResponse? = null
             if (response == null && streams.isEmpty()) {
+                fun firstDirectAudioUrl(res: PlayerResponse): String? =
+                    res.streamingData
+                        ?.adaptiveFormats
+                        ?.firstOrNull { it.isAudio && !it.url.isNullOrEmpty() }
+                        ?.url
+                        ?: res.streamingData
+                            ?.formats
+                            ?.firstOrNull { !it.url.isNullOrEmpty() }
+                            ?.url
+                val directRejected = videoId in directTempRejectedIds.value
                 val directFromTemp =
-                    tempRes.takeIf { res ->
-                        res.playabilityStatus.status == "OK" &&
-                            ((res.streamingData?.formats?.any { !it.url.isNullOrEmpty() } == true) ||
-                                (res.streamingData?.adaptiveFormats?.any { !it.url.isNullOrEmpty() } == true))
+                    if (!directRejected) {
+                        tempRes
+                            .takeIf { res -> res.playabilityStatus.status == "OK" && firstDirectAudioUrl(res) != null }
+                            ?.takeIf { res ->
+                                val sample = firstDirectAudioUrl(res) ?: return@takeIf false
+                                ytMusic.isStreamUrlReachable(sample).also { ok ->
+                                    if (!ok) {
+                                        Logger.w(TAG, "WEB_REMIX direct URL failed HEAD check for $videoId; trying alternate clients")
+                                    }
+                                }
+                            }
+                    } else {
+                        null
                     }
                 if (directFromTemp != null) {
                     response = directFromTemp
-                } else if (!altClientTried) {
-                    altClientTried = true
-                    altRes =
-                        try {
-                            fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            Logger.w(TAG, "ANDROID direct fallback request failed for $videoId (${e.message})")
-                            null
+                } else {
+                    // Cascade through clients that often serve direct URLs without web PO tokens
+                    // (including Made-for-Kids tracks where anonymous web extractors fail).
+                    val fallbackClients =
+                        buildList {
+                            if (!altClientTried) add(ANDROID to false)
+                            add(IOS to false)
+                            add(TVHTML5_SIMPLY to false)
+                            add(ANDROID to true)
                         }
-                    if (altRes != null &&
-                        altRes.playabilityStatus.status == "OK" &&
-                        ((altRes.streamingData?.formats?.any { !it.url.isNullOrEmpty() } == true) ||
-                            (altRes.streamingData?.adaptiveFormats?.any { !it.url.isNullOrEmpty() } == true))
-                    ) {
-                        response = altRes.copy(playbackTracking = tempRes.playbackTracking)
+                    for ((client, withLogin) in fallbackClients) {
+                        altClientTried = true
+                        val candidate =
+                            try {
+                                fetchPlayerResponse(
+                                    client,
+                                    videoId,
+                                    playlistId,
+                                    cpn,
+                                    signatureTimestamp,
+                                    setLogin = withLogin,
+                                )
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Logger.w(TAG, "${client.clientName} direct fallback request failed for $videoId (${e.message})")
+                                null
+                            }
+                        if (candidate != null) {
+                            altRes = candidate
+                            if (candidate.playabilityStatus.status == "OK") {
+                                val sample = firstDirectAudioUrl(candidate)
+                                if (sample != null && ytMusic.isStreamUrlReachable(sample)) {
+                                    response = candidate.copy(playbackTracking = tempRes.playbackTracking)
+                                    break
+                                } else {
+                                    Logger.w(TAG, "${client.clientName} direct URL unusable for $videoId")
+                                }
+                            }
+                        }
                     }
                 }
             } else if (response == null && streams.isNotEmpty()) {
@@ -2668,9 +2714,18 @@ class YouTube {
     /** Warm the stream decipher pipeline ahead of the first play; see [Ytmusic.warmUpExtractor]. */
     fun warmUpDecoder() = ytMusic.warmUpExtractor()
 
-    fun onStreamRejected(videoId: String) = ytMusic.onStreamRejected(videoId)
+    fun onStreamRejected(videoId: String) {
+        directTempRejectedIds.value =
+            (directTempRejectedIds.value + videoId).let { set ->
+                if (set.size > 32) set.drop(set.size - 32).toSet() else set
+            }
+        ytMusic.onStreamRejected(videoId)
+    }
 
-    fun clearExtractorTrust() = ytMusic.clearExtractorTrust()
+    fun clearExtractorTrust() {
+        directTempRejectedIds.value = emptySet()
+        ytMusic.clearExtractorTrust()
+    }
 
     companion object {
         const val MAX_GET_QUEUE_SIZE = 1000

@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 
 internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     val itags = this.mapTo(HashSet()) { it.first }
-    val hasAudio = ITAG.AUDIO.any { it in itags }
+    val hasAudio = ITAG.AUDIO_PLAYABLE.any { it in itags }
     val hasVideo = ITAG.VIDEO.any { it in itags }
     return hasAudio && hasVideo
 }
@@ -40,7 +40,7 @@ internal fun updateStreamHealthCheckProxy(proxy: Proxy?) {
  * they are the ones the player will actually use; lower-quality extras can stay unverified.
  */
 internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
-    val required = ITAG.AUDIO + ITAG.VIDEO
+    val required = ITAG.AUDIO_PLAYABLE + ITAG.VIDEO
     val candidate = this.filter { it.first in required }.randomOrNull() ?: return false
     if (ExtractorCallRegistry.isCurrentCancelled()) return false
     val token = ExtractorCallRegistry.activeToken()
@@ -64,7 +64,20 @@ internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
 }
 
 /** Whether the list carries at least one audio stream URL, even with no video stream at all. */
-internal fun List<Pair<Int, String>>.hasAudioItag(): Boolean = any { it.first in ITAG.AUDIO }
+internal fun List<Pair<Int, String>>.hasAudioItag(): Boolean = any { it.first in ITAG.AUDIO_PLAYABLE }
+
+internal fun isStreamUrlReachable(url: String): Boolean =
+    runCatching {
+        val request =
+            okhttp3.Request
+                .Builder()
+                .head()
+                .url(url)
+                .build()
+        streamHealthCheckClient.newCall(request).execute().use { response ->
+            response.code in 200..299
+        }
+    }.getOrDefault(false)
 
 class BraveNewPipeDownloaderImpl(
     proxy: Proxy?,

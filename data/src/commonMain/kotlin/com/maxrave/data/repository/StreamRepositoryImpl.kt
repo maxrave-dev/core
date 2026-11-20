@@ -373,7 +373,7 @@ internal class StreamRepositoryImpl(
                                 val cpnSuffix = if (data.first != null && !url.contains("cpn=")) "&cpn=${data.first}" else ""
                                 val rangeSuffix =
                                     if (!youTube.isManifestUrl(url) && !url.contains("range=")) {
-                                        format.contentLength?.let { "&range=0-$it" }.orEmpty()
+                                        format.contentLength?.takeIf { it > 0L }?.let { "&range=0-$it" }.orEmpty()
                                     } else {
                                         ""
                                     }

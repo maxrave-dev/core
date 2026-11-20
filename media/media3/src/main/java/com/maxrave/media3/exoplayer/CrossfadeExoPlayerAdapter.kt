@@ -931,6 +931,7 @@ internal class CrossfadeExoPlayerAdapter(
                                     return@launch
                                 }
                                 try {
+                                    streamRepository.onStreamRejected(errorVideoId)
                                     streamRepository.invalidateFormat(errorVideoId)
                                     streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$errorVideoId")
                                     precachedPlayers.remove(errorVideoId)?.let { cleanupPrecachedEntryInternal(it) }

@@ -9,16 +9,39 @@ import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import java.io.IOException
 import java.net.Proxy
+import java.util.concurrent.TimeUnit
 
 internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     val itags = this.mapTo(HashSet()) { it.first }
-    val hasAudio = ITAG.AUDIO.any { it in itags }
+    val hasAudio = ITAG.AUDIO_PLAYABLE.any { it in itags }
     val hasVideo = ITAG.VIDEO.any { it in itags }
     return hasAudio && hasVideo
 }
 
 /** Whether the list carries at least one audio stream URL, even with no video stream at all. */
-internal fun List<Pair<Int, String>>.hasAudioItag(): Boolean = any { it.first in ITAG.AUDIO }
+private val jvmHealthCheckClient: okhttp3.OkHttpClient by lazy {
+    extractorHttpClient(null)
+        .newBuilder()
+        .connectTimeout(2500, TimeUnit.MILLISECONDS)
+        .readTimeout(2500, TimeUnit.MILLISECONDS)
+        .callTimeout(3000, TimeUnit.MILLISECONDS)
+        .build()
+}
+
+internal fun isStreamUrlReachable(url: String): Boolean =
+    runCatching {
+        val request =
+            okhttp3.Request
+                .Builder()
+                .head()
+                .url(url)
+                .build()
+        jvmHealthCheckClient.newCall(request).execute().use { response ->
+            response.code in 200..299
+        }
+    }.getOrDefault(false)
+
+internal fun List<Pair<Int, String>>.hasAudioItag(): Boolean = any { it.first in ITAG.AUDIO_PLAYABLE }
 
 class BraveNewPipeDownloaderImpl(
     proxy: Proxy?,

@@ -55,4 +55,7 @@ expect class Extractor() {
 
     /** Clears trusted-tier windows (e.g., on network switch or account change). */
     fun clearHeadTrust()
+
+    /** Lightweight HEAD probe used when direct InnerTube URLs need verification. */
+    fun isStreamUrlReachable(url: String): Boolean
 }

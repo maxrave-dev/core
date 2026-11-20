@@ -163,6 +163,8 @@ actual class Extractor {
         clearHeadTrust()
     }
 
+    actual fun isStreamUrlReachable(url: String): Boolean = com.maxrave.kotlinytmusicscraper.extractor.isStreamUrlReachable(url)
+
     actual fun clearHeadTrust() {
         synchronized(trustLock) {
             localTierTrustedUntilMs = 0L
@@ -224,7 +226,8 @@ actual class Extractor {
                 if (isCancelled()) return@runWithToken emptyList()
 
                 // Tier 1 — ciphers solved locally.
-                if (localTierSkipped()) {
+                val localSkipped = localTierSkipped()
+                if (localSkipped) {
                     attempts.add("$LOCAL_TIER:skipped")
                     Logger.d(TAG, "PipePipe[$LOCAL_TIER] skipped for $videoId (stream URLs rejected recently)")
                 } else {
@@ -259,6 +262,13 @@ actual class Extractor {
                 if (remoteSkipped && !isCancelled()) {
                     pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, attempts, isCancelled, collectAudioOnly)?.let {
                         remoteTierBrokenUntilMs = 0L
+                        winner = it
+                        return@runWithToken it.streams
+                    }
+                }
+                if (localSkipped && !isCancelled()) {
+                    pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, attempts, isCancelled, collectAudioOnly)?.let {
+                        localTierBrokenUntilMs = 0L
                         winner = it
                         return@runWithToken it.streams
                     }
@@ -356,7 +366,8 @@ actual class Extractor {
                 }
             val complete = pipeResult.hasRequiredItags()
             if (!complete && !pipeResult.hasAudioItag()) {
-                attempts.add("$tier:noItags/${extractMs}ms")
+                val got = pipeResult.map { it.first }.distinct().joinToString(",")
+                attempts.add("$tier:noItags($got)/${extractMs}ms")
                 Logger.d(TAG, "PipePipe[$tier] missing required itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null
             }
