@@ -1963,8 +1963,6 @@ internal class CrossfadeExoPlayerAdapter(
         loadingMediaId = videoId
 
         try {
-            transitionToState(InternalState.PREPARING)
-
             // Evict any precached player that is neither this track nor an upcoming target
             // immediately on skip instead of waiting for triggerPrecachingInternal's delay.
             clearStalePrecachesOnSkipInternal(index, videoId)
@@ -1989,6 +1987,20 @@ internal class CrossfadeExoPlayerAdapter(
                     }
                 }
 
+            val startPos = startPositionMs.coerceAtLeast(0L)
+            val precacheAlreadyReady =
+                cachedPlayerEntry != null &&
+                    cachedPlayerEntry.player.playbackState == Player.STATE_READY &&
+                    cachedPlayerEntry.player.bufferedPosition > startPos
+            if (precacheAlreadyReady) {
+                // Precache already holds buffered audio: enter PREPARING quietly without publishing
+                // STATE_BUFFERING so the UI does not flash a loading spinner before PLAYING lands.
+                internalState = InternalState.PREPARING
+                eightDOrbit.setPlaying(false)
+            } else {
+                transitionToState(InternalState.PREPARING)
+            }
+
             // Cancel oldPlayer's abandoned network resolve BEFORE creating/preparing the new
             // player so only pre-existing resolves are cancelled, never the new resolve.
             if (oldMediaId != null &&
@@ -2004,7 +2016,7 @@ internal class CrossfadeExoPlayerAdapter(
             val player: ExoPlayer
             val playerFilter: CrossfadeFilterAudioProcessor?
             if (cachedPlayerEntry?.player != null) {
-                Logger.d(TAG, "Using precached player for $videoId")
+                Logger.d(TAG, "Using precached player for $videoId (state=${cachedPlayerEntry.player.playbackState}, buf=${cachedPlayerEntry.player.bufferedPosition}ms)")
                 player = cachedPlayerEntry.player
                 playerFilter = cachedPlayerEntry.filter
             } else {
@@ -2033,11 +2045,14 @@ internal class CrossfadeExoPlayerAdapter(
                 cleanupPlayerInternal(oldPlayer)
             }
 
-            // Reset cached progress/duration for the new track before notifying listeners.
-            val startPos = startPositionMs.coerceAtLeast(0L)
+            // Keep an adopted precached player's actual buffer/duration instead of wiping them
+            // to 0L (which would force SharedViewModel to treat an already-buffered track as loading).
+            val adoptedBufferedPos =
+                if (cachedPlayerEntry != null) player.bufferedPosition.coerceAtLeast(0L) else 0L
             cachedPosition = startPos
-            cachedBufferedPosition = 0L
+            cachedBufferedPosition = adoptedBufferedPos
             cachedDuration = player.duration.takeIf { it > 0L } ?: 0L
+            cachedIsLoading = !precacheAlreadyReady && adoptedBufferedPos <= startPos
 
             // 3. Apply settings and seek if needed
             player.volume = internalVolume
@@ -3686,7 +3701,18 @@ internal class CrossfadeExoPlayerAdapter(
         precacheJob =
             adapterScope.launch {
                 try {
-                    delay(3_000)
+                    // Prioritize initial startup of the current track while it is still
+                    // preparing/buffering (up to 1.2s), then debounce rapid skip bursts briefly
+                    // (300ms) instead of stalling precache for 3 full seconds on every track.
+                    var waitedMs = 0L
+                    while (isActive &&
+                        waitedMs < 1_200L &&
+                        currentPlayer?.playbackState == Player.STATE_BUFFERING
+                    ) {
+                        delay(100)
+                        waitedMs += 100L
+                    }
+                    delay(300)
                     // The tracks Next will actually play, in Next's own order: shuffle-aware, wrapping
                     // under Repeat All. Picking `index + i` in playlist order precached tracks a shuffled
                     // queue never reached, and nothing released them until the queue was edited (#2619).
