@@ -16,6 +16,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.maxrave.common.MEDIA_NOTIFICATION
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
@@ -40,6 +41,7 @@ internal class SimpleMediaService :
     private val coilBitmapLoader: CoilBitmapLoader by inject<CoilBitmapLoader>()
 
     private var mediaSession: MediaLibrarySession? = null
+    private var controllerFuture: ListenableFuture<MediaController>? = null
 
     private val simpleMediaSessionCallback: MediaLibrarySession.Callback by inject<MediaLibrarySession.Callback>()
 
@@ -104,15 +106,15 @@ internal class SimpleMediaService :
         }
 
         val sessionToken = SessionToken(this, ComponentName(this, SimpleMediaService::class.java))
-        val controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
-        controllerFuture.addListener({ controllerFuture.get() }, MoreExecutors.directExecutor())
-
-        simpleMediaServiceHandler.onUpdateNotification = { list ->
-            val commandButtonList = list.map { it.toCommandButton(this) }
-            mediaSession?.setMediaButtonPreferences(
-                commandButtonList,
-            )
-        }
+        val future = MediaController.Builder(this, sessionToken).buildAsync()
+        controllerFuture = future
+        future.addListener({
+            try {
+                future.get()
+            } catch (e: Exception) {
+                Logger.w("Service", "Warmup MediaController connection failed: ${e.message}")
+            }
+        }, MoreExecutors.directExecutor())
     }
 
     @UnstableApi
@@ -143,9 +145,22 @@ internal class SimpleMediaService :
         }
     }
 
+    private fun releaseControllerFuture() {
+        controllerFuture?.let { future ->
+            try {
+                MediaController.releaseFuture(future)
+            } catch (e: Exception) {
+                Logger.w("Service", "Error releasing warmup MediaController: ${e.message}")
+            }
+        }
+        controllerFuture = null
+    }
+
     @UnstableApi
     fun release() {
         Logger.w("Service", "Starting release process")
+        simpleMediaServiceHandler.onUpdateNotification = null
+        releaseControllerFuture()
         runBlocking {
             try {
                 // Release MediaSession (don't release player - CrossfadeExoPlayerAdapter manages it)
@@ -157,10 +172,11 @@ internal class SimpleMediaService :
                 }
                 // Release handler (contains coroutines and jobs, which also releases the adapter)
                 simpleMediaServiceHandler.release()
-                mediaSession = null
                 Logger.w("Service", "Simple Media Service Released")
             } catch (e: Exception) {
-                Logger.e("Service", "Error during release")
+                Logger.e("Service", "Error during release", e)
+            } finally {
+                mediaSession = null
             }
         }
     }
@@ -169,8 +185,18 @@ internal class SimpleMediaService :
     override fun onDestroy() {
         super.onDestroy()
         Logger.w("Service", "Simple Media Service Destroyed")
+        simpleMediaServiceHandler.onUpdateNotification = null
+        releaseControllerFuture()
         if (simpleMediaServiceHandler.shouldReleaseOnTaskRemoved()) {
             release()
+        } else {
+            try {
+                mediaSession?.release()
+            } catch (e: Exception) {
+                Logger.w("Service", "Error releasing MediaSession in onDestroy: ${e.message}")
+            } finally {
+                mediaSession = null
+            }
         }
     }
 

@@ -18,7 +18,12 @@ internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     return hasAudio && hasVideo
 }
 
-private val streamHealthCheckClient: OkHttpClient by lazy { OkHttpClient.Builder().build() }
+@Volatile
+private var streamHealthCheckClient: OkHttpClient = extractorHttpClient(null)
+
+internal fun updateStreamHealthCheckProxy(proxy: Proxy?) {
+    streamHealthCheckClient = extractorHttpClient(proxy)
+}
 
 /**
  * Pick one random URL whose itag belongs to [ITAG.AUDIO] or [ITAG.VIDEO] and HEAD it. Returns true
@@ -55,7 +60,12 @@ internal fun List<Pair<Int, String>>.hasAudioItag(): Boolean = any { it.first in
 class BraveNewPipeDownloaderImpl(
     proxy: Proxy?,
 ) : Downloader() {
-    private val client = extractorHttpClient(proxy)
+    @Volatile
+    private var client = extractorHttpClient(proxy)
+
+    fun updateProxy(proxy: Proxy?) {
+        client = extractorHttpClient(proxy)
+    }
 
     @Throws(IOException::class, ReCaptchaException::class)
     override fun execute(request: Request): Response {

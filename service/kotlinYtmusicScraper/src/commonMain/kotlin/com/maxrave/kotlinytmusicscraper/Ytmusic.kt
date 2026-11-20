@@ -106,7 +106,10 @@ class Ytmusic {
             explicitNulls = false
             encodeDefaults = true
         }
+    @Volatile
     private var httpClient = createClient()
+
+    @Volatile
     private var downloadClient: HttpClient? = null
 
     private fun getDownloadClient(): HttpClient =
@@ -115,6 +118,12 @@ class Ytmusic {
             install(HttpRedirect) {
                 checkHttpMethod = false
                 allowHttpsDowngrade = true
+            }
+            val activeProxy = proxy
+            if (activeProxy != null) {
+                engine {
+                    proxy = activeProxy
+                }
             }
             // Disable logging for download - significantly improves performance
             // Note: Don't install Logging plugin for download client
@@ -130,10 +139,14 @@ class Ytmusic {
     var visitorData: String? = null
     var dataSyncId: String? = null
     private var poTokenChallengeRequestKey = "O43z0dpjhgX20SCx4KAo"
-    var cookie: String? = null
+
+    @Volatile
+    private var cookieState: Pair<String?, Map<String, String>> = null to emptyMap()
+
+    var cookie: String?
+        get() = cookieState.first
         set(value) {
-            field = value
-            cookieMap = if (value == null) emptyMap() else parseCookieString(value)
+            cookieState = value to (if (value == null) emptyMap() else parseCookieString(value))
             extractor.logIn(value)
         }
 
@@ -151,14 +164,14 @@ class Ytmusic {
     var tidalClientId: String = ""
     var tidalClientSecret: String = ""
 
-    private var cookieMap = emptyMap<String, String>()
-
+    @Volatile
     var proxy: ProxyConfig? = null
         set(value) {
             if (field == value) return
             field = value
-            httpClient.close()
             httpClient = createClient()
+            downloadClient = null
+            extractor.setProxy(value)
         }
 
     private val extractor = Extractor()
@@ -220,9 +233,10 @@ class Ytmusic {
                 deflate(0.8F)
             }
 
-            if (proxy != null) {
+            val activeProxy = proxy
+            if (activeProxy != null) {
                 engine {
-                    proxy = this@Ytmusic.proxy
+                    proxy = activeProxy
                 }
             }
 
@@ -254,12 +268,13 @@ class Ytmusic {
                 append("Referer", client.referer)
             }
             if (setLogin) {
-                val cookie = customCookie ?: this@Ytmusic.cookie
-                cookie?.let { cookie ->
-                    append("Cookie", cookie)
-                    if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) return@let
-                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-                    val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+                val (storedCookie, storedMap) = cookieState
+                val activeCookie = customCookie ?: storedCookie
+                activeCookie?.let { cookieValue ->
+                    append("Cookie", cookieValue)
+                    val activeMap = if (customCookie != null) parseCookieString(cookieValue) else storedMap
+                    val sapisidCookie = activeMap["SAPISID"] ?: activeMap["__Secure-3PAPISID"] ?: return@let
+                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
                     val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
                     Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
                     append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
@@ -271,15 +286,16 @@ class Ytmusic {
     }
 
     @OptIn(ExperimentalTime::class)
-    internal fun getAuthorizationHeader(): String? =
-        cookie?.let { cookie ->
-            if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) null
-            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-            val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+    internal fun getAuthorizationHeader(): String? {
+        val (storedCookie, storedMap) = cookieState
+        return storedCookie?.let { _ ->
+            val sapisidCookie = storedMap["SAPISID"] ?: storedMap["__Secure-3PAPISID"] ?: return@let null
+            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
             val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
             Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
             "SAPISIDHASH ${currentTime}_$sapisidHash"
         }
+    }
 
     fun getNewPipePlayer(
         videoId: String,

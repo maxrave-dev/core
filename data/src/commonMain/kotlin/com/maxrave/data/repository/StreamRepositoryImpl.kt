@@ -82,73 +82,87 @@ internal class StreamRepositoryImpl(
     override fun getExtractSource(videoId: String): String? = youTube.getExtractSource(videoId)
 
     override suspend fun updateFormat(videoId: String) {
-        localDataSource.getNewFormat(videoId)?.let { oldFormat ->
-            Logger.d("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
-            Logger.d("Stream", "now: ${now()}")
-            Logger.d("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(now())}")
-            if (oldFormat.expiredTime.isBefore(now())) {
-                youTube
-                    .player(videoId)
-                    .onSuccess { triple ->
-                        val response = triple.second
-                        // The renewal must carry the fresh URLs too. It used to extend
-                        // expiredTime and swap the tracking data but keep the old
-                        // audioUrl/videoUrl — URLs that had already expired — so the
-                        // row claimed to be valid for hours more while holding dead
-                        // links, and the next play from it met a phantom 403.
-                        val formatList = mutableListOf<PlayerResponse.StreamingData.Format>()
-                        formatList.addAll(
-                            response.streamingData?.formats?.filter { it.url.isNullOrEmpty().not() } ?: emptyList(),
-                        )
-                        formatList.addAll(
-                            response.streamingData?.adaptiveFormats?.filter { it.url.isNullOrEmpty().not() }
-                                ?: emptyList(),
-                        )
-                        val freshAudio = formatList.find { it.itag == oldFormat.itag }
-                        val freshVideo =
-                            formatList.find { it.itag == ITAG.VIDEO_720P }
-                                ?: formatList.find { it.itag == ITAG.VIDEO_360P }
-                                ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
-                        val hlsManifestUrl = response.streamingData?.hlsManifestUrl
-                        val wasMuxed = oldFormat.audioUrl?.let { youTube.isManifestUrl(it) } == true
-                        localDataSource.updateNewFormat(
-                            oldFormat.copy(
-                                expiredTime = now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
-                                audioUrl =
-                                    if (wasMuxed && hlsManifestUrl != null) {
-                                        hlsManifestUrl
-                                    } else {
-                                        freshAudio?.url ?: oldFormat.audioUrl
-                                    },
-                                videoUrl =
-                                    if (wasMuxed && hlsManifestUrl != null) {
-                                        hlsManifestUrl
-                                    } else {
-                                        freshVideo?.url ?: oldFormat.videoUrl
-                                    },
-                                contentLength = freshAudio?.contentLength ?: oldFormat.contentLength,
-                                playbackTrackingVideostatsPlaybackUrl =
-                                    response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
-                                        "https://s.youtube.com",
-                                        "https://music.youtube.com",
+        withContext(Dispatchers.IO) {
+            localDataSource.getNewFormat(videoId)?.let { oldFormat ->
+                Logger.d("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
+                Logger.d("Stream", "now: ${now()}")
+                Logger.d("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(now())}")
+                if (oldFormat.expiredTime.isBefore(now())) {
+                    youTube
+                        .player(videoId)
+                        .onSuccess { triple ->
+                            val response = triple.second
+                            val isLive = response.videoDetails?.isLive == true
+                            LiveStreamRegistry.recordLiveStatus(videoId, isLive)
+                            localDataSource.updateSongLiveStatus(videoId, isLive)
+                            if (isLive) {
+                                localDataSource.updateNewFormat(
+                                    oldFormat.copy(
+                                        expiredTime = now().plusSeconds(-1),
+                                        audioUrl = null,
+                                        videoUrl = null,
                                     ),
-                                playbackTrackingAtrUrl =
-                                    response.playbackTracking?.atrUrl?.baseUrl?.replace(
-                                        "https://s.youtube.com",
-                                        "https://music.youtube.com",
-                                    ),
-                                playbackTrackingVideostatsWatchtimeUrl =
-                                    response.playbackTracking?.videostatsWatchtimeUrl?.baseUrl?.replace(
-                                        "https://s.youtube.com",
-                                        "https://music.youtube.com",
-                                    ),
-                                cpn = triple.first,
-                            ),
-                        )
-                        Logger.w("UpdateFormat", "Updated format for $videoId")
-                    }.onFailure { throwable ->
-                        Logger.e("UpdateFormat", "Error: ${throwable.message}")
-                    }
+                                )
+                                return@onSuccess
+                            }
+                            // The renewal must carry the fresh URLs too. It used to extend
+                            // expiredTime and swap the tracking data but keep the old
+                            // audioUrl/videoUrl — URLs that had already expired — so the
+                            // row claimed to be valid for hours more while holding dead
+                            // links, and the next play from it met a phantom 403.
+                            val formatList = mutableListOf<PlayerResponse.StreamingData.Format>()
+                            formatList.addAll(
+                                response.streamingData?.formats?.filter { it.url.isNullOrEmpty().not() } ?: emptyList(),
+                            )
+                            formatList.addAll(
+                                response.streamingData?.adaptiveFormats?.filter { it.url.isNullOrEmpty().not() }
+                                    ?: emptyList(),
+                            )
+                            val freshAudio = formatList.find { it.itag == oldFormat.itag }
+                            val freshVideo =
+                                formatList.find { it.itag == ITAG.VIDEO_720P }
+                                    ?: formatList.find { it.itag == ITAG.VIDEO_360P }
+                                    ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
+                            val hlsManifestUrl = response.streamingData?.hlsManifestUrl
+                            val wasMuxed = oldFormat.audioUrl?.let { youTube.isManifestUrl(it) } == true
+                            val newAudioUrl = if (wasMuxed) hlsManifestUrl else freshAudio?.url
+                            val newVideoUrl = if (wasMuxed) hlsManifestUrl else freshVideo?.url
+                            val expiresIn = response.streamingData?.expiresInSeconds?.toLong() ?: 0L
+                            val newExpiredTime =
+                                if (newAudioUrl != null && expiresIn > 0L) {
+                                    now().plusSeconds(expiresIn)
+                                } else {
+                                    now().plusSeconds(-1)
+                                }
+                            localDataSource.updateNewFormat(
+                                oldFormat.copy(
+                                    expiredTime = newExpiredTime,
+                                    audioUrl = newAudioUrl,
+                                    videoUrl = newVideoUrl,
+                                    contentLength = freshAudio?.contentLength ?: oldFormat.contentLength,
+                                    playbackTrackingVideostatsPlaybackUrl =
+                                        response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
+                                            "https://s.youtube.com",
+                                            "https://music.youtube.com",
+                                        ),
+                                    playbackTrackingAtrUrl =
+                                        response.playbackTracking?.atrUrl?.baseUrl?.replace(
+                                            "https://s.youtube.com",
+                                            "https://music.youtube.com",
+                                        ),
+                                    playbackTrackingVideostatsWatchtimeUrl =
+                                        response.playbackTracking?.videostatsWatchtimeUrl?.baseUrl?.replace(
+                                            "https://s.youtube.com",
+                                            "https://music.youtube.com",
+                                        ),
+                                    cpn = triple.first,
+                                ),
+                            )
+                            Logger.w("UpdateFormat", "Updated format for $videoId")
+                        }.onFailure { throwable ->
+                            Logger.e("UpdateFormat", "Error: ${throwable.message}")
+                        }
+                }
             }
         }
     }
@@ -280,7 +294,7 @@ internal class StreamRepositoryImpl(
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
                     insertNewFormat(
                         NewFormatEntity(
-                            videoId = if (VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
+                            videoId = if ((isVideo && !muxed) || VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
                             itag = format?.itag ?: itag,
                             mimeType =
                                 Regex("""([^;]+);\s*codecs=["']([^"']+)["']""")
@@ -302,7 +316,7 @@ internal class StreamRepositoryImpl(
                                     ?.audioConfig
                                     ?.loudnessDb
                                     ?.toFloat(),
-                            lengthSeconds = response.videoDetails?.lengthSeconds?.toInt(),
+                            lengthSeconds = response.videoDetails?.lengthSeconds?.toIntOrNull(),
                             playbackTrackingVideostatsPlaybackUrl =
                                 response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
                                     "https://s.youtube.com",
@@ -341,32 +355,19 @@ internal class StreamRepositoryImpl(
                             durationSecond = durationSecond,
                         )
                     }
-                    if (data.first != null) {
-                        emit(
-                            if (muxed) {
-                                response.streamingData?.hlsManifestUrl
-                            } else {
-                                format?.url?.let { url ->
-                                    if (youTube.isManifestUrl(url)) {
-                                        url.plus("&cpn=${data.first}")
-                                    } else {
-                                        url.plus("&cpn=${data.first}&range=0-${format.contentLength ?: 10000000}")
-                                    }
-                                }
-                            },
-                        )
+                    if (muxed) {
+                        emit(response.streamingData?.hlsManifestUrl)
                     } else {
                         emit(
-                            if (muxed) {
-                                response.streamingData?.hlsManifestUrl
-                            } else {
-                                format?.url?.let { url ->
-                                    if (youTube.isManifestUrl(url)) {
-                                        url
+                            format?.url?.let { url ->
+                                val cpnSuffix = if (data.first != null && !url.contains("cpn=")) "&cpn=${data.first}" else ""
+                                val rangeSuffix =
+                                    if (!youTube.isManifestUrl(url) && !url.contains("range=")) {
+                                        format.contentLength?.let { "&range=0-$it" }.orEmpty()
                                     } else {
-                                        url.plus("&range=0-${format.contentLength ?: 10000000}")
+                                        ""
                                     }
-                                }
+                                url + cpnSuffix + rangeSuffix
                             },
                         )
                     }

@@ -23,7 +23,12 @@ internal fun List<Pair<Int, String>>.hasAudioItag(): Boolean = any { it.first in
 class BraveNewPipeDownloaderImpl(
     proxy: Proxy?,
 ) : Downloader() {
-    private val client = extractorHttpClient(proxy)
+    @Volatile
+    private var client = extractorHttpClient(proxy)
+
+    fun updateProxy(proxy: Proxy?) {
+        client = extractorHttpClient(proxy)
+    }
 
     @Throws(IOException::class, ReCaptchaException::class)
     override fun execute(request: Request): Response {

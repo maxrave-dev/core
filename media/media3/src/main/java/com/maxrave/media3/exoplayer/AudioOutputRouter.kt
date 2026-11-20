@@ -87,16 +87,29 @@ internal class AudioOutputRouter(
                 }.sortedBy { if (it.kind == AudioOutputKind.DEVICE_SPEAKER) 0 else 1 }
     }
 
+    private fun deviceIdentityKey(device: AudioDeviceInfo): String {
+        val kind = kindOf(device.type)
+        val address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) device.address else ""
+        val name = device.productName?.toString()?.takeIf { it.isNotBlank() && it != Build.MODEL }.orEmpty()
+        val identifier = address.ifEmpty { name }.ifEmpty { "id_${device.id}" }
+        return "$kind|$identifier"
+    }
+
     // Outputs music can be sent to, one entry per physical device: a Bluetooth headset is listed
     // once for media (A2DP) and once for calls (SCO), and LE Audio as both a headset and a speaker.
     private fun usableDevices(): List<AudioDeviceInfo> {
         val all = audioManager?.getDevices(AudioManager.GET_DEVICES_OUTPUTS).orEmpty()
         return all
             .filter { kindOf(it.type) != null }
-            .distinctBy { device ->
-                val address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) device.address else ""
-                "${kindOf(device.type)}|${address.ifEmpty { device.productName?.toString().orEmpty() }}"
-            }
+            .sortedBy {
+                when (it.type) {
+                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> 0
+                    AudioDeviceInfo.TYPE_BLE_HEADSET,
+                    AudioDeviceInfo.TYPE_BLE_SPEAKER,
+                    -> 1
+                    else -> 2
+                }
+            }.distinctBy(::deviceIdentityKey)
     }
 
     private fun activeDeviceId(devices: List<AudioDeviceInfo>): Int? {
@@ -109,7 +122,13 @@ internal class AudioOutputRouter(
     private fun systemDeviceId(devices: List<AudioDeviceInfo>): Int? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val routed = audioManager?.getAudioDevicesForAttributes(MEDIA_ATTRIBUTES).orEmpty()
-            routed.firstNotNullOfOrNull { route -> devices.firstOrNull { it.id == route.id } }?.let { return it.id }
+            routed.firstNotNullOfOrNull { route ->
+                devices.firstOrNull { it.id == route.id }
+                    ?: kindOf(route.type)?.let {
+                        val key = deviceIdentityKey(route)
+                        devices.firstOrNull { deviceIdentityKey(it) == key }
+                    }
+            }?.let { return it.id }
         }
         // Below Android 13 nothing says where media is routed, so answer the way the system itself
         // chooses: a headset over the speaker, Bluetooth over a wire.

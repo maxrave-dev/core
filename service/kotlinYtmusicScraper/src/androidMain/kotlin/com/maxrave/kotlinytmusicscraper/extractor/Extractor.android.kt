@@ -10,6 +10,7 @@ import dev.maxrave.pipepipe.extractor.NewPipe
 import dev.maxrave.pipepipe.extractor.ServiceList
 import dev.maxrave.pipepipe.extractor.services.youtube.YoutubeApiDecoder
 import dev.maxrave.pipepipe.extractor.stream.StreamInfo
+import io.ktor.client.engine.ProxyConfig
 import okio.FileSystem
 import okio.IOException
 import okio.Path.Companion.toPath
@@ -40,6 +41,7 @@ actual class Extractor {
     private var newPipeDownloader = NewPipeDownloaderImpl(proxy = null)
     private var braveNewPipeDownloader = BraveNewPipeDownloaderImpl(proxy = null)
     private val faradayDecoder = FaradayJsDecoder()
+    private val pipePipeLock = Any()
 
     private val trustLock = Any()
     private var localTierTrustedUntilMs: Long = 0L
@@ -58,7 +60,7 @@ actual class Extractor {
     @Volatile
     private var remoteTierBrokenUntilMs: Long = 0L
 
-    private fun localTierSkipped(): Boolean = System.currentTimeMillis() < localTierBrokenUntilMs
+    private fun localTierSkipped(): Boolean = SystemClock.elapsedRealtime() < localTierBrokenUntilMs
 
     private fun remoteTierSkipped(): Boolean = SystemClock.elapsedRealtime() < remoteTierBrokenUntilMs
 
@@ -120,6 +122,13 @@ actual class Extractor {
         YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
     }
 
+    actual fun setProxy(proxy: ProxyConfig?) {
+        newPipeDownloader.updateProxy(proxy)
+        braveNewPipeDownloader.updateProxy(proxy)
+        updateStreamHealthCheckProxy(proxy)
+        faradayDecoder.setProxy(proxy)
+    }
+
     actual fun warmUp() = faradayDecoder.warmUp()
 
     actual fun logIn(cookie: String?) {
@@ -134,6 +143,7 @@ actual class Extractor {
             braveTierTrustedUntilMs = 0L
             unverifiedExtracts.clear()
         }
+        localTierBrokenUntilMs = 0L
         remoteTierBrokenUntilMs = 0L
     }
 
@@ -150,8 +160,8 @@ actual class Extractor {
             }
         Logger.w(TAG, "HEAD-skipped stream rejected for $videoId on tier=$rejectedTier; revoking trust")
         if (rejectedTier == LOCAL_TIER) {
-            faradayDecoder.invalidate()
-            localTierBrokenUntilMs = System.currentTimeMillis() + LOCAL_TIER_SKIP_MS
+            localTierBrokenUntilMs = SystemClock.elapsedRealtime() + LOCAL_TIER_SKIP_MS
+            faradayDecoder.invalidateAsync()
         } else if (rejectedTier == REMOTE_TIER) {
             remoteTierBrokenUntilMs = SystemClock.elapsedRealtime() + REMOTE_TIER_SKIP_MS
         }
@@ -174,16 +184,6 @@ actual class Extractor {
         isCancelled: () -> Boolean,
     ): List<Pair<Int, String>> =
         ExtractorCallRegistry.runWithToken(extractionId, isCancelled) {
-            // Three attempts, kept separate on purpose. PipePipe's own local-then-server fallback lives
-            // inside a single StreamInfo call and only fires when the local decoder THROWS — but the
-            // failure that actually happens is a stale player table, where the signature is well-formed
-            // and merely rejected by the CDN. Nothing throws, so the server tier is never asked, and a
-            // 403 used to skip straight to BravePipe. Driving the two as separate attempts is what
-            // stops that jump.
-
-            // A tier that produced only audio (an upload or episode with no video streams at all)
-            // is not a complete result, but it is a playable one: the first such result is kept
-            // aside and used when no tier — BravePipe included — produces a complete one.
             var audioOnlyResult: TierExtract? = null
             val collectAudioOnly: (TierExtract) -> Unit = { extract ->
                 if (audioOnlyResult == null) audioOnlyResult = extract
@@ -195,17 +195,11 @@ actual class Extractor {
                 if (isCancelled()) return@runWithToken emptyList()
 
                 // Tier 1 — ciphers solved locally.
-                // Re-registered every time: PipePipe drops the local decoder for good the first time it
-                // throws, and the getter is package-private so its state cannot be read from here. Setting
-                // it again turns "disabled forever" into "skipped for one track".
-                // Skipped while a recent rejection is still fresh (see localTierBrokenUntilMs): the
-                // remote tier below serves those tracks instead.
                 if (localTierSkipped()) {
                     attempts.add("$LOCAL_TIER:skipped")
                     Logger.d(TAG, "PipePipe[$LOCAL_TIER] skipped for $videoId (stream URLs rejected recently)")
                 } else {
-                    YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
-                    pipePipeStreams(videoId, LOCAL_TIER, attempts, isCancelled, collectAudioOnly)?.let {
+                    pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, attempts, isCancelled, collectAudioOnly)?.let {
                         winner = it
                         return@runWithToken it.streams
                     }
@@ -215,19 +209,12 @@ actual class Extractor {
 
                 // Tier 2 — same extractor with no local decoder at all, so every challenge is solved at
                 // api.pipepipe.dev. This is the tier a 403 from tier 1 must reach.
-                //
-                // Clearing it is what `setLocalDecoder(null)` does: both call sites read the field and
-                // null-check it before use — `decodeBatch` and `getPlayerMetadata` each branch straight to
-                // the API path when it is absent (verified in the bytecode of the pinned f8982ca9e7 jar).
-                // PipePipe's own `disableLocalDecoder` does exactly this but is private, which is why it
-                // cannot simply be called from here.
                 val remoteSkipped = remoteTierSkipped()
                 if (remoteSkipped) {
                     attempts.add("$REMOTE_TIER:skipped")
                     Logger.d(TAG, "PipePipe[$REMOTE_TIER] skipped for $videoId (stream URLs rejected recently)")
                 } else {
-                    YoutubeApiDecoder.setLocalDecoder(null)
-                    pipePipeStreams(videoId, REMOTE_TIER, attempts, isCancelled, collectAudioOnly)?.let {
+                    pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, attempts, isCancelled, collectAudioOnly)?.let {
                         winner = it
                         return@runWithToken it.streams
                     }
@@ -241,8 +228,7 @@ actual class Extractor {
                     return@runWithToken it.streams
                 }
                 if (remoteSkipped && !isCancelled()) {
-                    YoutubeApiDecoder.setLocalDecoder(null)
-                    pipePipeStreams(videoId, REMOTE_TIER, attempts, isCancelled, collectAudioOnly)?.let {
+                    pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, attempts, isCancelled, collectAudioOnly)?.let {
                         remoteTierBrokenUntilMs = 0L
                         winner = it
                         return@runWithToken it.streams
@@ -271,20 +257,22 @@ actual class Extractor {
     actual fun liveHlsUrl(videoId: String): String? {
         // The same three tiers as newPipePlayer, in the same order and for the same reasons.
         if (!localTierSkipped()) {
-            YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
-            pipePipeLiveHlsUrl(videoId, LOCAL_TIER)?.let { return it }
+            pipePipeLiveHlsUrl(videoId, LOCAL_TIER, useLocalDecoder = true)?.let { return it }
         }
-        YoutubeApiDecoder.setLocalDecoder(null)
-        pipePipeLiveHlsUrl(videoId, REMOTE_TIER)?.let { return it }
+        pipePipeLiveHlsUrl(videoId, REMOTE_TIER, useLocalDecoder = false)?.let { return it }
         return braveLiveHlsUrl(videoId)
     }
 
     private fun pipePipeLiveHlsUrl(
         videoId: String,
         tier: String,
+        useLocalDecoder: Boolean,
     ): String? =
         runCatching {
-            StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId").hlsUrl
+            synchronized(pipePipeLock) {
+                YoutubeApiDecoder.setLocalDecoder(if (useLocalDecoder) faradayDecoder else null)
+                StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId").hlsUrl
+            }
         }.onFailure {
             Logger.w(TAG, "PipePipe[$tier] live extraction failed for $videoId: ${it.message}")
         }.getOrNull()
@@ -307,12 +295,13 @@ actual class Extractor {
             }
 
     /**
-     * One PipePipe extraction with whatever decoder is currently registered. Returns null when the
+     * One PipePipe extraction with whatever decoder is requested. Returns null when the
      * attempt produced nothing usable, so the caller moves on to the next tier.
      */
     private fun pipePipeStreams(
         videoId: String,
         tier: String,
+        useLocalDecoder: Boolean,
         attempts: MutableList<String>,
         isCancelled: () -> Boolean = { false },
         onAudioOnlyResult: (TierExtract) -> Unit = {},
@@ -321,7 +310,11 @@ actual class Extractor {
         try {
             if (isCancelled()) return null
             val streamInfo =
-                StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
+                synchronized(pipePipeLock) {
+                    if (isCancelled()) return null
+                    YoutubeApiDecoder.setLocalDecoder(if (useLocalDecoder) faradayDecoder else null)
+                    StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
+                }
             val extractMs = SystemClock.elapsedRealtime() - startedAtMs
             if (isCancelled()) {
                 attempts.add("$tier:cancelled/${extractMs}ms")
@@ -362,8 +355,8 @@ actual class Extractor {
                     // A rejected URL is the one symptom of a stale player table / dead client:
                     // invalidate local decoder or put that tier into temporary skip cooldown.
                     if (tier == LOCAL_TIER) {
-                        faradayDecoder.invalidate()
-                        localTierBrokenUntilMs = System.currentTimeMillis() + LOCAL_TIER_SKIP_MS
+                        localTierBrokenUntilMs = SystemClock.elapsedRealtime() + LOCAL_TIER_SKIP_MS
+                        faradayDecoder.invalidateAsync()
                     } else if (tier == REMOTE_TIER) {
                         remoteTierBrokenUntilMs = SystemClock.elapsedRealtime() + REMOTE_TIER_SKIP_MS
                     }

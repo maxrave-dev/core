@@ -32,7 +32,12 @@ internal fun extractorHttpClient(proxy: Proxy?): OkHttpClient = extractorBaseCli
 class NewPipeDownloaderImpl(
     proxy: Proxy?,
 ) : Downloader() {
-    private val client = extractorHttpClient(proxy)
+    @Volatile
+    private var client = extractorHttpClient(proxy)
+
+    fun updateProxy(proxy: Proxy?) {
+        client = extractorHttpClient(proxy)
+    }
 
     @Throws(IOException::class, ReCaptchaException::class)
     override fun execute(request: Request): Response {

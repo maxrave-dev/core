@@ -116,11 +116,11 @@ internal class WaveformReader(
                 return null
             }
             val bars = decoded.bars
-            File(dir, "$name.wf").writeBytes(ByteArray(bars.size) { (bars[it] * 255f).toInt().coerceIn(0, 255).toByte() })
+            writeFileAtomically(File(dir, "$name.wf"), ByteArray(bars.size) { (bars[it] * 255f).toInt().coerceIn(0, 255).toByte() })
             // Kept apart from the waveform: a failure here must not cost the bars already measured.
             val structure = decoded.pcm?.let { runCatching { TrackStructureAnalyzer.analyze(it) }.getOrNull() }
             // Written even when empty, so a track found unusable is not decoded again for AutoMix.
-            File(dir, "$name.mix").writeText(structure?.encode().orEmpty())
+            writeFileAtomically(File(dir, "$name.mix"), structure?.encode().orEmpty().toByteArray())
             Logger.d(
                 TAG,
                 "AutoMix measured $mediaId: " +
@@ -137,6 +137,18 @@ internal class WaveformReader(
         }
     }
 
+    private fun writeFileAtomically(
+        target: File,
+        bytes: ByteArray,
+    ) {
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        tmp.writeBytes(bytes)
+        if (!tmp.renameTo(target)) {
+            target.writeBytes(bytes)
+            tmp.delete()
+        }
+    }
+
     /** Copies the audio for AutoMix's offline analysis, reopening at resolver chunk boundaries. */
     private suspend fun download(
         mediaId: String,
@@ -150,15 +162,20 @@ internal class WaveformReader(
                 currentCoroutineContext().ensureActive()
                 val source = dataSourceFactory.createDataSource()
                 var readThisOpen = 0L
+                var openedLength = C.LENGTH_UNSET.toLong()
                 try {
-                    source.open(
-                        DataSpec
-                            .Builder()
-                            .setUri(mediaId)
-                            .setKey(mediaId)
-                            .setPosition(position)
-                            .build(),
-                    )
+                    val opened =
+                        source.open(
+                            DataSpec
+                                .Builder()
+                                .setUri(mediaId)
+                                .setKey(mediaId)
+                                .setPosition(position)
+                                .build(),
+                        )
+                    if (opened != C.LENGTH_UNSET.toLong() && opened > 0L) {
+                        openedLength = position + opened
+                    }
                     while (true) {
                         currentCoroutineContext().ensureActive()
                         val read = source.read(buffer, 0, buffer.size)
@@ -172,13 +189,22 @@ internal class WaveformReader(
                 if (readThisOpen == 0L) return false
                 position += readThisOpen
                 if (length == Long.MAX_VALUE) {
-                    length =
+                    val formatLength =
                         streamRepository
                             .getNewFormat(mediaId)
                             .firstOrNull()
                             ?.contentLength
                             ?.takeIf { it in 1..MAX_AUDIO_BYTES }
-                            ?: return false
+                    length =
+                        formatLength
+                            ?: openedLength.takeIf { it in 1..MAX_AUDIO_BYTES && readThisOpen < ResolverChunkLengthBytes }
+                            ?: if (readThisOpen < ResolverChunkLengthBytes) {
+                                position
+                            } else if (position >= MAX_AUDIO_BYTES) {
+                                return false
+                            } else {
+                                Long.MAX_VALUE
+                            }
                 }
             }
         }
@@ -363,6 +389,7 @@ internal class WaveformReader(
 
         // Silence still draws a sliver, as SoundCloud's does, so the line never breaks.
         const val MIN_LEVEL = 0.04f
+        const val ResolverChunkLengthBytes = 10 * 512 * 1024L
         val UNSAFE_FILE_CHARS = Regex("[^A-Za-z0-9_-]")
     }
 }

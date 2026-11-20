@@ -29,10 +29,28 @@ class LiveStreamDetectedException(
     val videoId: String,
 ) : IOException("$videoId is a live stream; it has to be rebuilt as an HLS source")
 
+/** Thrown when a formerly live track's broadcast has ended and needs a progressive source rebuild. */
+class LiveStreamEndedException(
+    val videoId: String,
+) : IOException("$videoId live broadcast ended; it has to be rebuilt as a progressive source")
+
+/** Thrown when an in-flight stream resolve coroutine was cancelled (e.g. fast skip or release). */
+internal class StreamResolveCancelledException(
+    label: String,
+    cause: Throwable? = null,
+) : IOException("Stream resolve cancelled for $label", cause)
+
 /** Whether this error, or anything that led to it, is a [LiveStreamDetectedException]. */
 internal fun Throwable.isLiveStreamDetected(): Boolean =
     // take(): a cause chain is not supposed to loop, but nothing stops one from doing so.
     generateSequence(this) { it.cause }.take(8).any { it is LiveStreamDetectedException }
+
+/** Whether this error, or anything that led to it, is a [LiveStreamEndedException]. */
+internal fun Throwable.isLiveStreamEnded(): Boolean =
+    generateSequence(this) { it.cause }.take(8).any { it is LiveStreamEndedException }
+
+internal fun Throwable.isStreamResolveCancelled(): Boolean =
+    generateSequence(this) { it.cause }.take(8).any { it is StreamResolveCancelledException }
 
 /**
  * The load error policy of the progressive source every non-live track plays through.
@@ -70,6 +88,8 @@ internal fun Throwable.isUnrecoverableStreamFailure(): Boolean =
 internal class LiveStreamAwareLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy() {
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         if (loadErrorInfo.exception.isLiveStreamDetected()) return C.TIME_UNSET
+        if (loadErrorInfo.exception.isLiveStreamEnded()) return C.TIME_UNSET
+        if (loadErrorInfo.exception.isStreamResolveCancelled()) return C.TIME_UNSET
         if (loadErrorInfo.exception.isUnrecoverableStreamFailure()) return C.TIME_UNSET
         if (loadErrorInfo.exception.hasDeadHttpStatus()) return C.TIME_UNSET
         if (super.getRetryDelayMsFor(loadErrorInfo) == C.TIME_UNSET) return C.TIME_UNSET

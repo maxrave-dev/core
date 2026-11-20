@@ -1803,7 +1803,35 @@ class YouTube {
             // The retries below pair the extractor's URLs onto another response, so they
             // only make sense when the extractor produced URLs at all.
             var altRes: PlayerResponse? = null
-            if (response == null && streams.isNotEmpty()) {
+            if (response == null && streams.isEmpty()) {
+                val directFromTemp =
+                    tempRes.takeIf { res ->
+                        res.playabilityStatus.status == "OK" &&
+                            ((res.streamingData?.formats?.any { !it.url.isNullOrEmpty() } == true) ||
+                                (res.streamingData?.adaptiveFormats?.any { !it.url.isNullOrEmpty() } == true))
+                    }
+                if (directFromTemp != null) {
+                    response = directFromTemp
+                } else if (!altClientTried) {
+                    altClientTried = true
+                    altRes =
+                        try {
+                            fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Logger.w(TAG, "ANDROID direct fallback request failed for $videoId (${e.message})")
+                            null
+                        }
+                    if (altRes != null &&
+                        altRes.playabilityStatus.status == "OK" &&
+                        ((altRes.streamingData?.formats?.any { !it.url.isNullOrEmpty() } == true) ||
+                            (altRes.streamingData?.adaptiveFormats?.any { !it.url.isNullOrEmpty() } == true))
+                    ) {
+                        response = altRes.copy(playbackTracking = tempRes.playbackTracking)
+                    }
+                }
+            } else if (response == null && streams.isNotEmpty()) {
                 if (!altClientTried) {
                     // The first pairing produced nothing: either WEB_REMIX refused this
                     // track (bot check, region, age gate), so newPipePlayer never paired
@@ -1877,7 +1905,7 @@ class YouTube {
                     "PlayTiming",
                     "id=$videoId fail post=${playerResponseMs}ms extractor=${extractorMs}ms tier=[$tierSummary] alt=$altClientTried total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
                 )
-                throw noStreamFailure(videoId, tempRes, extractorProducedStreams = streams.isNotEmpty())
+                throw noStreamFailure(videoId, altRes ?: tempRes, extractorProducedStreams = streams.isNotEmpty())
             }
             Logger.i(
                 "PlayTiming",

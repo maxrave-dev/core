@@ -120,30 +120,37 @@ class BiquadFilter {
     }
 
     /**
-     * Process a stereo sample pair through both cascaded stages.
-     * Each channel maintains independent filter state.
+     * Process left stereo sample through both cascaded stages without allocating.
      */
-    fun processStereo(inputLeft: Double, inputRight: Double): Pair<Double, Double> {
-        // Left: Stage 1
+    fun processStereoLeft(inputLeft: Double): Double {
         val midL = b0_1 * inputLeft + b1_1 * s1_x1L + b2_1 * s1_x2L - a1_1 * s1_y1L - a2_1 * s1_y2L
         s1_x2L = s1_x1L; s1_x1L = inputLeft
         s1_y2L = s1_y1L; s1_y1L = midL
-        // Left: Stage 2
         val outL = b0_2 * midL + b1_2 * s2_x1L + b2_2 * s2_x2L - a1_2 * s2_y1L - a2_2 * s2_y2L
         s2_x2L = s2_x1L; s2_x1L = midL
         s2_y2L = s2_y1L; s2_y1L = outL
+        return outL
+    }
 
-        // Right: Stage 1
+    /**
+     * Process right stereo sample through both cascaded stages without allocating.
+     */
+    fun processStereoRight(inputRight: Double): Double {
         val midR = b0_1 * inputRight + b1_1 * s1_x1R + b2_1 * s1_x2R - a1_1 * s1_y1R - a2_1 * s1_y2R
         s1_x2R = s1_x1R; s1_x1R = inputRight
         s1_y2R = s1_y1R; s1_y1R = midR
-        // Right: Stage 2
         val outR = b0_2 * midR + b1_2 * s2_x1R + b2_2 * s2_x2R - a1_2 * s2_y1R - a2_2 * s2_y2R
         s2_x2R = s2_x1R; s2_x1R = midR
         s2_y2R = s2_y1R; s2_y1R = outR
-
-        return outL to outR
+        return outR
     }
+
+    /**
+     * Process a stereo sample pair through both cascaded stages.
+     * Each channel maintains independent filter state.
+     */
+    fun processStereo(inputLeft: Double, inputRight: Double): Pair<Double, Double> =
+        processStereoLeft(inputLeft) to processStereoRight(inputRight)
 
     /**
      * Reset all filter state (clears history for both stages).

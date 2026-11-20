@@ -2,10 +2,13 @@ package com.maxrave.kotlinytmusicscraper.extractor
 
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
+import io.ktor.client.engine.ProxyConfig
 
 actual class Extractor {
     actual fun init() {
     }
+
+    actual fun setProxy(proxy: ProxyConfig?) {}
 
     actual fun logIn(cookie: String?) {}
 

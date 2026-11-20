@@ -83,9 +83,13 @@ class FaradayCipherEngine(
 
     private suspend fun playerInfoLocked(): PlayerInfo? {
         val playerId = currentPlayerId() ?: return null
-        val timestamp =
-            stores.firstNotNullOfOrNull { it.getSignatureTimestamp(playerUrlFor(playerId)) } ?: return null
-        return PlayerInfo(playerId, timestamp)
+        val playerUrl = playerUrlFor(playerId)
+        var timestamp = stores.firstNotNullOfOrNull { it.getSignatureTimestamp(playerUrl) }
+        if (timestamp == null) {
+            stores.forEach { it.forceRefresh(missingHash = playerId) }
+            timestamp = stores.firstNotNullOfOrNull { it.getSignatureTimestamp(playerUrl) }
+        }
+        return timestamp?.let { PlayerInfo(playerId, it) }
     }
 
     /**

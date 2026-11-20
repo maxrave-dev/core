@@ -54,22 +54,42 @@ class LastfmScrobbler(
      */
     @OptIn(ExperimentalTime::class)
     suspend fun onTrackStarted(song: SongEntity) {
+        val trackToNotify: LastfmTrack?
         mutex.withLock {
-            if (currentVideoId == song.videoId) return
+            if (currentVideoId == song.videoId) {
+                if (currentDurationSeconds <= 0 && song.durationSeconds > 0) {
+                    currentDurationSeconds = song.durationSeconds
+                    currentTrack = song.toLastfmTrack()
+                }
+                return
+            }
             currentVideoId = song.videoId
             currentDurationSeconds = song.durationSeconds
             startedAtEpochSeconds = Clock.System.now().epochSeconds
             scrobbled = false
-            currentTrack = song.toLastfmTrack()
+            trackToNotify = song.toLastfmTrack()
+            currentTrack = trackToNotify
         }
 
         val sessionKey = sessionKeyOrNull() ?: return
-        val track = currentTrack ?: return
+        val track = trackToNotify ?: return
+        if (currentVideoId != song.videoId) return
         when (val outcome = updateNowPlaying(sessionKey, track)) {
             is LastfmOutcome.Ok -> Logger.d(TAG, "Now playing: ${track.artist} - ${track.track}")
             is LastfmOutcome.Ignored ->
                 Logger.w(TAG, "Now playing ignored (${outcome.code}): ${outcome.message}")
             is LastfmOutcome.Error -> handleError(outcome, "track.updateNowPlaying")
+        }
+    }
+
+    /** Updates track duration in seconds when player metadata learns it after initial click. */
+    suspend fun updateDurationSeconds(durationSeconds: Int) {
+        if (durationSeconds <= 0) return
+        mutex.withLock {
+            if (currentVideoId != null && currentDurationSeconds <= 0) {
+                currentDurationSeconds = durationSeconds
+                currentTrack = currentTrack?.copy(durationSeconds = durationSeconds)
+            }
         }
     }
 
@@ -81,14 +101,16 @@ class LastfmScrobbler(
      */
     suspend fun onProgress(positionMs: Long) {
         val track: LastfmTrack
+        val startedAt: Long
         mutex.withLock {
             if (scrobbled) return
             if (currentDurationSeconds <= minimumTrackSeconds) return
             val threshold = minOf(currentDurationSeconds / 2, scrobbleAfterSeconds)
             if (positionMs / 1000 < threshold) return
-            // Claim the scrobble before suspending so a second progress tick cannot send it twice.
+            // Claim the scrobble and snapshot start timestamp before suspending so a fast skip cannot race.
             scrobbled = true
             track = currentTrack ?: return
+            startedAt = startedAtEpochSeconds
         }
 
         val sessionKey = sessionKeyOrNull() ?: return
@@ -97,7 +119,7 @@ class LastfmScrobbler(
                 scrobble(
                     sessionKey = sessionKey,
                     track = track,
-                    startedAtEpochSeconds = startedAtEpochSeconds,
+                    startedAtEpochSeconds = startedAt,
                 )
         ) {
             is LastfmOutcome.Ok -> Logger.d(TAG, "Scrobbled: ${track.artist} - ${track.track}")
@@ -115,6 +137,7 @@ class LastfmScrobbler(
             currentVideoId = null
             currentTrack = null
             currentDurationSeconds = 0
+            startedAtEpochSeconds = 0
             scrobbled = false
         }
     }

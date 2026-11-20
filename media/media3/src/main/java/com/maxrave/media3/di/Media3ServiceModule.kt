@@ -154,6 +154,7 @@ private val mediaServiceModule =
                 databaseProvider = get(),
                 streamRepository = get(),
                 songRepository = get(),
+                proxy = provideProxy(get()),
             )
         }
 
@@ -231,6 +232,7 @@ private val mediaServiceModule =
                         get(named(SERVICE_SCOPE)),
                         get(),
                     ),
+                downloadCache = get(named(DOWNLOAD_CACHE)),
                 playerCache = get(named(PLAYER_CACHE)),
                 streamRepository = get(),
                 dataStoreManager = get(),
@@ -370,7 +372,7 @@ private fun provideResolvingDataSourceFactory(
             withTimeoutOrNull(STREAM_RESOLVE_TIMEOUT_MS) {
                 if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
                     val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                    streamRepository.getNewFormat(id).lastOrNull()?.let {
+                    (streamRepository.getNewFormat(mediaId).lastOrNull() ?: streamRepository.getNewFormat(id).lastOrNull())?.let {
                         val videoUrl = it.videoUrl
                         // Stored URLs are trusted until shortly before they expire instead of
                         // being probed with a HEAD on every chunk: they only die early when
@@ -488,7 +490,7 @@ private inline fun <T> runCancellableStreamResolve(
         }
     } catch (e: CancellationException) {
         Logger.d("Stream", "Cancelled stream resolve for $label")
-        throw java.io.IOException("Stream resolve cancelled for $label", e)
+        throw com.maxrave.media3.service.mediasourcefactory.StreamResolveCancelledException(label, e)
     }
 
 @UnstableApi
@@ -545,17 +547,29 @@ private fun provideLiveStreamMediaSourceFactory(
 ): HlsMediaSource.Factory =
     HlsMediaSource.Factory(
         liveStreamDataSourceFactory(provideHttpDataSourceFactory(context, provideProxy(dataStoreManager))) { videoId ->
-            runCancellableStreamResolve(streamResolveCoordinator, videoId, videoId) {
-                streamRepository
-                    .getStream(
-                        dataStoreManager,
-                        videoId,
-                        isDownloading = false,
-                        isVideo = false,
-                    ).lastOrNull()
+            val url =
+                runCancellableStreamResolve(streamResolveCoordinator, videoId, videoId) {
+                    withTimeoutOrNull(STREAM_RESOLVE_TIMEOUT_MS) {
+                        streamRepository
+                            .getStream(
+                                dataStoreManager,
+                                videoId,
+                                isDownloading = false,
+                                isVideo = false,
+                            ).lastOrNull()
+                    }
+                }
+            if (url != null && !LiveStreamRegistry.isLive(videoId)) {
+                throw com.maxrave.media3.service.mediasourcefactory.LiveStreamEndedException(videoId)
             }
+            if (url == null) {
+                streamRepository.consumeLastUnrecoverableError(videoId)?.let { refusal ->
+                    throw com.maxrave.media3.service.mediasourcefactory.UnrecoverableStreamException(refusal)
+                }
+            }
+            url
         },
-    )
+    ).setLoadErrorHandlingPolicy(LiveStreamAwareLoadErrorHandlingPolicy())
 
 @OptIn(UnstableApi::class)
 private fun provideMergingMediaSource(
@@ -586,6 +600,7 @@ private fun provideMergingMediaSource(
         dataStoreManager,
         context,
         downloadCache,
+        coroutineScope,
     )
 
 @UnstableApi
@@ -611,7 +626,7 @@ private fun provideRendererFactory(context: Context): DefaultRenderersFactory =
                         emptyArray(),
                         SilenceSkippingAudioProcessor(
                             2_000_000,
-                            (20_000 / 2_000_000).toFloat(),
+                            20_000f / 2_000_000f,
                             2_000_000,
                             0,
                             256,

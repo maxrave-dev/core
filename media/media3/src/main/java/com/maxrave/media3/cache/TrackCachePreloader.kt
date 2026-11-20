@@ -12,6 +12,7 @@ import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.logger.Logger
+import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,7 @@ import kotlinx.coroutines.withContext
 internal class TrackCachePreloader(
     private val context: Context,
     private val dataSourceFactory: DataSource.Factory,
+    private val downloadCache: SimpleCache,
     private val playerCache: SimpleCache,
     private val streamRepository: StreamRepository,
     private val dataStoreManager: DataStoreManager,
@@ -122,6 +124,7 @@ internal class TrackCachePreloader(
      */
     private suspend fun downloadWholeTrack(mediaId: String): Boolean =
         withContext(Dispatchers.IO) {
+            if (downloadCache.isFullyCached(mediaId, 0L)) return@withContext true
             val length =
                 streamRepository
                     .getNewFormat(mediaId)

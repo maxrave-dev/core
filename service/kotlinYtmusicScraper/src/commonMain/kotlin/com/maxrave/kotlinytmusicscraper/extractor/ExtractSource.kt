@@ -1,6 +1,7 @@
 package com.maxrave.kotlinytmusicscraper.extractor
 
-import kotlin.concurrent.Volatile
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * Which extractor, and which cipher decoder, produced the stream URLs for a video.
@@ -15,57 +16,56 @@ import kotlin.concurrent.Volatile
  */
 object ExtractSource {
     private const val MAX_ENTRIES = 32
-
-    /**
-     * Replaced wholesale rather than mutated, so a reader never observes a half-written map. Writes
-     * happen once per extraction and reads once per sheet opening, so the copying costs nothing.
-     */
-    @Volatile
-    private var sources: Map<String, String> = emptyMap()
+    private val sources = MutableStateFlow<Map<String, String>>(emptyMap())
 
     fun record(
         videoId: String,
         source: String,
     ) {
         if (videoId.isEmpty()) return
-        val updated = LinkedHashMap<String, String>(sources)
-        updated.remove(videoId)
-        updated[videoId] = source
-        while (updated.size > MAX_ENTRIES) {
-            updated.remove(updated.keys.firstOrNull() ?: break)
+        sources.update { current ->
+            val updated = LinkedHashMap<String, String>(current)
+            updated.remove(videoId)
+            updated[videoId] = source
+            while (updated.size > MAX_ENTRIES) {
+                updated.remove(updated.keys.firstOrNull() ?: break)
+            }
+            updated
         }
-        sources = updated
     }
 
-    fun of(videoId: String): String? = sources[videoId]
+    fun of(videoId: String): String? = sources.value[videoId]
 }
 
 object ExtractTiming {
     private const val MAX_ENTRIES = 32
-
-    @Volatile
-    private var timings: Map<String, String> = emptyMap()
+    private val timings = MutableStateFlow<Map<String, String>>(emptyMap())
 
     fun record(
         videoId: String,
         timing: String,
     ) {
         if (videoId.isEmpty()) return
-        val updated = LinkedHashMap<String, String>(timings)
-        updated.remove(videoId)
-        updated[videoId] = timing
-        while (updated.size > MAX_ENTRIES) {
-            updated.remove(updated.keys.firstOrNull() ?: break)
+        timings.update { current ->
+            val updated = LinkedHashMap<String, String>(current)
+            updated.remove(videoId)
+            updated[videoId] = timing
+            while (updated.size > MAX_ENTRIES) {
+                updated.remove(updated.keys.firstOrNull() ?: break)
+            }
+            updated
         }
-        timings = updated
     }
 
     fun consume(videoId: String): String? {
-        val current = timings
-        val value = current[videoId] ?: return null
-        val updated = LinkedHashMap<String, String>(current)
-        updated.remove(videoId)
-        timings = updated
+        var value: String? = null
+        timings.update { current ->
+            value = current[videoId]
+            if (value == null) return@update current
+            val updated = LinkedHashMap<String, String>(current)
+            updated.remove(videoId)
+            updated
+        }
         return value
     }
 }
