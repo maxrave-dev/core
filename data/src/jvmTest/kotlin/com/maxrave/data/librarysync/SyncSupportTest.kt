@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 class SyncSupportTest {
     private fun change(
         at: Long,
-        value: String = ON,
+        value: String? = ON,
         op: String = SyncOp.SET,
         id: String = "a",
     ) = SyncChangeEntity(changeId = id, entity = SyncKind.SONG_LIKE, entityKey = "v", op = op, value = value, changedAt = at, deviceId = "d")
