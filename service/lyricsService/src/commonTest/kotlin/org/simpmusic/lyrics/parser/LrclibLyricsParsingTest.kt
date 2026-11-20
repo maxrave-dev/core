@@ -32,6 +32,19 @@ class LrclibLyricsParsingTest {
     }
 
     @Test
+    fun malformedSyncedLyricsFallBackToPlainLyrics() {
+        val result = assertNotNull(parseLrclibLyrics(record(syncedLyrics = "no timestamps here", plainLyrics = "Plain fallback"))?.lyrics)
+        assertEquals("UNSYNCED", result.syncType)
+        assertEquals("Plain fallback", result.lines?.single()?.words)
+    }
+
+    @Test
+    fun centisecondsInLrclibSyncedLyricsAreMultipliedByTen() {
+        val result = assertNotNull(parseLrclibLyrics(record(syncedLyrics = "[00:27.12]Example"))?.lyrics)
+        assertEquals("27120", result.lines?.single()?.startTimeMs)
+    }
+
+    @Test
     fun noAvailableLyricsStillReturnsNull() {
         assertNull(parseLrclibLyrics(record(syncedLyrics = null, plainLyrics = null)))
     }

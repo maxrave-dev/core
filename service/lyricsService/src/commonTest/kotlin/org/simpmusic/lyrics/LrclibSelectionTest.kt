@@ -55,6 +55,13 @@ class LrclibSelectionTest {
     }
 
     @Test
+    fun durationZeroAndNegativeTreatedAsUnknown() {
+        val song = record(1, 200f, hasWordSync = false)
+        assertEquals(song, selectLrclibLyricsRecord(listOf(song), 0))
+        assertEquals(song, selectLrclibLyricsRecord(listOf(song), -1))
+    }
+
+    @Test
     fun emptyResultsStillReturnNull() {
         assertNull(selectLrclibLyricsRecord(emptyList(), null))
         assertNull(selectLrclibLyricsRecord(emptyList(), 137))
