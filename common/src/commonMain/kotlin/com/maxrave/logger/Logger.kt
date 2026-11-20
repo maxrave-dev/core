@@ -113,6 +113,10 @@ object Logger {
      * Closes open log file sinks and deletes all live and rolled log files on disk. Subsequent
      * logs open fresh files cleanly on the serial writer thread.
      */
+    fun flushLogFiles() {
+        fileWriters.forEach { it.flush() }
+    }
+
     fun clearLogFiles() {
         fileWriters.forEach { it.clear() }
     }
@@ -133,6 +137,9 @@ private class ClearableFileLogWriter(
     private val livePath = pathForIndex(0)
     private var currentSink: Sink? = null
     private var currentSize: Long = SystemFileSystem.metadataOrNull(livePath)?.size ?: 0L
+    private var pendingFlushEntries = 0
+    private var pendingFlushBytes = 0
+    private var bytesSinceDiskCheck = 0
 
     override fun isLoggable(
         tag: String,
@@ -160,7 +167,15 @@ private class ClearableFileLogWriter(
                     appendLine(throwable.stackTraceToString())
                 }
             }
-        queue.post { writeEntry(entry) }
+        queue.post { writeEntry(entry, flushNow = severity >= Severity.Error) }
+    }
+
+    fun flush() {
+        queue.runAndAwait {
+            runCatching { currentSink?.flush() }
+            pendingFlushEntries = 0
+            pendingFlushBytes = 0
+        }
     }
 
     fun clear() {
@@ -173,9 +188,16 @@ private class ClearableFileLogWriter(
         }
     }
 
-    private fun writeEntry(entry: String) {
+    private fun writeEntry(
+        entry: String,
+        flushNow: Boolean = false,
+    ) {
         try {
-            val diskSize = SystemFileSystem.metadataOrNull(livePath)?.size ?: 0L
+            // Re-check metadata on disk only periodically (or when size nears rollOnSize),
+            // instead of running a filesystem stat() + flush() for every single log line.
+            val checkDisk = bytesSinceDiskCheck >= 32 * 1024 || currentSize > rollOnSize
+            val diskSize = if (checkDisk) SystemFileSystem.metadataOrNull(livePath)?.size ?: 0L else 0L
+            if (checkDisk) bytesSinceDiskCheck = 0
             if (maxOf(currentSize, diskSize) > rollOnSize) {
                 closeSink()
                 rollFiles()
@@ -185,11 +207,21 @@ private class ClearableFileLogWriter(
                 runCatching { SystemFileSystem.createDirectories(directory) }
                 currentSize = SystemFileSystem.metadataOrNull(livePath)?.size ?: 0L
                 currentSink = SystemFileSystem.sink(livePath, append = true).buffered()
+                pendingFlushEntries = 0
+                pendingFlushBytes = 0
             }
             val sink = currentSink ?: return
+            val entryBytes = entry.encodeToByteArray().size
             sink.writeString(entry)
-            sink.flush()
-            currentSize += entry.encodeToByteArray().size
+            currentSize += entryBytes
+            bytesSinceDiskCheck += entryBytes
+            pendingFlushEntries++
+            pendingFlushBytes += entryBytes
+            if (flushNow || pendingFlushEntries >= 16 || pendingFlushBytes >= 4096) {
+                sink.flush()
+                pendingFlushEntries = 0
+                pendingFlushBytes = 0
+            }
         } catch (_: Throwable) {
             closeSink()
             currentSize = SystemFileSystem.metadataOrNull(livePath)?.size ?: 0L
@@ -208,7 +240,10 @@ private class ClearableFileLogWriter(
     }
 
     private fun closeSink() {
+        runCatching { currentSink?.flush() }
         runCatching { currentSink?.close() }
+        pendingFlushEntries = 0
+        pendingFlushBytes = 0
         currentSink = null
     }
 

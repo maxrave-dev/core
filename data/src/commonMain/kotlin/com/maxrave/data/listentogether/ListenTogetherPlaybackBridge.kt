@@ -66,9 +66,10 @@ class ListenTogetherPlaybackBridge(
      */
     private val repository: ListenTogetherRepository,
     private val session: ListenTogetherSession,
-    private val handler: MediaPlayerHandler,
+    private val handlerLazy: Lazy<MediaPlayerHandler>,
     private val scope: CoroutineScope,
 ) {
+    private val handler: MediaPlayerHandler by handlerLazy
     private var started = false
     private var applyingRemote = false
     private var lastPublishedTrackId: String? = null
@@ -86,17 +87,23 @@ class ListenTogetherPlaybackBridge(
     fun start() {
         if (started) return
         started = true
-        Logger.i(TAG, "Playback bridge started")
-        scope.launch { suppressCrossfadeWhileInRoom() }
-        scope.launch { watchRoomForGuests() }
-        scope.launch { resyncGuestOnResume() }
-        scope.launch { publishCurrentStateOnJoin() }
-        scope.launch { publishStateWhenSomeoneArrives() }
-        scope.launch { publishQueueAsHost() }
-        scope.launch { publishTrackChangesAsHost() }
-        scope.launch { publishPlayPauseAsHost() }
-        scope.launch { publishSeeksAsHost() }
-        scope.launch { answerBufferBarrier() }
+        Logger.i(TAG, "Playback bridge waiting for room")
+        // Do not touch MediaPlayerHandler until a Listen Together room is active: starting those
+        // collectors at boot used to construct ExoPlayer + SimpleCache even on background wakes.
+        scope.launch {
+            repository.room.first { it.inRoom }
+            Logger.i(TAG, "Playback bridge activated (room joined)")
+            launch { suppressCrossfadeWhileInRoom() }
+            launch { watchRoomForGuests() }
+            launch { resyncGuestOnResume() }
+            launch { publishCurrentStateOnJoin() }
+            launch { publishStateWhenSomeoneArrives() }
+            launch { publishQueueAsHost() }
+            launch { publishTrackChangesAsHost() }
+            launch { publishPlayPauseAsHost() }
+            launch { publishSeeksAsHost() }
+            launch { answerBufferBarrier() }
+        }
     }
 
     /**

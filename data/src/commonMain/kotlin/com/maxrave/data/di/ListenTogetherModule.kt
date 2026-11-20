@@ -51,7 +51,7 @@ val listenTogetherModule =
             ListenTogetherPlaybackBridge(
                 repository = get(),
                 session = get(),
-                handler = get(),
+                handlerLazy = lazy { get() },
                 scope = get<CoroutineScope>(named(Config.SERVICE_SCOPE)),
             ).also { it.start() }
         }

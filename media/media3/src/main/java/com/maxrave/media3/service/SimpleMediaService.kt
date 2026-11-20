@@ -203,6 +203,7 @@ internal class SimpleMediaService :
     override fun onTrimMemory(level: Int) {
         Logger.w("Service", "Simple Media Service Trim Memory Level: $level")
         simpleMediaServiceHandler.mayBeSaveRecentSong()
+        simpleMediaServiceHandler.onTrimMemory(level)
     }
 
     @UnstableApi

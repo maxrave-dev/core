@@ -168,6 +168,8 @@ interface MediaPlayerHandler {
     suspend fun restoreQueueAndPlay(): Boolean
 
     // Lifecycle
+    fun onTrimMemory(level: Int) {}
+
     fun shouldReleaseOnTaskRemoved(): Boolean
 
     fun release()

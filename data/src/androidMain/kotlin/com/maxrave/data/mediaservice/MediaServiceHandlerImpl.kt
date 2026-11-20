@@ -642,38 +642,45 @@ internal class MediaServiceHandlerImpl(
                 }
             }.distinctUntilChanged().collect { player.setEightD(it) }
         }
-        skipSilent =
-            runBlocking { dataStoreManager.skipSilent.first() == TRUE }
-        player.skipSilenceEnabled = skipSilent
-        normalizeVolume =
-            runBlocking { dataStoreManager.normalizeVolume.first() == TRUE }
         _nowPlaying.value = player.currentMediaItem
-        if (runBlocking { dataStoreManager.saveStateOfPlayback.first() } == TRUE) {
-            Logger.d(TAG, "SaveStateOfPlayback TRUE")
-            val shuffleKey = runBlocking { dataStoreManager.shuffleKey.first() }
-            val repeatKey = runBlocking { dataStoreManager.repeatKey.first() }
-            Logger.d(TAG, "Shuffle: $shuffleKey")
-            Logger.d(TAG, "Repeat: $repeatKey")
-            val restoredShuffle = shuffleKey == TRUE
-            val restoredRepeatMode =
-                when (repeatKey) {
-                    DataStoreManager.REPEAT_ONE -> PlayerConstants.REPEAT_MODE_ONE
-                    DataStoreManager.REPEAT_ALL -> PlayerConstants.REPEAT_MODE_ALL
-                    else -> PlayerConstants.REPEAT_MODE_OFF
+        // Load initial DataStore playback preferences off the caller thread instead of 5
+        // sequential runBlocking reads during DI/service startup.
+        backgroundScope.launch {
+            val initialSkipSilent = dataStoreManager.skipSilent.first() == TRUE
+            val initialNormalize = dataStoreManager.normalizeVolume.first() == TRUE
+            val savePlaybackState = dataStoreManager.saveStateOfPlayback.first() == TRUE
+            val shuffleKey = if (savePlaybackState) dataStoreManager.shuffleKey.first() else null
+            val repeatKey = if (savePlaybackState) dataStoreManager.repeatKey.first() else null
+            withContext(Dispatchers.Main) {
+                skipSilent = initialSkipSilent
+                player.skipSilenceEnabled = initialSkipSilent
+                normalizeVolume = initialNormalize
+                if (savePlaybackState) {
+                    Logger.d(TAG, "SaveStateOfPlayback TRUE")
+                    Logger.d(TAG, "Shuffle: $shuffleKey")
+                    Logger.d(TAG, "Repeat: $repeatKey")
+                    val restoredShuffle = shuffleKey == TRUE
+                    val restoredRepeatMode =
+                        when (repeatKey) {
+                            DataStoreManager.REPEAT_ONE -> PlayerConstants.REPEAT_MODE_ONE
+                            DataStoreManager.REPEAT_ALL -> PlayerConstants.REPEAT_MODE_ALL
+                            else -> PlayerConstants.REPEAT_MODE_OFF
+                        }
+                    player.shuffleModeEnabled = restoredShuffle
+                    player.repeatMode = restoredRepeatMode
+                    // Ensure controlState is in sync after restore, regardless of listener callbacks
+                    _controlState.value =
+                        _controlState.value.copy(
+                            isShuffle = restoredShuffle,
+                            repeatState =
+                                when (restoredRepeatMode) {
+                                    PlayerConstants.REPEAT_MODE_ONE -> RepeatState.One
+                                    PlayerConstants.REPEAT_MODE_ALL -> RepeatState.All
+                                    else -> RepeatState.None
+                                },
+                        )
                 }
-            player.shuffleModeEnabled = restoredShuffle
-            player.repeatMode = restoredRepeatMode
-            // Ensure controlState is in sync after restore, regardless of listener callbacks
-            _controlState.value =
-                _controlState.value.copy(
-                    isShuffle = restoredShuffle,
-                    repeatState =
-                        when (restoredRepeatMode) {
-                            PlayerConstants.REPEAT_MODE_ONE -> RepeatState.One
-                            PlayerConstants.REPEAT_MODE_ALL -> RepeatState.All
-                            else -> RepeatState.None
-                        },
-                )
+            }
         }
         mayBeRestoreQueue()
         coroutineScope.launch {

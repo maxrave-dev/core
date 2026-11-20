@@ -26,6 +26,7 @@ private const val BRAVE_TIER = "brave"
 // How long a PipePipe tier stays skipped after its stream URLs fail HEAD verification.
 private const val LOCAL_TIER_SKIP_MS = 10 * 60 * 1000L
 private const val REMOTE_TIER_SKIP_MS = 10 * 60 * 1000L
+private const val MAX_TIER_SKIP_MS = 30 * 60 * 1000L
 
 // Once a tier passes a real HEAD check, skip the synchronous HEAD probe for subsequent fresh
 // tracks on that same tier for up to 5 minutes. Revoked immediately on any player rejection.
@@ -60,6 +61,24 @@ actual class Extractor {
     @Volatile
     private var remoteTierBrokenUntilMs: Long = 0L
 
+    @Volatile
+    private var localConsecutiveFailures: Int = 0
+
+    @Volatile
+    private var remoteConsecutiveFailures: Int = 0
+
+    private fun markLocalTierBroken() {
+        val streak = (++localConsecutiveFailures).coerceAtMost(3)
+        val cooldownMs = (LOCAL_TIER_SKIP_MS * (1L shl (streak - 1))).coerceAtMost(MAX_TIER_SKIP_MS)
+        localTierBrokenUntilMs = SystemClock.elapsedRealtime() + cooldownMs
+    }
+
+    private fun markRemoteTierBroken() {
+        val streak = (++remoteConsecutiveFailures).coerceAtMost(3)
+        val cooldownMs = (REMOTE_TIER_SKIP_MS * (1L shl (streak - 1))).coerceAtMost(MAX_TIER_SKIP_MS)
+        remoteTierBrokenUntilMs = SystemClock.elapsedRealtime() + cooldownMs
+    }
+
     private fun localTierSkipped(): Boolean = SystemClock.elapsedRealtime() < localTierBrokenUntilMs
 
     private fun remoteTierSkipped(): Boolean = SystemClock.elapsedRealtime() < remoteTierBrokenUntilMs
@@ -79,8 +98,14 @@ actual class Extractor {
         synchronized(trustLock) {
             val until = SystemClock.elapsedRealtime() + HEAD_TRUST_WINDOW_MS
             when (tier) {
-                LOCAL_TIER -> localTierTrustedUntilMs = until
-                REMOTE_TIER -> remoteTierTrustedUntilMs = until
+                LOCAL_TIER -> {
+                    localTierTrustedUntilMs = until
+                    localConsecutiveFailures = 0
+                }
+                REMOTE_TIER -> {
+                    remoteTierTrustedUntilMs = until
+                    remoteConsecutiveFailures = 0
+                }
                 BRAVE_TIER -> braveTierTrustedUntilMs = until
             }
         }
@@ -129,7 +154,9 @@ actual class Extractor {
         faradayDecoder.setProxy(proxy)
     }
 
-    actual fun warmUp() = faradayDecoder.warmUp()
+    actual fun warmUp() {
+        if (!localTierSkipped()) faradayDecoder.warmUp()
+    }
 
     actual fun logIn(cookie: String?) {
         ServiceList.YouTube.tokens = cookie ?: ""
@@ -145,6 +172,8 @@ actual class Extractor {
         }
         localTierBrokenUntilMs = 0L
         remoteTierBrokenUntilMs = 0L
+        localConsecutiveFailures = 0
+        remoteConsecutiveFailures = 0
     }
 
     actual fun onStreamRejected(videoId: String) {
@@ -160,10 +189,10 @@ actual class Extractor {
             }
         Logger.w(TAG, "HEAD-skipped stream rejected for $videoId on tier=$rejectedTier; revoking trust")
         if (rejectedTier == LOCAL_TIER) {
-            localTierBrokenUntilMs = SystemClock.elapsedRealtime() + LOCAL_TIER_SKIP_MS
+            markLocalTierBroken()
             faradayDecoder.invalidateAsync()
         } else if (rejectedTier == REMOTE_TIER) {
-            remoteTierBrokenUntilMs = SystemClock.elapsedRealtime() + REMOTE_TIER_SKIP_MS
+            markRemoteTierBroken()
         }
     }
 
@@ -355,10 +384,10 @@ actual class Extractor {
                     // A rejected URL is the one symptom of a stale player table / dead client:
                     // invalidate local decoder or put that tier into temporary skip cooldown.
                     if (tier == LOCAL_TIER) {
-                        localTierBrokenUntilMs = SystemClock.elapsedRealtime() + LOCAL_TIER_SKIP_MS
+                        markLocalTierBroken()
                         faradayDecoder.invalidateAsync()
                     } else if (tier == REMOTE_TIER) {
-                        remoteTierBrokenUntilMs = SystemClock.elapsedRealtime() + REMOTE_TIER_SKIP_MS
+                        markRemoteTierBroken()
                     }
                     return null
                 }

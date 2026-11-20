@@ -10,6 +10,7 @@ import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import java.io.IOException
 import java.net.Proxy
+import java.util.concurrent.TimeUnit
 
 internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     val itags = this.mapTo(HashSet()) { it.first }
@@ -19,10 +20,18 @@ internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
 }
 
 @Volatile
-private var streamHealthCheckClient: OkHttpClient = extractorHttpClient(null)
+private fun buildHealthCheckClient(proxy: Proxy?): OkHttpClient =
+    extractorHttpClient(proxy)
+        .newBuilder()
+        .connectTimeout(2500, TimeUnit.MILLISECONDS)
+        .readTimeout(2500, TimeUnit.MILLISECONDS)
+        .callTimeout(3000, TimeUnit.MILLISECONDS)
+        .build()
+
+private var streamHealthCheckClient: OkHttpClient = buildHealthCheckClient(null)
 
 internal fun updateStreamHealthCheckProxy(proxy: Proxy?) {
-    streamHealthCheckClient = extractorHttpClient(proxy)
+    streamHealthCheckClient = buildHealthCheckClient(proxy)
 }
 
 /**

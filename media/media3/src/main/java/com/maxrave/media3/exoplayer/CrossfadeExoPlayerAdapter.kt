@@ -1,6 +1,7 @@
 package com.maxrave.media3.exoplayer
 
 import android.annotation.SuppressLint
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
@@ -4123,6 +4124,33 @@ internal class CrossfadeExoPlayerAdapter(
                 true
             } else {
                 false
+            }
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        runOnAdapterMain {
+            if (precachedPlayers.isEmpty()) return@runOnAdapterMain
+            if ((level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+                    level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) &&
+                !internalPlayWhenReady
+            ) {
+                Logger.d(TAG, "TrimMemory level=$level (paused): clearing all ${precachedPlayers.size} precached players")
+                clearAllPrecacheInternal()
+            } else if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+                // Keep at most the immediate next track under low memory, freeing extra ExoPlayer instances.
+                val nextIdx = getNextMediaItemIndex(localCurrentMediaItemIndex)
+                val keepNextId = playlist.getOrNull(nextIdx)?.mediaId
+                val currentId = currentMediaItem?.mediaId
+                val iterator = precachedPlayers.entries.iterator()
+                while (iterator.hasNext()) {
+                    val (id, cached) = iterator.next()
+                    if (id != keepNextId && id != currentId) {
+                        streamResolveCoordinator?.cancel(id)
+                        cleanupPrecachedEntryInternal(cached)
+                        iterator.remove()
+                    }
+                }
             }
         }
     }

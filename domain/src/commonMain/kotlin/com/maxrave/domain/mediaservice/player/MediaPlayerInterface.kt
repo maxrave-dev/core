@@ -276,6 +276,9 @@ interface MediaPlayerInterface {
 
     fun removeListener(listener: MediaPlayerListener)
 
+    // Memory pressure callback from OS (optional per backend)
+    fun onTrimMemory(level: Int) {}
+
     // Release resources
     fun release()
 }
