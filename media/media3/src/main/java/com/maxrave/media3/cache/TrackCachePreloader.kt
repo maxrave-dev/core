@@ -96,18 +96,23 @@ internal class TrackCachePreloader(
         var attempt = 0
         while (attempt < MAX_ATTEMPTS) {
             attempt++
-            val complete =
+            val outcome =
                 try {
                     downloadWholeTrack(mediaId)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Logger.w(TAG, "Full-track cache pass $attempt for $mediaId failed: ${e.message}")
-                    false
+                    PassOutcome.RETRY
                 }
-            if (complete) {
-                Logger.d(TAG, "Track fully cached: $mediaId")
-                return
+            when (outcome) {
+                PassOutcome.COMPLETE -> {
+                    Logger.d(TAG, "Track fully cached: $mediaId")
+                    return
+                }
+                // Retrying cannot fix a missing content length: stop instead of looping 8 times.
+                PassOutcome.GIVE_UP -> return
+                PassOutcome.RETRY -> Unit
             }
             if (attempt < MAX_ATTEMPTS) {
                 delay(RETRY_BASE_DELAY_MS * (1 shl (attempt - 1)).coerceAtMost(RETRY_BACKOFF_CAP))
@@ -122,17 +127,21 @@ internal class TrackCachePreloader(
      * resolver chunk boundaries, like WaveformReader's analysis download. Returns true only when
      * the cache provably holds the track end to end.
      */
-    private suspend fun downloadWholeTrack(mediaId: String): Boolean =
+    private suspend fun downloadWholeTrack(mediaId: String): PassOutcome =
         withContext(Dispatchers.IO) {
-            if (downloadCache.isFullyCached(mediaId, 0L)) return@withContext true
-            val length =
+            if (downloadCache.isFullyCached(mediaId, 0L)) return@withContext PassOutcome.COMPLETE
+            val storedLength =
                 streamRepository
                     .getNewFormat(mediaId)
                     .firstOrNull()
                     ?.contentLength
-                    ?.takeIf { it in 1..MAX_AUDIO_BYTES }
-                    ?: return@withContext false
-            if (playerCache.isCached(mediaId, 0, length)) return@withContext true
+            val length = storedLength?.takeIf { it in 1..MAX_AUDIO_BYTES }
+            if (length == null) {
+                // Unknown or oversized length is a permanent condition for this track.
+                Logger.w(TAG, "Skipping full-track cache for $mediaId: unusable content length ($storedLength)")
+                return@withContext PassOutcome.GIVE_UP
+            }
+            if (playerCache.isCached(mediaId, 0, length)) return@withContext PassOutcome.COMPLETE
             val buffer = ByteArray(64 * 1024)
             var position = 0L
             while (position < length) {
@@ -157,11 +166,21 @@ internal class TrackCachePreloader(
                 } finally {
                     source.close()
                 }
-                if (readThisOpen == 0L) return@withContext false
+                if (readThisOpen == 0L) {
+                    Logger.w(TAG, "Full-track cache pass read 0 bytes at $position/$length for $mediaId")
+                    return@withContext PassOutcome.RETRY
+                }
                 position += readThisOpen
             }
-            playerCache.isCached(mediaId, 0, length)
+            if (playerCache.isCached(mediaId, 0, length)) {
+                PassOutcome.COMPLETE
+            } else {
+                Logger.w(TAG, "Full-track cache pass finished but $mediaId is not fully cached ($length bytes expected)")
+                PassOutcome.RETRY
+            }
         }
+
+    private enum class PassOutcome { COMPLETE, RETRY, GIVE_UP }
 
     private fun isMetered(): Boolean {
         val connectivityManager =

@@ -35,7 +35,12 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 internal class StreamRepositoryImpl(
     private val localDataSource: LocalDataSource,
@@ -44,6 +49,11 @@ internal class StreamRepositoryImpl(
 ) : StreamRepository {
     // For work a resolve starts but playback must not wait for (Tidal metadata).
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // Tidal lookups run one at a time and back off after a rate-limit (HTTP 429): precaching
+    // resolves several tracks in a burst, and each used to fire its own request.
+    private val tidalMutex = Mutex()
+    private var tidalCooldownEnd: TimeMark? = null
 
     private val lastUnrecoverableErrors = MutableStateFlow<Map<String, String>>(emptyMap())
     override suspend fun insertNewFormat(newFormat: NewFormatEntity) =
@@ -531,35 +541,54 @@ internal class StreamRepositoryImpl(
         durationSecond: Int,
     ) {
         backgroundScope.launch {
-            val q =
-                "$title $author"
-                    .replace(
-                        Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
-                        " ",
-                    ).replace(
-                        Regex("( và | & | и | e | und |, |和| dan)"),
-                        " ",
-                    ).replace("  ", " ")
-                    .replace(Regex("([()])"), "")
-                    .replace(".", " ")
-                    .replace("  ", " ")
-            Logger.d("Stream", "Search Tidal metadata for: $q")
-            youTube
-                .searchTidalMetadata(q, durationSecond)
-                .onSuccess { metadata ->
-                    Logger.d("Stream", "Tidal metadata: $metadata")
-                    localDataSource.getNewFormat(videoId)?.let { stored ->
-                        localDataSource.updateNewFormat(
-                            stored.copy(
-                                bpm = metadata.bpm,
-                                musicKey = metadata.musicKey,
-                                keyScale = metadata.keyScale,
-                            ),
-                        )
-                    }
-                }.onFailure {
-                    Logger.e("Stream", "Tidal metadata error: ${it.message}", it)
+            tidalMutex.withLock {
+                if (tidalCooldownEnd?.hasPassedNow() == false) {
+                    Logger.d("Stream", "Tidal metadata skipped for $videoId: rate-limit cooldown")
+                    return@withLock
                 }
+                // Already stored by an earlier resolve: nothing to fetch.
+                if (localDataSource.getNewFormat(videoId)?.bpm != null) return@withLock
+                val q =
+                    "$title $author"
+                        .replace(
+                            Regex("\\((feat\\.|ft.|cùng với|con|mukana|com|avec|合作音乐人: ) "),
+                            " ",
+                        ).replace(
+                            Regex("( và | & | и | e | und |, |和| dan)"),
+                            " ",
+                        ).replace("  ", " ")
+                        .replace(Regex("([()])"), "")
+                        .replace(".", " ")
+                        .replace("  ", " ")
+                Logger.d("Stream", "Search Tidal metadata for: $q")
+                youTube
+                    .searchTidalMetadata(q, durationSecond)
+                    .onSuccess { metadata ->
+                        Logger.d("Stream", "Tidal metadata: $metadata")
+                        localDataSource.getNewFormat(videoId)?.let { stored ->
+                            localDataSource.updateNewFormat(
+                                stored.copy(
+                                    bpm = metadata.bpm,
+                                    musicKey = metadata.musicKey,
+                                    keyScale = metadata.keyScale,
+                                ),
+                            )
+                        }
+                    }.onFailure {
+                        if (it is CancellationException) throw it
+                        if (it.message?.contains("429") == true) {
+                            tidalCooldownEnd = TimeSource.Monotonic.markNow() + TIDAL_COOLDOWN_SECONDS.seconds
+                            Logger.w("Stream", "Tidal rate-limited (429): pausing metadata lookups for ${TIDAL_COOLDOWN_SECONDS}s")
+                        } else {
+                            // Expected for songs Tidal does not know: no stacktrace.
+                            Logger.w("Stream", "Tidal metadata unavailable for $videoId: ${it.message}")
+                        }
+                    }
+            }
         }
+    }
+
+    private companion object {
+        const val TIDAL_COOLDOWN_SECONDS = 120
     }
 }

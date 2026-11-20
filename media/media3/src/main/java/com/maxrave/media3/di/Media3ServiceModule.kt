@@ -368,6 +368,7 @@ private fun provideResolvingDataSourceFactory(
         }
         var dataSpecReturn: DataSpec = dataSpec
         var resolved = false
+        val resolveStartedAtNs = System.nanoTime()
         runCancellableStreamResolve(streamResolveCoordinator, videoId, mediaId) {
             withTimeoutOrNull(STREAM_RESOLVE_TIMEOUT_MS) {
                 if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
@@ -441,7 +442,9 @@ private fun provideResolvingDataSourceFactory(
                 Logger.e("Stream", "Unrecoverable stream failure for $mediaId: $refusal")
                 throw com.maxrave.media3.service.mediasourcefactory.UnrecoverableStreamException(refusal)
             }
-            Logger.e("Stream", "Failed to resolve stream URL for $mediaId")
+            val elapsedMs = (System.nanoTime() - resolveStartedAtNs) / 1_000_000
+            val reason = if (elapsedMs >= STREAM_RESOLVE_TIMEOUT_MS) "timeout" else "no URL returned"
+            Logger.e("Stream", "Failed to resolve stream URL for $mediaId ($reason after ${elapsedMs}ms)")
             throw java.io.IOException("Failed to resolve stream URL for $mediaId")
         }
         return@Factory dataSpecReturn

@@ -493,10 +493,8 @@ internal fun parseMixedContent(
                                     listContent.last()?.copy(playEndpoint = musicTwoRowItemRenderer.playEndpoint())
                             }
                         } else if (result1.musicResponsiveListItemRenderer != null) {
-                            Logger.w(
-                                "parse Song flat",
-                                result1.musicResponsiveListItemRenderer.toString(),
-                            )
+                            // Debug only: the full renderer is huge and used to make up ~90% of app.log.
+                            Logger.d("parse Song flat", "Parsing a flat song renderer")
                             val ytItem =
                                 RelatedPage.fromMusicResponsiveListItemRenderer(result1.musicResponsiveListItemRenderer!!)
                             if (ytItem != null) {

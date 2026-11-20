@@ -58,7 +58,7 @@ internal fun parsePlaylistData(
                     Logger.d("PlaylistParser", "author: $author")
                 }
                 val secondSubtitle = header.secondSubtitle.runs
-                Logger.w("PlaylistParser", "secondSubtitle: $secondSubtitle")
+                Logger.d("PlaylistParser", "secondSubtitle: $secondSubtitle")
                 if (!secondSubtitle.isNullOrEmpty() && secondSubtitle.size > 2) {
                     duration += secondSubtitle.getOrNull(2)?.text
                 }
@@ -226,7 +226,7 @@ internal fun parsePlaylistData(
                     )
                 listAuthor.add(author)
                 Logger.d("PlaylistParser", "author: $author")
-                Logger.w("PlaylistParser", "secondSubtitle: $secondSubtitle")
+                Logger.d("PlaylistParser", "secondSubtitle: $secondSubtitle")
                 if (!secondSubtitle.isNullOrEmpty() && secondSubtitle.size > 4) {
                     duration += secondSubtitle.getOrNull(4)?.text
                 } else if (!secondSubtitle.isNullOrEmpty() && secondSubtitle.size == 3) {
@@ -384,7 +384,7 @@ internal fun parseSetVideoId(
             Logger.d("PlaylistParser", "videoId or setVideoId is null")
         }
     }
-    Logger.w("PlaylistParser", "listSetVideoId: $listSetVideoId")
+    Logger.d("PlaylistParser", "listSetVideoId: $listSetVideoId")
     return listSetVideoId
 }
 

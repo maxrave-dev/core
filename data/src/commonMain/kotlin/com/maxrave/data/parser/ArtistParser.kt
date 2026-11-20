@@ -42,8 +42,8 @@ internal fun parseArtistData(data: ArtistPage): ArtistBrowse {
         data.sections.find { it.items.firstOrNull() is VideoItem }
     val featuredOnSection =
         data.sections.find { it.items.firstOrNull() is PlaylistItem }
-    Logger.w("ArtistParser", "videoSection: ${videoSection?.items}")
-    Logger.w("ArtistParser", "featuredOnSection: ${featuredOnSection?.items}")
+    Logger.d("ArtistParser", "videoSection: ${videoSection?.items}")
+    Logger.d("ArtistParser", "featuredOnSection: ${featuredOnSection?.items}")
     val relatedSection = data.sections.find { it.items.firstOrNull() is ArtistItem }
     val listSong: ArrayList<ResultSong> = arrayListOf()
     val listAlbum: ArrayList<ResultAlbum> = arrayListOf()

@@ -1748,6 +1748,11 @@ internal class CrossfadeExoPlayerAdapter(
         get() = internalPlayWhenReady
         set(value) {
             internalPlayWhenReady = value
+            // With nothing queued (addMediaItem clears the playlist, then sets the flag, then
+            // sets the item) there is nothing to play or pause: just remember the intent, which
+            // setMediaItem reads when it starts loading. Calling play() here only logged
+            // "Called in IDLE state" on every track change.
+            if (playlist.isEmpty() && castRemotePlayer == null) return
             if (value) play() else pause()
         }
 

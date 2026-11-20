@@ -386,6 +386,10 @@ internal class MediaServiceHandlerImpl(
 
     private var loadJob: Job? = null
     private var recoverQueueSaveJob: Job? = null
+
+    // Track ids of the queue last written by mayBeSaveRecentSong, so repeated saves (every
+    // onTrimMemory, every transition) skip rewriting an unchanged queue.
+    private var lastPersistedQueueIds: List<String>? = null
     private val restoreQueueMutex = Mutex()
 
     // Set by restoreQueueAndPlay before it contends for restoreQueueMutex, so a startup
@@ -856,6 +860,10 @@ internal class MediaServiceHandlerImpl(
         val track =
             queueData.value.data.listTracks
                 .find { it.videoId == videoId }
+        // The previous track's Room collector must stop BEFORE the state moves on: left running
+        // until the async lookup below finishes, it could re-publish the OLD songEntity next to
+        // the NEW mediaItem (lyrics/canvas were then fetched for the wrong song).
+        songEntityJob?.cancel()
         _nowPlayingState.update {
             it.copy(
                 mediaItem = mediaItem,
@@ -2684,8 +2692,14 @@ internal class MediaServiceHandlerImpl(
                     val temp: ArrayList<Track> = ArrayList()
                     temp.clear()
                     temp.addAll(_queueData.value.data.listTracks)
-                    Logger.i("Check recover queue", "Saved ${temp.size} tracks for the next launch")
-                    songRepository.recoverQueue(temp)
+                    val queueIds = temp.map { it.videoId }
+                    if (queueIds == lastPersistedQueueIds) {
+                        Logger.d("Check recover queue", "Queue unchanged (${temp.size} tracks): skipping rewrite")
+                    } else {
+                        Logger.i("Check recover queue", "Saved ${temp.size} tracks for the next launch")
+                        songRepository.recoverQueue(temp)
+                        lastPersistedQueueIds = queueIds
+                    }
                 }
             }
         if (runBlocking) {

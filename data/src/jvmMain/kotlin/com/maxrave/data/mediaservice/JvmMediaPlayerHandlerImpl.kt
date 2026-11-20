@@ -747,6 +747,9 @@ class JvmMediaPlayerHandlerImpl(
         val track =
             queueData.value.data.listTracks
                 ?.find { it.videoId == videoId }
+        // Stop the previous track's Room collector before the state moves on, so it cannot
+        // re-publish the old songEntity next to the new mediaItem.
+        songEntityJob?.cancel()
         _nowPlayingState.update {
             it.copy(
                 mediaItem = mediaItem,
