@@ -16,6 +16,14 @@ actual class Extractor {
         isCancelled: () -> Boolean,
     ): List<Pair<Int, String>> = emptyList()
 
+    actual fun newPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> = emptyList()
+
+    actual fun cancelExtraction(extractionId: Long) {}
+
     actual fun liveHlsUrl(videoId: String): String? = null
 
     actual fun warmUp() {}

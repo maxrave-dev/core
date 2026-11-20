@@ -40,6 +40,14 @@ actual class Extractor {
 
     actual fun newPipePlayer(
         videoId: String,
+        extractionId: Long,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> = newPipePlayer(videoId, isCancelled)
+
+    actual fun cancelExtraction(extractionId: Long) {}
+
+    actual fun newPipePlayer(
+        videoId: String,
         isCancelled: () -> Boolean,
     ): List<Pair<Int, String>> {
         // Three attempts, kept separate on purpose. PipePipe's own local-then-server fallback lives

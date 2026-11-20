@@ -28,6 +28,8 @@ private val streamHealthCheckClient: OkHttpClient by lazy { OkHttpClient.Builder
 internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
     val required = ITAG.AUDIO + ITAG.VIDEO
     val candidate = this.filter { it.first in required }.randomOrNull() ?: return false
+    if (ExtractorCallRegistry.isCurrentCancelled()) return false
+    val token = ExtractorCallRegistry.activeToken()
     return runCatching {
         val request =
             okhttp3.Request
@@ -35,8 +37,14 @@ internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
                 .head()
                 .url(candidate.second)
                 .build()
-        streamHealthCheckClient.newCall(request).execute().use { response ->
-            response.code in 200..299
+        val call = streamHealthCheckClient.newCall(request)
+        if (!ExtractorCallRegistry.registerCall(token, call)) return false
+        try {
+            call.execute().use { response ->
+                response.code in 200..299
+            }
+        } finally {
+            ExtractorCallRegistry.unregisterCall(token, call)
         }
     }.getOrDefault(false)
 }
@@ -51,6 +59,10 @@ class BraveNewPipeDownloaderImpl(
 
     @Throws(IOException::class, ReCaptchaException::class)
     override fun execute(request: Request): Response {
+        val token = ExtractorCallRegistry.activeToken()
+        if (ExtractorCallRegistry.isCurrentCancelled()) {
+            throw IOException("Extraction cancelled")
+        }
         val httpMethod = request.httpMethod()
         val url = request.url()
         val headers = request.headers()
@@ -74,7 +86,16 @@ class BraveNewPipeDownloaderImpl(
             }
         }
 
-        val response = client.newCall(requestBuilder.build()).execute()
+        val call = client.newCall(requestBuilder.build())
+        if (!ExtractorCallRegistry.registerCall(token, call)) {
+            throw IOException("Extraction cancelled")
+        }
+        val response =
+            try {
+                call.execute()
+            } finally {
+                ExtractorCallRegistry.unregisterCall(token, call)
+            }
 
         if (response.code == 429) {
             response.close()

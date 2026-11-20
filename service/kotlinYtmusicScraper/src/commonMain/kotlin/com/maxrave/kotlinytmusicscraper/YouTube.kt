@@ -108,6 +108,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -1658,11 +1659,15 @@ class YouTube {
     private fun noStreamFailure(
         videoId: String,
         tempRes: PlayerResponse,
+        extractorProducedStreams: Boolean = false,
     ): StreamResolutionException {
         val playability = tempRes.playabilityStatus
         if (playability.status == "OK") {
             return StreamResolutionException(
-                StreamResolutionException.Reason.UNAVAILABLE,
+                // When YouTube itself returned OK but extractors produced zero streams (timeout,
+                // transient 429/connection failure, or pool starvation), treat it as recoverable
+                // instead of bricking playback with UnrecoverableStreamException.
+                if (extractorProducedStreams) StreamResolutionException.Reason.UNAVAILABLE else StreamResolutionException.Reason.NO_NETWORK,
                 "No stream URL found for $videoId",
             )
         }
@@ -1724,15 +1729,22 @@ class YouTube {
             // extraction that fails degrades to the empty list the serial path would have
             // ended with anyway. The deferred is a child of the caller's job, so cancelling
             // the resolution cancels it too.
+            val extractionId = Random.nextLong().let { if (it == 0L) 1L else it }
             val streamsDeferred =
                 CoroutineScope(coroutineContext).async(Dispatchers.IO) {
+                    val cancelHook =
+                        coroutineContext[Job]?.invokeOnCompletion { cause ->
+                            if (cause != null) ytMusic.cancelExtraction(extractionId)
+                        }
                     try {
-                        ytMusic.getNewPipePlayer(videoId) { !isActive }
+                        ytMusic.getNewPipePlayer(videoId, extractionId) { !isActive }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         Logger.w(TAG, "Extractor failed for $videoId (${e.message}); resolving without it")
                         emptyList()
+                    } finally {
+                        cancelHook?.dispose()
                     }
                 }
             var altClientTried = false
@@ -1740,6 +1752,7 @@ class YouTube {
                 try {
                     fetchPlayerResponse(WEB_REMIX, videoId, playlistId, cpn, signatureTimestamp)
                 } catch (e: CancellationException) {
+                    streamsDeferred.cancel()
                     throw e
                 } catch (e: Exception) {
                     // The WEB_REMIX request itself failed (an HTTP error status, or no answer
@@ -1755,8 +1768,10 @@ class YouTube {
                     try {
                         fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
                     } catch (altError: CancellationException) {
+                        streamsDeferred.cancel()
                         throw altError
                     } catch (altError: Exception) {
+                        streamsDeferred.cancel()
                         throw playerRequestFailure(videoId, altError)
                     }
                 }
@@ -1862,7 +1877,7 @@ class YouTube {
                     "PlayTiming",
                     "id=$videoId fail post=${playerResponseMs}ms extractor=${extractorMs}ms tier=[$tierSummary] alt=$altClientTried total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
                 )
-                throw noStreamFailure(videoId, tempRes)
+                throw noStreamFailure(videoId, tempRes, extractorProducedStreams = streams.isNotEmpty())
             }
             Logger.i(
                 "PlayTiming",

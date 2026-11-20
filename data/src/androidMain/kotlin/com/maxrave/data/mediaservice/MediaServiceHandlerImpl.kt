@@ -368,6 +368,7 @@ internal class MediaServiceHandlerImpl(
     private var toggleLikeJob: Job? = null
 
     private var loadJob: Job? = null
+    private var recoverQueueSaveJob: Job? = null
     private val restoreQueueMutex = Mutex()
 
     // Set by restoreQueueAndPlay before it contends for restoreQueueMutex, so a startup
@@ -2012,7 +2013,7 @@ internal class MediaServiceHandlerImpl(
         index: Int?,
     ) {
         updateCatalog(downloaded, index).let {
-            if (index != 0 && index != null) {
+            if (index != 0 && index != null && player.currentMediaItemIndex == 0) {
                 moveMediaItem(0, index)
             }
             updateNextPreviousTrackAvailability()
@@ -2589,9 +2590,15 @@ internal class MediaServiceHandlerImpl(
                 }
             }
         if (runBlocking) {
+            recoverQueueSaveJob?.cancel()
             runBlocking { unit() }
         } else {
-            coroutineScope.launch { unit() }
+            recoverQueueSaveJob?.cancel()
+            recoverQueueSaveJob =
+                coroutineScope.launch {
+                    delay(300)
+                    unit()
+                }
         }
     }
 
@@ -2992,11 +2999,14 @@ internal class MediaServiceHandlerImpl(
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         _controlState.value = _controlState.value.copy(isPlaying = isPlaying)
         if (isPlaying) {
-            // Playing again means any stream failure is over: the next failure on this item gets
-            // a full set of recovery attempts (see onPlayerError). A prepare that never reaches
-            // playing never lands here, so a dead connection still runs its attempts down.
-            streamRecoveryAttempts = 0
-            streamRecoveryJob?.cancel()
+            // Playing again once actual bytes have buffered or position advanced means any stream
+            // failure is over: the next failure on this item gets a full set of recovery attempts.
+            // A premature PREPARING->PLAYING transition (0 buffered, 0 position) must not reset
+            // the counter or a dead connection could retry indefinitely.
+            if (player.bufferedPosition > player.currentPosition || player.currentPosition > 0L) {
+                streamRecoveryAttempts = 0
+                streamRecoveryJob?.cancel()
+            }
             resumeWhenNetworkReturns = false
             audioTrackRecoveryMediaId = null
             val timingVideoId = playTimingVideoId
@@ -3068,7 +3078,7 @@ internal class MediaServiceHandlerImpl(
             nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
         }
         queueData.value.data.listTracks.let { list ->
-            if ((list.size > 3 || endlessQueueEnabled) &&
+            if ((list.size > 3 || endlessQueueEnabled || queueData.value.data.continuation != null) &&
                 list.size - player.currentMediaItemIndex < 3 &&
                 list.size - player.currentMediaItemIndex >= 0 &&
                 queueData.value.queueState == QueueData.StateSource.STATE_INITIALIZED

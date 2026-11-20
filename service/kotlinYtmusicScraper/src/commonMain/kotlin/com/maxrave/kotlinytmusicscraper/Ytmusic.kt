@@ -286,6 +286,14 @@ class Ytmusic {
         isCancelled: () -> Boolean = { false },
     ): List<Pair<Int, String>> = extractor.newPipePlayer(videoId, isCancelled)
 
+    fun getNewPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        isCancelled: () -> Boolean = { false },
+    ): List<Pair<Int, String>> = extractor.newPipePlayer(videoId, extractionId, isCancelled)
+
+    fun cancelExtraction(extractionId: Long) = extractor.cancelExtraction(extractionId)
+
     /** Warm the extractor's local decoder ahead of the first play; see [Extractor.warmUp]. */
     fun warmUpExtractor() = extractor.warmUp()
 

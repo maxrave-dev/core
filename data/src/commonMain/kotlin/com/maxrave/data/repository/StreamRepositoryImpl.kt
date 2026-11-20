@@ -23,17 +23,19 @@ import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import com.maxrave.logger.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.concurrent.Volatile
 
 internal class StreamRepositoryImpl(
     private val localDataSource: LocalDataSource,
@@ -43,8 +45,7 @@ internal class StreamRepositoryImpl(
     // For work a resolve starts but playback must not wait for (Tidal metadata).
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    @Volatile
-    private var lastUnrecoverableError: Pair<String, String>? = null
+    private val lastUnrecoverableErrors = MutableStateFlow<Map<String, String>>(emptyMap())
     override suspend fun insertNewFormat(newFormat: NewFormatEntity) =
         withContext(Dispatchers.IO) {
             // Encode guard: the playback cache is keyed only by media id, so when a
@@ -160,8 +161,8 @@ internal class StreamRepositoryImpl(
         muxed: Boolean,
     ): Flow<String?> =
         flow {
-            if (lastUnrecoverableError?.first == videoId) {
-                lastUnrecoverableError = null
+            lastUnrecoverableErrors.update { current ->
+                if (videoId in current) current - videoId else current
             }
             val itag =
                 if (isDownloading) {
@@ -370,8 +371,18 @@ internal class StreamRepositoryImpl(
                         )
                     }
                 }.onFailure {
+                    if (it is CancellationException) throw it
                     if (it is StreamResolutionException && it.reason != StreamResolutionException.Reason.NO_NETWORK) {
-                        lastUnrecoverableError = videoId to (it.message ?: "YouTube refused $videoId")
+                        val reason = it.message ?: "YouTube refused $videoId"
+                        lastUnrecoverableErrors.update { current ->
+                            val base =
+                                if (current.size >= 16 && videoId !in current) {
+                                    current - current.keys.first()
+                                } else {
+                                    current
+                                }
+                            base + (videoId to reason)
+                        }
                     }
                     it.printStackTrace()
                     Logger.e("Stream", "Error: ${it.message}")
@@ -495,10 +506,12 @@ internal class StreamRepositoryImpl(
     }
 
     override fun consumeLastUnrecoverableError(videoId: String): String? {
-        val current = lastUnrecoverableError ?: return null
-        if (current.first != videoId) return null
-        lastUnrecoverableError = null
-        return current.second
+        var message: String? = null
+        lastUnrecoverableErrors.update { current ->
+            message = current[videoId]
+            if (videoId in current) current - videoId else current
+        }
+        return message
     }
 
     override fun onStreamRejected(videoId: String) {

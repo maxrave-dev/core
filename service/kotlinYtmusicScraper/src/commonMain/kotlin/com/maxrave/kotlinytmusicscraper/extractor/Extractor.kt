@@ -22,6 +22,14 @@ expect class Extractor() {
         isCancelled: () -> Boolean,
     ): List<Pair<Int, String>>
 
+    fun newPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>>
+
+    fun cancelExtraction(extractionId: Long)
+
     /**
      * The HLS playlist of a video that is broadcasting live right now, or null when no extractor
      * produced one.

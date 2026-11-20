@@ -115,16 +115,14 @@ internal class SimpleMediaSessionCallback(
         playerCommand: Int,
     ): Int {
         Logger.w(TAG, "Player Command $playerCommand")
-        scope.launch {
-            when (playerCommand) {
-                COMMAND_SEEK_TO_NEXT -> {
-                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Next)
-                }
-                COMMAND_SEEK_TO_PREVIOUS -> {
-                    mediaPlayerHandler.onPlayerEvent(PlayerEvent.Previous)
-                }
-                COMMAND_GET_TIMELINE -> {
-                }
+        when (playerCommand) {
+            COMMAND_SEEK_TO_NEXT, COMMAND_SEEK_TO_PREVIOUS -> {
+                // MediaSession itself dispatches COMMAND_SEEK_TO_* onto ForwardingPlayer when
+                // super returns RESULT_SUCCESS; firing PlayerEvent.Next/Previous here too
+                // caused every skip from notifications/headsets/Auto to advance two tracks.
+                mediaPlayerHandler.resetCrossfade()
+            }
+            COMMAND_GET_TIMELINE -> {
             }
         }
         return super.onPlayerCommandRequest(session, controller, playerCommand)

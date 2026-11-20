@@ -78,8 +78,10 @@ import com.maxrave.media3.service.mediasourcefactory.LiveStreamDetectedException
 import com.maxrave.media3.service.mediasourcefactory.MergingMediaSourceFactory
 import com.maxrave.media3.service.mediasourcefactory.liveStreamDataSourceFactory
 import com.maxrave.media3.utils.CoilBitmapLoader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.lastOrNull
@@ -160,6 +162,7 @@ private val mediaServiceModule =
             provideAudioAttributes()
         }
 
+        single { StreamResolveCoordinator() }
         single<MergingMediaSourceFactory> {
             provideMergingMediaSource(
                 androidContext(),
@@ -167,6 +170,7 @@ private val mediaServiceModule =
                 get(named(PLAYER_CACHE)),
                 get(),
                 get(named(SERVICE_SCOPE)),
+                get(),
                 get(),
             )
         }
@@ -242,6 +246,7 @@ private val mediaServiceModule =
                 streamRepository = get(),
                 waveformReader = get(),
                 trackCachePreloader = get(),
+                streamResolveCoordinator = get(),
             )
         }
 
@@ -298,6 +303,7 @@ private fun provideResolvingDataSourceFactory(
     dataStoreManager: DataStoreManager,
     streamRepository: StreamRepository,
     coroutineScope: CoroutineScope,
+    streamResolveCoordinator: StreamResolveCoordinator,
 ): DataSource.Factory {
     val chunkLength = 10 * 512 * 1024L
     return ResolvingDataSource.Factory(cacheDataSourceFactory) { dataSpec ->
@@ -358,7 +364,7 @@ private fun provideResolvingDataSourceFactory(
         }
         var dataSpecReturn: DataSpec = dataSpec
         var resolved = false
-        runBlocking(Dispatchers.IO) {
+        runCancellableStreamResolve(streamResolveCoordinator, videoId, mediaId) {
             withTimeoutOrNull(STREAM_RESOLVE_TIMEOUT_MS) {
                 if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
                     val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
@@ -457,6 +463,32 @@ private fun provideExtractorFactory(): ExtractorsFactory =
         )
     }
 
+private inline fun <T> runCancellableStreamResolve(
+    coordinator: StreamResolveCoordinator,
+    key: String,
+    label: String,
+    crossinline block: suspend CoroutineScope.() -> T,
+): T =
+    try {
+        runBlocking(Dispatchers.IO) {
+            val resolveJob = coroutineContext[Job]
+            val unregister =
+                if (resolveJob != null) {
+                    coordinator.register(key, resolveJob)
+                } else {
+                    {}
+                }
+            try {
+                block()
+            } finally {
+                unregister()
+            }
+        }
+    } catch (e: CancellationException) {
+        Logger.d("Stream", "Cancelled stream resolve for $label")
+        throw java.io.IOException("Stream resolve cancelled for $label", e)
+    }
+
 @UnstableApi
 private fun provideMediaSourceFactory(
     context: Context,
@@ -465,6 +497,7 @@ private fun provideMediaSourceFactory(
     streamRepository: StreamRepository,
     dataStoreManager: DataStoreManager,
     coroutineScope: CoroutineScope,
+    streamResolveCoordinator: StreamResolveCoordinator,
 ): DefaultMediaSourceFactory =
     DefaultMediaSourceFactory(
         provideResolvingDataSourceFactory(
@@ -480,6 +513,7 @@ private fun provideMediaSourceFactory(
             dataStoreManager,
             streamRepository,
             coroutineScope,
+            streamResolveCoordinator,
         ),
         provideExtractorFactory(),
     ).setLoadErrorHandlingPolicy(LiveStreamAwareLoadErrorHandlingPolicy())
@@ -505,10 +539,11 @@ private fun provideLiveStreamMediaSourceFactory(
     context: Context,
     streamRepository: StreamRepository,
     dataStoreManager: DataStoreManager,
+    streamResolveCoordinator: StreamResolveCoordinator,
 ): HlsMediaSource.Factory =
     HlsMediaSource.Factory(
         liveStreamDataSourceFactory(provideHttpDataSourceFactory(context, provideProxy(dataStoreManager))) { videoId ->
-            runBlocking(Dispatchers.IO) {
+            runCancellableStreamResolve(streamResolveCoordinator, videoId, videoId) {
                 streamRepository
                     .getStream(
                         dataStoreManager,
@@ -528,6 +563,7 @@ private fun provideMergingMediaSource(
     streamRepository: StreamRepository,
     coroutineScope: CoroutineScope,
     dataStoreManager: DataStoreManager,
+    streamResolveCoordinator: StreamResolveCoordinator,
 ): MergingMediaSourceFactory =
     MergingMediaSourceFactory(
         provideMediaSourceFactory(
@@ -537,8 +573,14 @@ private fun provideMergingMediaSource(
             streamRepository,
             dataStoreManager,
             coroutineScope,
+            streamResolveCoordinator,
         ),
-        provideLiveStreamMediaSourceFactory(context, streamRepository, dataStoreManager),
+        provideLiveStreamMediaSourceFactory(
+            context,
+            streamRepository,
+            dataStoreManager,
+            streamResolveCoordinator,
+        ),
         dataStoreManager,
         context,
         downloadCache,

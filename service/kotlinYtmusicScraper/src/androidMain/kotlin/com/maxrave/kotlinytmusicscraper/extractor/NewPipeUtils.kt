@@ -13,11 +13,98 @@ import dev.maxrave.pipepipe.extractor.exceptions.ReCaptchaException
 import dev.maxrave.pipepipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
+import okhttp3.Call
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.Proxy
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+
+/**
+ * Tracks active OkHttp calls per extraction token so cancelling a skipped/superseded track's
+ * coroutine aborts its blocking NewPipe / BravePipe / HEAD calls immediately instead of holding
+ * sockets and pool slots until timeouts expire.
+ */
+internal object ExtractorCallRegistry {
+    private class Entry(
+        val isCancelled: () -> Boolean,
+    ) {
+        @Volatile
+        var cancelled: Boolean = false
+        val calls: MutableSet<Call> = ConcurrentHashMap.newKeySet()
+    }
+
+    private val entries = ConcurrentHashMap<Long, Entry>()
+    private val currentToken = ThreadLocal<Long?>()
+
+    fun <T> runWithToken(
+        token: Long,
+        isCancelled: () -> Boolean,
+        block: () -> T,
+    ): T {
+        if (token == 0L) return block()
+        val previous = currentToken.get()
+        entries[token] = Entry(isCancelled)
+        currentToken.set(token)
+        return try {
+            block()
+        } finally {
+            if (previous != null) currentToken.set(previous) else currentToken.remove()
+            entries.remove(token)
+        }
+    }
+
+    fun cancel(token: Long) {
+        if (token == 0L) return
+        val entry = entries[token] ?: return
+        entry.cancelled = true
+        entry.calls.forEach { call ->
+            try {
+                call.cancel()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    fun isCurrentCancelled(): Boolean {
+        val token = currentToken.get() ?: return false
+        val entry = entries[token] ?: return false
+        return entry.cancelled || entry.isCancelled()
+    }
+
+    fun activeToken(): Long? = currentToken.get()
+
+    fun registerCall(
+        token: Long?,
+        call: Call,
+    ): Boolean {
+        if (token == null) return true
+        val entry = entries[token] ?: return true
+        if (entry.cancelled || entry.isCancelled()) {
+            entry.cancelled = true
+            call.cancel()
+            return false
+        }
+        entry.calls.add(call)
+        if (entry.cancelled || entry.isCancelled()) {
+            entry.cancelled = true
+            entry.calls.remove(call)
+            call.cancel()
+            return false
+        }
+        return true
+    }
+
+    fun unregisterCall(
+        token: Long?,
+        call: Call,
+    ) {
+        if (token == null) return
+        entries[token]?.calls?.remove(call)
+    }
+}
 
 /**
  * One connection pool underneath both extractor downloaders (PipePipe here, BravePipe in
@@ -29,7 +116,12 @@ import java.util.concurrent.TimeUnit
 private val extractorBaseClient: OkHttpClient by lazy {
     OkHttpClient
         .Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
+        .dispatcher(
+            Dispatcher().apply {
+                maxRequests = 64
+                maxRequestsPerHost = 16
+            },
+        ).connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
         .build()
@@ -44,7 +136,20 @@ class NewPipeDownloaderImpl(
 
     @Throws(IOException::class, ReCaptchaException::class)
     override fun execute(request: Request): Response {
-        val response = client.newCall(buildOkHttpRequest(request)).execute()
+        val token = ExtractorCallRegistry.activeToken()
+        if (ExtractorCallRegistry.isCurrentCancelled()) {
+            throw IOException("Extraction cancelled")
+        }
+        val call = client.newCall(buildOkHttpRequest(request))
+        if (!ExtractorCallRegistry.registerCall(token, call)) {
+            throw IOException("Extraction cancelled")
+        }
+        val response =
+            try {
+                call.execute()
+            } finally {
+                ExtractorCallRegistry.unregisterCall(token, call)
+            }
 
         if (response.code == 429) {
             response.close()
@@ -59,14 +164,21 @@ class NewPipeDownloaderImpl(
         request: Request,
         callback: AsyncCallback?,
     ): CancellableCall {
+        val token = ExtractorCallRegistry.activeToken()
         val call = client.newCall(buildOkHttpRequest(request))
         val cancellable = CancellableCall(call)
+        if (!ExtractorCallRegistry.registerCall(token, call)) {
+            cancellable.setFinished()
+            callback?.onError(IOException("Extraction cancelled"))
+            return cancellable
+        }
         call.enqueue(
             object : okhttp3.Callback {
                 override fun onFailure(
                     call: okhttp3.Call,
                     e: IOException,
                 ) {
+                    ExtractorCallRegistry.unregisterCall(token, call)
                     cancellable.setFinished()
                     callback?.onError(e)
                 }
@@ -87,6 +199,7 @@ class NewPipeDownloaderImpl(
                     } catch (e: Exception) {
                         callback?.onError(e)
                     } finally {
+                        ExtractorCallRegistry.unregisterCall(token, call)
                         cancellable.setFinished()
                     }
                 }
