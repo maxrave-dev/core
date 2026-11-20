@@ -208,6 +208,7 @@ private val mediaServiceModule =
                         get(),
                         get(),
                         get(named(SERVICE_SCOPE)),
+                        get(),
                     ),
                 streamRepository = get(),
             )
@@ -228,6 +229,7 @@ private val mediaServiceModule =
                         get(),
                         get(),
                         get(named(SERVICE_SCOPE)),
+                        get(),
                     ),
                 playerCache = get(named(PLAYER_CACHE)),
                 streamRepository = get(),
