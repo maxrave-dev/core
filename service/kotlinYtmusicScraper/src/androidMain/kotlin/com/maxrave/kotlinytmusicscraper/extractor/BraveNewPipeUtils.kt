@@ -19,7 +19,6 @@ internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     return hasAudio && hasVideo
 }
 
-@Volatile
 private fun buildHealthCheckClient(proxy: Proxy?): OkHttpClient =
     extractorHttpClient(proxy)
         .newBuilder()
@@ -28,6 +27,7 @@ private fun buildHealthCheckClient(proxy: Proxy?): OkHttpClient =
         .callTimeout(3000, TimeUnit.MILLISECONDS)
         .build()
 
+@Volatile
 private var streamHealthCheckClient: OkHttpClient = buildHealthCheckClient(null)
 
 internal fun updateStreamHealthCheckProxy(proxy: Proxy?) {
