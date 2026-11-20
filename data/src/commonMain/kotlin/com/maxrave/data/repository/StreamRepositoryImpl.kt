@@ -56,36 +56,111 @@ internal class StreamRepositoryImpl(
     private var tidalCooldownEnd: TimeMark? = null
 
     private val lastUnrecoverableErrors = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    // In-memory snapshot of recently resolved formats so getNewFormat() answers instantaneously
+    // without waiting for the async Room insert/fsync on the critical first-play path.
+    private val formatStateMutex = Mutex()
+    private val formatDbMutex = Mutex()
+    private val formatCache = MutableStateFlow<Map<String, Pair<Long, NewFormatEntity>>>(emptyMap())
+    private var nextFormatSeq = 0L
+
+    @kotlin.concurrent.Volatile
+    private var prefCollectorsStarted = false
+    @kotlin.concurrent.Volatile
+    private var cachedQuality: String? = null
+    @kotlin.concurrent.Volatile
+    private var cachedDownloadQuality: String? = null
+    @kotlin.concurrent.Volatile
+    private var cachedVideoQuality: String? = null
+    @kotlin.concurrent.Volatile
+    private var cachedVideoDownloadQuality: String? = null
+    @kotlin.concurrent.Volatile
+    private var cachedPreferredAudioLanguage: String? = null
+
+    private fun ensurePrefCollectors(dataStoreManager: DataStoreManager) {
+        if (prefCollectorsStarted) return
+        prefCollectorsStarted = true
+        backgroundScope.launch { dataStoreManager.quality.collect { cachedQuality = it } }
+        backgroundScope.launch { dataStoreManager.downloadQuality.collect { cachedDownloadQuality = it } }
+        backgroundScope.launch { dataStoreManager.videoQuality.collect { cachedVideoQuality = it } }
+        backgroundScope.launch { dataStoreManager.videoDownloadQuality.collect { cachedVideoDownloadQuality = it } }
+        backgroundScope.launch { dataStoreManager.preferredAudioLanguage.collect { cachedPreferredAudioLanguage = it } }
+    }
+
+    private suspend fun recordFormatInMemory(newFormat: NewFormatEntity): Pair<Long, NewFormatEntity?> =
+        formatStateMutex.withLock {
+            val previous = formatCache.value[newFormat.videoId]?.second
+            val seq = ++nextFormatSeq
+            formatCache.update { current ->
+                val trimmed =
+                    if (current.size >= 64 && newFormat.videoId !in current) {
+                        current - current.keys.first()
+                    } else {
+                        current
+                    }
+                trimmed + (newFormat.videoId to (seq to newFormat))
+            }
+            seq to previous
+        }
+
     override suspend fun insertNewFormat(newFormat: NewFormatEntity) =
         withContext(Dispatchers.IO) {
-            // Encode guard: the playback cache is keyed only by media id, so when a
-            // re-resolve stores a different encode under an id that already has cached
-            // spans — another itag, or the same itag at another content length — the
-            // player stitches old and new bytes together and the track skips mid-play.
-            // Drop the cached spans here, before the new row (and its URL) is emitted.
-            val stored = localDataSource.getNewFormat(newFormat.videoId)
-            if (stored != null &&
-                (stored.itag != newFormat.itag ||
-                    (stored.contentLength != null &&
-                        newFormat.contentLength != null &&
-                        stored.contentLength != newFormat.contentLength))
-            ) {
-                Logger.w(
-                    "Stream",
-                    "Encode changed for ${newFormat.videoId}: itag ${stored.itag} -> ${newFormat.itag}, " +
-                        "contentLength ${stored.contentLength} -> ${newFormat.contentLength}; evicting cached spans",
-                )
-                cacheRepository.removeCachedSong(newFormat.videoId.removePrefix(MERGING_DATA_TYPE.VIDEO))
+            val (seq, memStored) = recordFormatInMemory(newFormat)
+            val stored = memStored ?: localDataSource.getNewFormat(newFormat.videoId)
+            evictIfEncodeChanged(stored, newFormat)
+            formatDbMutex.withLock {
+                if (formatCache.value[newFormat.videoId]?.first == seq) {
+                    localDataSource.insertNewFormat(newFormat)
+                }
             }
-            localDataSource.insertNewFormat(newFormat)
         }
+
+    private suspend fun evictIfEncodeChanged(
+        stored: NewFormatEntity?,
+        newFormat: NewFormatEntity,
+    ) {
+        // Encode guard: the playback cache is keyed only by media id, so when a
+        // re-resolve stores a different encode under an id that already has cached
+        // spans — another itag, or the same itag at another content length — the
+        // player stitches old and new bytes together and the track skips mid-play.
+        // Drop the cached spans here, before the new row (and its URL) is emitted.
+        if (stored != null &&
+            (stored.itag != newFormat.itag ||
+                (stored.contentLength != null &&
+                    newFormat.contentLength != null &&
+                    stored.contentLength != newFormat.contentLength))
+        ) {
+            Logger.w(
+                "Stream",
+                "Encode changed for ${newFormat.videoId}: itag ${stored.itag} -> ${newFormat.itag}, " +
+                    "contentLength ${stored.contentLength} -> ${newFormat.contentLength}; evicting cached spans",
+            )
+            cacheRepository.removeCachedSong(newFormat.videoId.removePrefix(MERGING_DATA_TYPE.VIDEO))
+        }
+    }
+
+    private suspend fun insertNewFormatAsync(newFormat: NewFormatEntity) {
+        val (seq, memStored) = recordFormatInMemory(newFormat)
+        val stored = memStored ?: localDataSource.getNewFormat(newFormat.videoId)
+        evictIfEncodeChanged(stored, newFormat)
+        backgroundScope.launch {
+            formatDbMutex.withLock {
+                if (formatCache.value[newFormat.videoId]?.first == seq) {
+                    localDataSource.insertNewFormat(newFormat)
+                }
+            }
+        }
+    }
 
     override suspend fun warmUpDecoder() =
         withContext(Dispatchers.IO) {
             youTube.warmUpDecoder()
         }
 
-    override fun getNewFormat(videoId: String): Flow<NewFormatEntity?> = flow { emit(localDataSource.getNewFormat(videoId)) }.flowOn(Dispatchers.IO)
+    override fun getNewFormat(videoId: String): Flow<NewFormatEntity?> =
+        flow {
+            emit(formatCache.value[videoId]?.second ?: localDataSource.getNewFormat(videoId))
+        }.flowOn(Dispatchers.IO)
 
     override suspend fun getFormatFlow(videoId: String) = localDataSource.getNewFormatAsFlow(videoId)
 
@@ -93,7 +168,8 @@ internal class StreamRepositoryImpl(
 
     override suspend fun updateFormat(videoId: String) {
         withContext(Dispatchers.IO) {
-            localDataSource.getNewFormat(videoId)?.let { oldFormat ->
+            val existing = formatCache.value[videoId]?.second ?: localDataSource.getNewFormat(videoId)
+            existing?.let { oldFormat ->
                 Logger.d("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
                 Logger.d("Stream", "now: ${now()}")
                 Logger.d("Stream", "isExpired: ${oldFormat.expiredTime.isBefore(now())}")
@@ -144,7 +220,7 @@ internal class StreamRepositoryImpl(
                                 } else {
                                     now().plusSeconds(-1)
                                 }
-                            localDataSource.updateNewFormat(
+                            val updatedFormat =
                                 oldFormat.copy(
                                     expiredTime = newExpiredTime,
                                     audioUrl = newAudioUrl,
@@ -166,8 +242,13 @@ internal class StreamRepositoryImpl(
                                             "https://music.youtube.com",
                                         ),
                                     cpn = triple.first,
-                                ),
-                            )
+                                )
+                            val (seq, _) = recordFormatInMemory(updatedFormat)
+                            formatDbMutex.withLock {
+                                if (formatCache.value[videoId]?.first == seq) {
+                                    localDataSource.updateNewFormat(updatedFormat)
+                                }
+                            }
                             Logger.w("UpdateFormat", "Updated format for $videoId")
                         }.onFailure { throwable ->
                             Logger.e("UpdateFormat", "Error: ${throwable.message}")
@@ -185,23 +266,24 @@ internal class StreamRepositoryImpl(
         muxed: Boolean,
     ): Flow<String?> =
         flow {
+            ensurePrefCollectors(dataStoreManager)
             lastUnrecoverableErrors.update { current ->
                 if (videoId in current) current - videoId else current
             }
             val itag =
                 if (isDownloading) {
-                    QUALITY.itagOf(dataStoreManager.downloadQuality.first())
+                    QUALITY.itagOf(cachedDownloadQuality ?: dataStoreManager.downloadQuality.first())
                 } else {
-                    QUALITY.itagOf(dataStoreManager.quality.first())
+                    QUALITY.itagOf(cachedQuality ?: dataStoreManager.quality.first())
                 }
             val videoItag =
                 if (!muxed) {
                     VIDEO_QUALITY.itags.getOrNull(
                         VIDEO_QUALITY.items.indexOf(
                             if (isDownloading) {
-                                dataStoreManager.videoDownloadQuality.first()
+                                cachedVideoDownloadQuality ?: dataStoreManager.videoDownloadQuality.first()
                             } else {
-                                dataStoreManager.videoQuality.first()
+                                cachedVideoQuality ?: dataStoreManager.videoQuality.first()
                             },
                         ),
                     )
@@ -209,11 +291,14 @@ internal class StreamRepositoryImpl(
                 } else {
                     ITAG.MUXED_360P
                 }
+            val preferredAudioLanguage =
+                cachedPreferredAudioLanguage ?: dataStoreManager.preferredAudioLanguage.first()
             youTube
                 .player(
                     videoId,
                     noLogIn = muxed,
-                    preferredAudioLanguage = dataStoreManager.preferredAudioLanguage.first(),
+                    preferredAudioLanguage = preferredAudioLanguage,
+                    isVideo = isVideo || muxed,
                 )
                 .onSuccess { data ->
                     val response = data.second
@@ -221,7 +306,13 @@ internal class StreamRepositoryImpl(
                     LiveStreamRegistry.recordLiveStatus(videoId, isLive)
                     // The song row follows, so the LIVE badge and the download gate know too —
                     // including when a broadcast has ended and its recording downloads normally.
-                    localDataSource.updateSongLiveStatus(videoId, isLive)
+                    if (isLive) {
+                        localDataSource.updateSongLiveStatus(videoId, true)
+                    } else {
+                        backgroundScope.launch {
+                            localDataSource.updateSongLiveStatus(videoId, false)
+                        }
+                    }
                     if (isLive && isDownloading) {
                         // Nothing to save: handing an endless HLS playlist to a downloader stores
                         // the playlist text as if it were the song. Emitting nothing fails the
@@ -302,7 +393,7 @@ internal class StreamRepositoryImpl(
                             ", expires in ${response.streamingData?.expiresInSeconds}s",
                     )
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
-                    insertNewFormat(
+                    insertNewFormatAsync(
                         NewFormatEntity(
                             videoId = if ((isVideo && !muxed) || VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
                             itag = format?.itag ?: itag,
@@ -488,11 +579,16 @@ internal class StreamRepositoryImpl(
 
     override suspend fun invalidateFormat(videoId: String) {
         withContext(Dispatchers.IO) {
-            localDataSource.getNewFormat(videoId)?.let { format ->
+            val existing = formatCache.value[videoId]?.second ?: localDataSource.getNewFormat(videoId)
+            existing?.let { format ->
                 Logger.d("Stream", "Invalidating cached format for $videoId")
-                localDataSource.updateNewFormat(
-                    format.copy(expiredTime = now().plusSeconds(-1)),
-                )
+                val expired = format.copy(expiredTime = now().plusSeconds(-1))
+                val (seq, _) = recordFormatInMemory(expired)
+                formatDbMutex.withLock {
+                    if (formatCache.value[videoId]?.first == seq) {
+                        localDataSource.updateNewFormat(expired)
+                    }
+                }
             }
         }
     }
@@ -500,8 +596,13 @@ internal class StreamRepositoryImpl(
     override suspend fun invalidateAllFormats() {
         youTube.clearExtractorTrust()
         withContext(Dispatchers.IO) {
-            val deleted = localDataSource.deleteAllNewFormats()
-            Logger.d("Stream", "Invalidated all stored formats ($deleted rows)")
+            formatStateMutex.withLock {
+                formatCache.value = emptyMap()
+            }
+            formatDbMutex.withLock {
+                val deleted = localDataSource.deleteAllNewFormats()
+                Logger.d("Stream", "Invalidated all stored formats ($deleted rows)")
+            }
         }
     }
 
@@ -511,8 +612,15 @@ internal class StreamRepositoryImpl(
             return
         }
         withContext(Dispatchers.IO) {
-            val deleted = localDataSource.deleteAllNewFormatsExcept(exceptVideoIds.toList())
-            Logger.d("Stream", "Invalidated stored formats except $exceptVideoIds ($deleted rows)")
+            formatStateMutex.withLock {
+                formatCache.update { current ->
+                    current.filterKeys { it in exceptVideoIds }
+                }
+            }
+            formatDbMutex.withLock {
+                val deleted = localDataSource.deleteAllNewFormatsExcept(exceptVideoIds.toList())
+                Logger.d("Stream", "Invalidated stored formats except $exceptVideoIds ($deleted rows)")
+            }
         }
     }
 

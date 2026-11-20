@@ -1696,6 +1696,7 @@ class YouTube {
         playlistId: String? = null,
         noLogIn: Boolean = false,
         preferredAudioLanguage: String? = null,
+        isVideo: Boolean = true,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
             val cpn =
@@ -1741,7 +1742,12 @@ class YouTube {
                             if (cause != null) ytMusic.cancelExtraction(extractionId)
                         }
                     try {
-                        ytMusic.getNewPipePlayer(videoId, extractionId) { !isActive }
+                        ytMusic.getNewPipePlayer(
+                            videoId = videoId,
+                            extractionId = extractionId,
+                            isCancelled = { !isActive },
+                            requireVideo = isVideo,
+                        )
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {

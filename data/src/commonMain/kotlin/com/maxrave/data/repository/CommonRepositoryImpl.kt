@@ -52,6 +52,9 @@ internal class CommonRepositoryImpl(
     ) {
         youTube.cookiePath = cookiePath.toPath()
         coroutineScope.launch {
+            launch {
+                runCatching { youTube.warmUpExtractor() }
+            }
             val resetSpotifyToken =
                 launch {
                     dataStoreManager.setSpotifyClientToken("")

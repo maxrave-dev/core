@@ -215,6 +215,9 @@ internal class MediaServiceHandlerImpl(
     @Volatile
     private var playTimingVideoId: String? = null
 
+    @Volatile
+    private var pendingInsertSongJob: Pair<String, Job>? = null
+
     private val networkCallback =
         object : ConnectivityManager.NetworkCallback() {
             override fun onLost(network: Network) {
@@ -884,6 +887,7 @@ internal class MediaServiceHandlerImpl(
         getDataOfNowPlayingTrackStateJob =
             coroutineScope.launch {
                 Logger.w(TAG, "getDataOfNowPlayingState: $videoId")
+                pendingInsertSongJob?.takeIf { it.first == videoId }?.second?.join()
                 songRepository.getSongById(videoId).cancellable().singleOrNull().let { songEntity ->
                     if (songEntity != null) {
                         _controlState.update { it.copy(isLiked = songEntity.liked) }
@@ -1647,7 +1651,6 @@ internal class MediaServiceHandlerImpl(
         mediaItem: GenericMediaItem,
         playWhenReady: Boolean,
     ) {
-        player.clearMediaItems()
         player.playWhenReady = playWhenReady
         player.setMediaItem(mediaItem)
         player.prepare()
@@ -2648,17 +2651,18 @@ internal class MediaServiceHandlerImpl(
         terminalError = false
         lastObservedPlayPositionMs = 0L
 
-        if (Logger.debugLoggingEnabled) {
-            playTimingStartMs = SystemClock.elapsedRealtime()
-            playTimingVideoId = track.videoId
-        }
-        songRepository.insertSong(track.toSongEntity()).singleOrNull()?.let {
-            Logger.d(TAG, "Inserted song: ${track.title}")
-        }
-        clearMediaItems()
-        track.durationSeconds?.let {
-            songRepository.updateDurationSeconds(it, track.videoId)
-        }
+        playTimingStartMs = SystemClock.elapsedRealtime()
+        playTimingVideoId = track.videoId
+        pendingInsertSongJob =
+            track.videoId to
+            coroutineScope.launch(Dispatchers.IO) {
+                songRepository.insertSong(track.toSongEntity()).singleOrNull()?.let {
+                    Logger.d(TAG, "Inserted song: ${track.title}")
+                }
+                track.durationSeconds?.let {
+                    songRepository.updateDurationSeconds(it, track.videoId)
+                }
+            }
         addMediaItem(track.toGenericMediaItem(), playWhenReady = type != RECOVER_TRACK_QUEUE)
         when (type) {
             SONG_CLICK, VIDEO_CLICK, SHARE -> {
@@ -3018,10 +3022,10 @@ internal class MediaServiceHandlerImpl(
             PlayerConstants.STATE_READY -> {
                 Logger.d(TAG, "onPlaybackStateChanged: Ready")
                 val timingVideoId = playTimingVideoId
-                if (Logger.debugLoggingEnabled && timingVideoId != null) {
-                    Logger.d(
-                        TAG,
-                        "PlayTiming id=$timingVideoId ready=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
+                if (timingVideoId != null) {
+                    Logger.i(
+                        "PlayTiming",
+                        "id=$timingVideoId ready=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
                     )
                 }
                 val durMs = player.duration
@@ -3084,10 +3088,10 @@ internal class MediaServiceHandlerImpl(
             resumeWhenNetworkReturns = false
             audioTrackRecoveryMediaId = null
             val timingVideoId = playTimingVideoId
-            if (Logger.debugLoggingEnabled && timingVideoId != null) {
-                Logger.d(
-                    TAG,
-                    "PlayTiming id=$timingVideoId playing=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
+            if (timingVideoId != null) {
+                Logger.i(
+                    "PlayTiming",
+                    "id=$timingVideoId playing=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
                 )
                 playTimingVideoId = null
             }

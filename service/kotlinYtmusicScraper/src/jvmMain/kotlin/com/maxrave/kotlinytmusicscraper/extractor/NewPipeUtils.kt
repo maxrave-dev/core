@@ -25,7 +25,7 @@ import java.net.Proxy
  * warmed the same host up in another pool. Clients derived with [OkHttpClient.newBuilder]
  * share the base's connection pool and dispatcher; only the proxy differs.
  */
-private val extractorBaseClient: OkHttpClient by lazy { OkHttpClient.Builder().build() }
+private val extractorBaseClient: OkHttpClient by lazy { com.maxrave.ktorext.SharedOkHttp.baseClient }
 
 internal fun extractorHttpClient(proxy: Proxy?): OkHttpClient = extractorBaseClient.newBuilder().proxy(proxy).build()
 

@@ -31,6 +31,13 @@ expect class Extractor() {
         isCancelled: () -> Boolean,
     ): List<Pair<Int, String>>
 
+    fun newPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        requireVideo: Boolean,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>>
+
     fun cancelExtraction(extractionId: Long)
 
     /**

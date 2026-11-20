@@ -58,7 +58,7 @@ val repositoryModule =
             ArtistRepositoryImpl(get(), get(), get())
         }
 
-        single<CommonRepository> {
+        single<CommonRepository>(createdAtStart = true) {
             CommonRepositoryImpl(get(named(SERVICE_SCOPE)), get(), get(), get(), get(), get()).apply {
                 this.init("${fileDir()}/ytdlp-cookie.txt", get(), get<AppIdentity>().isDevBuild)
             }

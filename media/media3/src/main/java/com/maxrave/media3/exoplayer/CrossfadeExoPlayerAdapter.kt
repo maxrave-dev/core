@@ -2547,6 +2547,15 @@ internal class CrossfadeExoPlayerAdapter(
         }
 
         if (keepPlaceholder) {
+            if (oldPlayer != null && oldPlayer.mediaItemCount == 0 && internalState == InternalState.IDLE) {
+                setupPlayerListenerInternal(oldPlayer)
+                cachedPosition = 0L
+                cachedDuration = 0L
+                cachedBufferedPosition = 0L
+                cachedIsLoading = false
+                pausedAtMs = 0L
+                return
+            }
             val placeholder = createExoPlayerInstance()
             currentPlayer = placeholder.player
             currentPlayerFilter = placeholder.filter

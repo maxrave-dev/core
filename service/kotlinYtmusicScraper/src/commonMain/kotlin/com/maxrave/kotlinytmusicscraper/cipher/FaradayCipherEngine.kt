@@ -32,6 +32,7 @@ class FaradayCipherEngine(
      */
     private val jsThread: CoroutineDispatcher,
     private val logger: InnerTubeLogger = InnerTubeLogger.NONE,
+    private val cacheStore: FaradayCacheStore? = null,
 ) {
     /** What PipePipe needs before it can ask for anything to be decoded. */
     data class PlayerInfo(
@@ -47,19 +48,22 @@ class FaradayCipherEngine(
     // Our table first, Metrolist's to fill the hashes ours has not published yet. The two never
     // disagree on sig/nClass/sts (checked 2026-10-27), so the order only decides which is asked first.
     private val stores =
-        listOf(PLAYER_CONFIG_URL, METROLIST_PLAYER_CONFIG_URL).map {
-            RemotePlayerConfigStore(httpClient, InMemoryPlayerConfigRepository(it), logger)
+        listOf(
+            "primary" to PLAYER_CONFIG_URL,
+            "metrolist" to METROLIST_PLAYER_CONFIG_URL,
+        ).map { (key, url) ->
+            RemotePlayerConfigStore(httpClient, PersistedPlayerConfigRepository(url, key, cacheStore), logger)
         }
 
     /**
-     * Serialises every public entry point.
+     * Serialises player metadata/table lookups separately from QuickJS solver creation/decoding.
      *
-     * Two tracks resolve at once (the player pre-caches the next one), and without this both would
-     * miss the solver cache and each build its own QuickJS runtime — two native contexts holding a
-     * 192 MB limit apiece, one of which is then disposed while the other is mid-flight. Metrolist
-     * takes the same lock across the whole of its own entry point for this reason.
+     * Splitting the old single lock lets `playerInfo()` return immediately even while `warmUp()` is
+     * compiling `base.js` in QuickJS, so PipePipe's YouTube player HTTP request runs in parallel
+     * with solver construction instead of waiting behind it.
      */
-    private val operationMutex = Mutex()
+    private val playerInfoMutex = Mutex()
+    private val solverMutex = Mutex()
 
     private val mutex = Mutex()
     private var cachedPlayerId: String? = null
@@ -79,7 +83,7 @@ class FaradayCipherEngine(
      * Returns null when either half is unavailable — a partial answer is worse than none, because
      * a wrong timestamp yields a response whose signatures cannot be made to work at all.
      */
-    suspend fun playerInfo(): PlayerInfo? = operationMutex.withLock { playerInfoLocked() }
+    suspend fun playerInfo(): PlayerInfo? = playerInfoMutex.withLock { playerInfoLocked() }
 
     private suspend fun playerInfoLocked(): PlayerInfo? {
         val playerId = currentPlayerId() ?: return null
@@ -100,7 +104,7 @@ class FaradayCipherEngine(
         playerId: String,
         signatures: List<String>,
         nParameters: List<String>,
-    ): DecodeResult = operationMutex.withLock { decodeLocked(playerId, signatures, nParameters) }
+    ): DecodeResult = solverMutex.withLock { decodeLocked(playerId, signatures, nParameters) }
 
     /**
      * Pay the one-time setup ahead of the first [decode]: the current player id, the remote
@@ -110,8 +114,8 @@ class FaradayCipherEngine(
      * first decode then simply pays the cost itself.
      */
     suspend fun warmUp() {
-        operationMutex.withLock {
-            val info = playerInfoLocked() ?: return@withLock
+        val info = playerInfoMutex.withLock { playerInfoLocked() } ?: return
+        solverMutex.withLock {
             solverFor(info.playerId)
         }
     }
@@ -158,15 +162,24 @@ class FaradayCipherEngine(
      * that is well-formed and still wrong, so nothing throws and nothing looks broken until the
      * media request comes back 403.
      */
-    suspend fun invalidate() = operationMutex.withLock { invalidateLocked() }
+    suspend fun invalidate() =
+        playerInfoMutex.withLock {
+            solverMutex.withLock {
+                invalidateLocked()
+            }
+        }
 
     private suspend fun invalidateLocked() {
-        mutex.withLock {
-            cachedPlayerId = null
-            cachedPlayerIdAtMs = 0L
-            cachedSolver?.solver?.dispose()
-            cachedSolver = null
-        }
+        val previousPlayerId =
+            mutex.withLock {
+                val id = cachedPlayerId
+                cachedPlayerId = null
+                cachedPlayerIdAtMs = 0L
+                cachedSolver?.solver?.dispose()
+                cachedSolver = null
+                id
+            }
+        previousPlayerId?.let { cacheStore?.deletePlayerScript(it) }
         stores.forEach { runCatching { it.refreshAfterStreamRejection() } }
     }
 
@@ -235,8 +248,24 @@ class FaradayCipherEngine(
         }
 
         return try {
-            val playerCode = downloadPlayerCode(playerUrl) ?: return null
-            val created = ZemerCipherSolver.create(playerCode, config, jsThread)
+            val cachedCode = cacheStore?.readPlayerScript(playerId)
+            val created =
+                if (cachedCode != null) {
+                    try {
+                        ZemerCipherSolver.create(cachedCode, config, jsThread)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        cacheStore?.deletePlayerScript(playerId)
+                        val freshCode = downloadPlayerCode(playerUrl) ?: return null
+                        cacheStore?.writePlayerScript(playerId, freshCode)
+                        ZemerCipherSolver.create(freshCode, config, jsThread)
+                    }
+                } else {
+                    val freshCode = downloadPlayerCode(playerUrl) ?: return null
+                    cacheStore?.writePlayerScript(playerId, freshCode)
+                    ZemerCipherSolver.create(freshCode, config, jsThread)
+                }
             val replaced =
                 mutex.withLock {
                     val previous = cachedSolver

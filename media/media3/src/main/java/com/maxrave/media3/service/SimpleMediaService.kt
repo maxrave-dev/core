@@ -46,6 +46,7 @@ internal class SimpleMediaService :
     private val simpleMediaSessionCallback: MediaLibrarySession.Callback by inject<MediaLibrarySession.Callback>()
 
     private val simpleMediaServiceHandler: MediaPlayerHandler by inject<MediaPlayerHandler>()
+    private val castHandoffManager: com.maxrave.media3.cast.CastHandoffManager by inject()
 
     private val binder = MusicBinder()
 
@@ -77,6 +78,7 @@ internal class SimpleMediaService :
     override fun onCreate() {
         super.onCreate()
         Logger.w("Service", "Simple Media Service Created")
+        castHandoffManager
 
         setMediaNotificationProvider(
             DefaultMediaNotificationProvider(

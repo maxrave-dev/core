@@ -339,7 +339,7 @@ internal class SongRepositoryImpl(
     override suspend fun updateLikeStatus(
         videoId: String,
         likeStatus: Int,
-    ) = withContext(Dispatchers.Main) {
+    ) = withContext(Dispatchers.IO) {
         localDataSource.updateLiked(likeStatus, videoId)
         if (likeStatus == 1 && dataStoreManager.autoDownloadLikedSongs.first() == TRUE) {
             val song = localDataSource.getSong(videoId)
@@ -365,12 +365,12 @@ internal class SongRepositoryImpl(
     override fun updateSongInLibrary(
         inLibrary: LocalDateTime,
         videoId: String,
-    ): Flow<Int> = flow { emit(localDataSource.updateSongInLibrary(inLibrary, videoId)) }
+    ): Flow<Int> = flow { emit(localDataSource.updateSongInLibrary(inLibrary, videoId)) }.flowOn(Dispatchers.IO)
 
     override suspend fun updateDurationSeconds(
         durationSeconds: Int,
         videoId: String,
-    ) = withContext(Dispatchers.Main) {
+    ) = withContext(Dispatchers.IO) {
         localDataSource.updateDurationSeconds(
             durationSeconds,
             videoId,
@@ -382,7 +382,7 @@ internal class SongRepositoryImpl(
     override suspend fun updateDownloadState(
         videoId: String,
         downloadState: Int,
-    ) = withContext(Dispatchers.Main) {
+    ) = withContext(Dispatchers.IO) {
         localDataSource.updateDownloadState(
             downloadState,
             videoId,
@@ -571,7 +571,7 @@ internal class SongRepositoryImpl(
                         emit(YouTubeLikeStatus.INDIFFERENT)
                     }
             }
-        }
+        }.flowOn(Dispatchers.IO)
 
     override suspend fun addToYouTubeLiked(mediaId: String?): Flow<Int> =
         flow {

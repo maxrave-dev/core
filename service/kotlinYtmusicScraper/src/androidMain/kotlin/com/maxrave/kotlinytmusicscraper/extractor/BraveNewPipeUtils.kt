@@ -39,11 +39,14 @@ internal fun updateStreamHealthCheckProxy(proxy: Proxy?) {
  * only when the response code is in the 200..299 range. We only health-check those URLs because
  * they are the ones the player will actually use; lower-quality extras can stay unverified.
  */
-internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
-    val required = ITAG.AUDIO_PLAYABLE + ITAG.VIDEO
-    val candidate = this.filter { it.first in required }.randomOrNull() ?: return false
-    if (ExtractorCallRegistry.isCurrentCancelled()) return false
-    val token = ExtractorCallRegistry.activeToken()
+internal fun List<Pair<Int, String>>.headCheckTarget(): Pair<Int, String>? =
+    ITAG.AUDIO_PLAYABLE.firstNotNullOfOrNull { target -> firstOrNull { it.first == target } }
+        ?: firstOrNull { it.first in ITAG.VIDEO }
+
+internal fun List<Pair<Int, String>>.headCheckRandomStream(trackRegistry: Boolean = true): Boolean {
+    val candidate = headCheckTarget() ?: return false
+    if (trackRegistry && ExtractorCallRegistry.isCurrentCancelled()) return false
+    val token = if (trackRegistry) ExtractorCallRegistry.activeToken() else null
     return runCatching {
         val request =
             okhttp3.Request
@@ -52,13 +55,13 @@ internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
                 .url(candidate.second)
                 .build()
         val call = streamHealthCheckClient.newCall(request)
-        if (!ExtractorCallRegistry.registerCall(token, call)) return false
+        if (token != null && !ExtractorCallRegistry.registerCall(token, call)) return false
         try {
             call.execute().use { response ->
                 response.code in 200..299
             }
         } finally {
-            ExtractorCallRegistry.unregisterCall(token, call)
+            if (token != null) ExtractorCallRegistry.unregisterCall(token, call)
         }
     }.getOrDefault(false)
 }

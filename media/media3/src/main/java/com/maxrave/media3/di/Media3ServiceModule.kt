@@ -218,7 +218,7 @@ private val mediaServiceModule =
         // Prevention for mid-song stalls: pulls the whole track into the player cache through the
         // same resolving chain the player streams through, with a watchdog that keeps retrying
         // until the track is fully local.
-        single<TrackCachePreloader>(createdAtStart = true) {
+        single<TrackCachePreloader> {
             TrackCachePreloader(
                 context = androidContext(),
                 dataSourceFactory =
@@ -256,7 +256,7 @@ private val mediaServiceModule =
 
         // Local ↔ Cast receiver handoff. No-op when wrapWithCastPlayer returned the plain
         // ForwardingPlayer (FOSS build or no GMS on the device).
-        single<CastHandoffManager>(createdAtStart = true) {
+        single<CastHandoffManager> {
             CastHandoffManager(
                 adapter = get<MediaPlayerInterface>() as CrossfadeExoPlayerAdapter,
                 sessionPlayer = get(qualifier = named(MAIN_PLAYER)),

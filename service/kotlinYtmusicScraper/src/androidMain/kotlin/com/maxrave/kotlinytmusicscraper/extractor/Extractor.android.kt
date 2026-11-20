@@ -11,9 +11,14 @@ import dev.maxrave.pipepipe.extractor.ServiceList
 import dev.maxrave.pipepipe.extractor.services.youtube.YoutubeApiDecoder
 import dev.maxrave.pipepipe.extractor.stream.StreamInfo
 import io.ktor.client.engine.ProxyConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import okio.FileSystem
 import okio.IOException
 import okio.Path.Companion.toPath
+import java.util.concurrent.atomic.AtomicBoolean
 import org.schabi.newpipe.extractor.NewPipe as BraveNewPipe
 import org.schabi.newpipe.extractor.ServiceList as BraveServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfo as BraveStreamInfo
@@ -43,6 +48,8 @@ actual class Extractor {
     private var braveNewPipeDownloader = BraveNewPipeDownloaderImpl(proxy = null)
     private val faradayDecoder = FaradayJsDecoder()
     private val pipePipeLock = Any()
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val localHeadVerifyInFlight = AtomicBoolean(false)
 
     private val trustLock = Any()
     private var localTierTrustedUntilMs: Long = 0L
@@ -213,6 +220,13 @@ actual class Extractor {
         videoId: String,
         extractionId: Long,
         isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> = newPipePlayer(videoId, extractionId, requireVideo = true, isCancelled)
+
+    actual fun newPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        requireVideo: Boolean,
+        isCancelled: () -> Boolean,
     ): List<Pair<Int, String>> =
         ExtractorCallRegistry.runWithToken(extractionId, isCancelled) {
             var audioOnlyResult: TierExtract? = null
@@ -231,7 +245,7 @@ actual class Extractor {
                     attempts.add("$LOCAL_TIER:skipped")
                     Logger.d(TAG, "PipePipe[$LOCAL_TIER] skipped for $videoId (stream URLs rejected recently)")
                 } else {
-                    pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, attempts, isCancelled, collectAudioOnly)?.let {
+                    pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, requireVideo, attempts, isCancelled, collectAudioOnly)?.let {
                         winner = it
                         return@runWithToken it.streams
                     }
@@ -246,7 +260,7 @@ actual class Extractor {
                     attempts.add("$REMOTE_TIER:skipped")
                     Logger.d(TAG, "PipePipe[$REMOTE_TIER] skipped for $videoId (stream URLs rejected recently)")
                 } else {
-                    pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, attempts, isCancelled, collectAudioOnly)?.let {
+                    pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, requireVideo, attempts, isCancelled, collectAudioOnly)?.let {
                         winner = it
                         return@runWithToken it.streams
                     }
@@ -260,14 +274,14 @@ actual class Extractor {
                     return@runWithToken it.streams
                 }
                 if (remoteSkipped && !isCancelled()) {
-                    pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, attempts, isCancelled, collectAudioOnly)?.let {
+                    pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, requireVideo, attempts, isCancelled, collectAudioOnly)?.let {
                         remoteTierBrokenUntilMs = 0L
                         winner = it
                         return@runWithToken it.streams
                     }
                 }
                 if (localSkipped && !isCancelled()) {
-                    pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, attempts, isCancelled, collectAudioOnly)?.let {
+                    pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, requireVideo, attempts, isCancelled, collectAudioOnly)?.let {
                         localTierBrokenUntilMs = 0L
                         winner = it
                         return@runWithToken it.streams
@@ -341,6 +355,7 @@ actual class Extractor {
         videoId: String,
         tier: String,
         useLocalDecoder: Boolean,
+        requireVideo: Boolean = true,
         attempts: MutableList<String>,
         isCancelled: () -> Boolean = { false },
         onAudioOnlyResult: (TierExtract) -> Unit = {},
@@ -364,7 +379,7 @@ actual class Extractor {
                 streamsList.mapNotNull {
                     (it.itagItem?.id ?: return@mapNotNull null) to it.content
                 }
-            val complete = pipeResult.hasRequiredItags()
+            val complete = if (requireVideo) pipeResult.hasRequiredItags() else pipeResult.hasAudioItag()
             if (!complete && !pipeResult.hasAudioItag()) {
                 val got = pipeResult.map { it.first }.distinct().joinToString(",")
                 attempts.add("$tier:noItags($got)/${extractMs}ms")
@@ -377,6 +392,28 @@ actual class Extractor {
             if (trusted) {
                 headDetail = "head=skip"
                 unverifiedTier = tier
+            } else if (tier == LOCAL_TIER) {
+                // Return immediately on Tier 1 so playback starts without waiting for a serial
+                // HTTPS HEAD RTT; verify in background to warm the trust window or trip cooldown.
+                // Any real 403 is handled by CrossfadeExoPlayerAdapter -> onStreamRejected().
+                headDetail = "head=async"
+                unverifiedTier = tier
+                if (localHeadVerifyInFlight.compareAndSet(false, true)) {
+                    backgroundScope.launch {
+                        try {
+                            if (pipeResult.headCheckRandomStream(trackRegistry = false)) {
+                                markTierTrusted(LOCAL_TIER)
+                            } else {
+                                clearTierTrust(LOCAL_TIER)
+                                markLocalTierBroken()
+                                faradayDecoder.invalidateAsync()
+                                Logger.d(TAG, "Background PipePipe[$LOCAL_TIER] HEAD check failed for $videoId; invalidating")
+                            }
+                        } finally {
+                            localHeadVerifyInFlight.set(false)
+                        }
+                    }
+                }
             } else {
                 val headStartedMs = SystemClock.elapsedRealtime()
                 val headOk = pipeResult.headCheckRandomStream()

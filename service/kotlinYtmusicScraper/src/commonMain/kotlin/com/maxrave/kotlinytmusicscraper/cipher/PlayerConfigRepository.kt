@@ -10,6 +10,8 @@ interface PlayerConfigRepository {
     var cachedSourceUrl: String
     var cachedEtag: String
 
+    fun onCacheUpdated() {}
+
     companion object {
         /** Creates a non-persistent repository with remote config loading disabled. */
         fun disabled(): PlayerConfigRepository =

@@ -63,6 +63,7 @@ internal class FaradayJsDecoder : YoutubeJavaScriptDecoder {
             .newSingleThreadExecutor { runnable -> Thread(null, runnable, "QuickJs", JS_THREAD_STACK_BYTES) }
             .asCoroutineDispatcher()
 
+    private val cacheStore = FileFaradayCacheStore()
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val engineLock = Any()
 
@@ -84,7 +85,7 @@ internal class FaradayJsDecoder : YoutubeJavaScriptDecoder {
                         }
                     }
                 }
-            FaradayCipherEngine(client, jsThread, bridgedLogger).also {
+            FaradayCipherEngine(client, jsThread, bridgedLogger, cacheStore = cacheStore).also {
                 engineProxy = proxy
                 engineInstance = it
             }

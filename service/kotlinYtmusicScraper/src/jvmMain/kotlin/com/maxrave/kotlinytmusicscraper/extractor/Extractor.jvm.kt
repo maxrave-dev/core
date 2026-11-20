@@ -52,12 +52,19 @@ actual class Extractor {
         videoId: String,
         extractionId: Long,
         isCancelled: () -> Boolean,
-    ): List<Pair<Int, String>> = newPipePlayer(videoId, isCancelled)
+    ): List<Pair<Int, String>> = newPipePlayer(videoId, extractionId, requireVideo = true, isCancelled)
 
     actual fun cancelExtraction(extractionId: Long) {}
 
     actual fun newPipePlayer(
         videoId: String,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> = newPipePlayer(videoId, 0L, requireVideo = true, isCancelled)
+
+    actual fun newPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        requireVideo: Boolean,
         isCancelled: () -> Boolean,
     ): List<Pair<Int, String>> {
         var audioOnlyResult: List<Pair<Int, String>>? = null
@@ -68,13 +75,13 @@ actual class Extractor {
         if (isCancelled()) return emptyList()
 
         // Tier 1 — ciphers solved locally.
-        pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, collectAudioOnly)?.let { return it }
+        pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, requireVideo, collectAudioOnly)?.let { return it }
 
         if (isCancelled()) return emptyList()
 
         // Tier 2 — same extractor with no local decoder at all, so every challenge is solved at
         // api.pipepipe.dev. This is the tier a 403 from tier 1 must reach.
-        pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, collectAudioOnly)?.let { return it }
+        pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, requireVideo, collectAudioOnly)?.let { return it }
 
         if (isCancelled()) return emptyList()
 
@@ -134,6 +141,7 @@ actual class Extractor {
         videoId: String,
         tier: String,
         useLocalDecoder: Boolean,
+        requireVideo: Boolean = true,
         onAudioOnlyResult: (List<Pair<Int, String>>) -> Unit = {},
     ): List<Pair<Int, String>>? {
         try {
@@ -151,7 +159,7 @@ actual class Extractor {
             val manifest = streamInfo.dashMpdUrl.takeIf { !it.isNullOrEmpty() } ?: streamInfo.hlsUrl
             if (!manifest.isNullOrEmpty()) temp.add(96 to manifest)
             val pipeResult = temp.toList()
-            val complete = pipeResult.hasRequiredItags()
+            val complete = if (requireVideo) pipeResult.hasRequiredItags() else pipeResult.hasAudioItag()
             if (!complete && !pipeResult.hasAudioItag()) {
                 Logger.d(TAG, "PipePipe[$tier] missing required itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null

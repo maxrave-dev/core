@@ -306,7 +306,8 @@ class Ytmusic {
         videoId: String,
         extractionId: Long,
         isCancelled: () -> Boolean = { false },
-    ): List<Pair<Int, String>> = extractor.newPipePlayer(videoId, extractionId, isCancelled)
+        requireVideo: Boolean = true,
+    ): List<Pair<Int, String>> = extractor.newPipePlayer(videoId, extractionId, requireVideo, isCancelled)
 
     fun cancelExtraction(extractionId: Long) = extractor.cancelExtraction(extractionId)
 

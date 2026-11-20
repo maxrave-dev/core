@@ -14,7 +14,6 @@ import dev.maxrave.pipepipe.extractor.services.youtube.YoutubeJavaScriptPlayerMa
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
 import okhttp3.Call
-import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
@@ -114,14 +113,9 @@ internal object ExtractorCallRegistry {
  * share the base's connection pool and dispatcher; only the proxy differs.
  */
 private val extractorBaseClient: OkHttpClient by lazy {
-    OkHttpClient
-        .Builder()
-        .dispatcher(
-            Dispatcher().apply {
-                maxRequests = 64
-                maxRequestsPerHost = 16
-            },
-        ).connectTimeout(10, TimeUnit.SECONDS)
+    com.maxrave.ktorext.SharedOkHttp.baseClient
+        .newBuilder()
+        .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
         .build()
