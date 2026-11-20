@@ -54,6 +54,7 @@ import com.maxrave.media3.extension.toMediaItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.last
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.guava.future
@@ -759,12 +760,12 @@ internal class SimpleMediaSessionCallback(
                         val songId = path.getOrNull(4) ?: return@future defaultResult
                         val playlistId = path.getOrNull(3) ?: return@future defaultResult
                         Logger.d(TAG, "onSetMediaItems playlistId: $playlistId")
-                        val playlistData =
+                        val playlistData: Pair<String, List<SongEntity>>? =
                             kotlinx.coroutines.withContext(Dispatchers.IO) {
                                 val playlistEntity = playlistRepository.getPlaylist(playlistId).firstOrNull()
                                 Logger.w(TAG, "onSetMediaItems playlistEntity: $playlistEntity")
                                 val tracks = playlistEntity?.tracks
-                                if (tracks.isNullOrEmpty()) {
+                                if (playlistEntity == null || tracks.isNullOrEmpty()) {
                                     null
                                 } else {
                                     val songs =

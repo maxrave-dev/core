@@ -159,7 +159,7 @@ internal class SimpleMediaService :
     @UnstableApi
     fun release() {
         Logger.w("Service", "Starting release process")
-        simpleMediaServiceHandler.onUpdateNotification = null
+        simpleMediaServiceHandler.onUpdateNotification = {}
         releaseControllerFuture()
         runBlocking {
             try {
@@ -185,7 +185,7 @@ internal class SimpleMediaService :
     override fun onDestroy() {
         super.onDestroy()
         Logger.w("Service", "Simple Media Service Destroyed")
-        simpleMediaServiceHandler.onUpdateNotification = null
+        simpleMediaServiceHandler.onUpdateNotification = {}
         releaseControllerFuture()
         if (simpleMediaServiceHandler.shouldReleaseOnTaskRemoved()) {
             release()
