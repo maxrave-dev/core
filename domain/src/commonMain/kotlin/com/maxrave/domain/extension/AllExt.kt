@@ -151,54 +151,50 @@ fun CookieItem.toNetScapeString(): String =
                 acc.append(cookie.toNetscapeFormat()).append("\n")
             }.toString()
 
+private val NAMED_HTML_ENTITIES =
+    mapOf(
+        "apos" to "'",
+        "quot" to "\"",
+        "amp" to "&",
+        "lt" to "<",
+        "gt" to ">",
+    )
+
+private val HTML_ENTITY_REGEX =
+    Regex("""&(?:(apos|quot|amp|lt|gt);|#[xX]([0-9a-fA-F]+);?|#(\d+);?)""", RegexOption.IGNORE_CASE)
+
+private fun codePointToString(codePoint: Int): String? =
+    when {
+        codePoint in 1..0xD7FF || codePoint in 0xE000..0xFFFF -> Char(codePoint).toString()
+        codePoint in 0x10000..0x10FFFF -> {
+            val offset = codePoint - 0x10000
+            val high = ((offset ushr 10) + 0xD800).toChar()
+            val low = ((offset and 0x3FF) + 0xDC00).toChar()
+            "$high$low"
+        }
+        else -> null
+    }
+
 /**
  * Decodes HTML entities in a string to their corresponding characters.
  * Handles both named entities (e.g. &amp;) and numeric entities (e.g. &#39; &#x27;).
  */
 fun decodeHtmlEntities(text: String): String {
-    // Named HTML entities
-    val namedEntities =
-        mapOf(
-            "&apos;" to "'",
-            "&quot;" to "\"",
-            "&amp;" to "&",
-            "&lt;" to "<",
-            "&gt;" to ">",
-            "&#x27;" to "'",
-            "&#x22;" to "\"",
-            "&#x26;" to "&",
-            "&#x3C;" to "<",
-            "&#x3E;" to ">",
-        )
+    if ('&' !in text) return text
 
-    var result = text
-
-    // Replace named entities
-    for ((entity, char) in namedEntities) {
-        result = result.replace(entity, char, ignoreCase = true)
+    return HTML_ENTITY_REGEX.replace(text) { match ->
+        val named = match.groupValues[1]
+        if (named.isNotEmpty()) {
+            NAMED_HTML_ENTITIES[named.lowercase()] ?: match.value
+        } else {
+            val hex = match.groupValues[2]
+            val codePoint =
+                if (hex.isNotEmpty()) {
+                    hex.toIntOrNull(16)
+                } else {
+                    match.groupValues[3].toIntOrNull()
+                }
+            codePoint?.let(::codePointToString) ?: match.value
+        }
     }
-
-    // Replace hex numeric entities: &#xHH; or &#xHH (with or without semicolon)
-    result =
-        Regex("""&#x([0-9a-fA-F]+);?""").replace(result) { match ->
-            val codePoint = match.groupValues[1].toIntOrNull(16)
-            if (codePoint != null) {
-                Char(codePoint).toString()
-            } else {
-                match.value
-            }
-        }
-
-    // Replace decimal numeric entities: &#DD; or &#DD (with or without semicolon)
-    result =
-        Regex("""&#(\d+);?""").replace(result) { match ->
-            val codePoint = match.groupValues[1].toIntOrNull()
-            if (codePoint != null) {
-                Char(codePoint).toString()
-            } else {
-                match.value
-            }
-        }
-
-    return result
 }
