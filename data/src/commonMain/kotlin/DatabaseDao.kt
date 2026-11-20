@@ -1407,6 +1407,9 @@ interface DatabaseDao {
     @Query("DELETE FROM new_format")
     suspend fun deleteAllNewFormats(): Int
 
+    @Query("DELETE FROM new_format WHERE videoId NOT IN (:exceptVideoIds)")
+    suspend fun deleteAllNewFormatsExcept(exceptVideoIds: List<String>): Int
+
     @Query("DELETE FROM lyrics WHERE videoId NOT IN (SELECT videoId FROM song)")
     suspend fun deleteStaleLyrics(): Int
 

@@ -30,20 +30,33 @@ internal class CacheRepositoryImpl(
         }
 
     override fun clearCache(cacheName: String) {
+        clearCacheExcept(cacheName, emptySet())
+    }
+
+    override fun clearCacheExcept(
+        cacheName: String,
+        exceptKeys: Set<String>,
+    ) {
         when (cacheName) {
             Config.PLAYER_CACHE -> {
                 playerCache.keys.forEach { key ->
-                    playerCache.removeResource(key)
+                    if (key !in exceptKeys) {
+                        playerCache.removeResource(key)
+                    }
                 }
             }
             Config.DOWNLOAD_CACHE -> {
                 downloadCache.keys.forEach { key ->
-                    downloadCache.removeResource(key)
+                    if (key !in exceptKeys) {
+                        downloadCache.removeResource(key)
+                    }
                 }
             }
             Config.CANVAS_CACHE -> {
                 canvasCache.keys.forEach { key ->
-                    canvasCache.removeResource(key)
+                    if (key !in exceptKeys) {
+                        canvasCache.removeResource(key)
+                    }
                 }
             }
             else -> { /* no-op */ }

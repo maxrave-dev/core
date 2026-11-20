@@ -5,6 +5,7 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -52,6 +53,7 @@ import com.maxrave.media3.audio.EqualizerAudioProcessor
 import com.maxrave.media3.audio.EqualizerCurve
 import com.maxrave.media3.audio.SleepFadeAudioProcessor
 import com.maxrave.media3.service.mediasourcefactory.isLiveStreamDetected
+import com.maxrave.media3.service.mediasourcefactory.isUnrecoverableStreamFailure
 import com.maxrave.media3.exoplayer.CrossfadeExoPlayerAdapter.Companion.SPEED_PITCH_STEP
 import com.maxrave.media3.service.mediasourcefactory.MergingMediaSourceFactory
 import kotlinx.coroutines.CancellationException
@@ -62,6 +64,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -158,6 +161,16 @@ internal class CrossfadeExoPlayerAdapter(
             dataStoreManager.crossfadeSkipAlbum.collect { enabled ->
                 skipCrossfadeInAlbum = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "Skip crossfade inside album: $skipCrossfadeInAlbum")
+            }
+        }
+        adapterScope.launch {
+            var lastQuality: String? = null
+            dataStoreManager.quality.distinctUntilChanged().collect { quality ->
+                val previous = lastQuality
+                lastQuality = quality
+                if (previous != null && previous != quality) {
+                    clearPrecacheExceptCurrentInternal()
+                }
             }
         }
     }
@@ -908,7 +921,8 @@ internal class CrossfadeExoPlayerAdapter(
             // track the UI shows and the one position updates are read from during a crossfade.
             // Without this the seek lands on the *outgoing* track while the crossfade carries on,
             // so the old song keeps playing underneath and the seek appears to do nothing.
-            if (isCrossfading) {
+            val wasCrossfading = isCrossfading
+            if (wasCrossfading) {
                 Logger.d(TAG, "seekTo: committing incoming (A+1) before seeking")
                 commitIncomingAsCurrentInternal()
             }
@@ -917,6 +931,9 @@ internal class CrossfadeExoPlayerAdapter(
                     player.seekTo(positionMs)
                 } catch (e: Exception) {
                     Logger.e(TAG, "Seek exception: ${e.message}", e)
+                }
+                if (wasCrossfading) {
+                    startPositionUpdates()
                 }
             }
         }
@@ -1705,6 +1722,7 @@ internal class CrossfadeExoPlayerAdapter(
      * State transition helper - mirrors GstreamerPlayerAdapter.transitionToState()
      */
     private fun propagatePlayerError(error: PlaybackException) {
+        val unrecoverable = error.isUnrecoverableStreamFailure()
         val genericError =
             PlayerError(
                 errorCode =
@@ -1714,6 +1732,7 @@ internal class CrossfadeExoPlayerAdapter(
                     },
                 errorCodeName = error.errorCodeName,
                 message = error.message,
+                recoverable = !unrecoverable,
             )
         Logger.e(TAG, "Playback error: ${error.message}")
         listeners.forEach { it.onPlayerError(genericError) }
@@ -2062,7 +2081,7 @@ internal class CrossfadeExoPlayerAdapter(
                     //   lists FileNotFoundException as non-retriable, so this layer is the only chance
                     //   to recover; reloading re-runs the resolver, which now sees an incomplete cache
                     //   and resolves a real URL.
-                    val isRetryableSourceError = error.isRetryableSourceError()
+                    val isRetryableSourceError = !error.isUnrecoverableStreamFailure() && error.isRetryableSourceError()
 
                     val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
                     // The progressive resolver found this track to be a live broadcast. Loading it
@@ -3324,7 +3343,7 @@ internal class CrossfadeExoPlayerAdapter(
         // Stall watchdog state — local to this loop, so every track load (which restarts
         // position updates) starts with a clean slate.
         var watchdogLastPositionMs = -1L
-        var watchdogStallMs = 0L
+        var watchdogStallStartMs = 0L
         var watchdogTrackHasPlayed = false
         var watchdogFireCount = 0
 
@@ -3431,9 +3450,13 @@ internal class CrossfadeExoPlayerAdapter(
                                 if (stallCandidate) {
                                     if (pos > watchdogLastPositionMs) {
                                         watchdogLastPositionMs = pos
-                                        watchdogStallMs = 0L
+                                        watchdogStallStartMs = 0L
                                     } else {
-                                        watchdogStallMs += 50L
+                                        val nowElapsedMs = SystemClock.elapsedRealtime()
+                                        if (watchdogStallStartMs == 0L) {
+                                            watchdogStallStartMs = nowElapsedMs
+                                        }
+                                        val watchdogStallMs = nowElapsedMs - watchdogStallStartMs
                                         if (watchdogStallMs >= STALL_WATCHDOG_THRESHOLD_MS &&
                                             watchdogFireCount < STALL_WATCHDOG_MAX_FIRES
                                         ) {
@@ -3464,7 +3487,7 @@ internal class CrossfadeExoPlayerAdapter(
                                         }
                                     }
                                 } else {
-                                    watchdogStallMs = 0L
+                                    watchdogStallStartMs = 0L
                                     if (!isCrossfading && pos > watchdogLastPositionMs) {
                                         watchdogLastPositionMs = pos
                                     }
@@ -3503,6 +3526,7 @@ internal class CrossfadeExoPlayerAdapter(
         precacheJob =
             adapterScope.launch {
                 try {
+                    delay(3_000)
                     // The tracks Next will actually play, in Next's own order: shuffle-aware, wrapping
                     // under Repeat All. Picking `index + i` in playlist order precached tracks a shuffled
                     // queue never reached, and nothing released them until the queue was edited (#2619).
@@ -3580,7 +3604,7 @@ internal class CrossfadeExoPlayerAdapter(
             private var attempts = 0
 
             override fun onPlayerError(error: PlaybackException) {
-                if (!error.isRetryableSourceError() || attempts >= maxRetryCount) return
+                if (error.isUnrecoverableStreamFailure() || !error.isRetryableSourceError() || attempts >= maxRetryCount) return
                 if (precachedPlayers[videoId]?.player !== player) return
                 attempts++
                 Logger.w(TAG, "Precache source error (attempt $attempts/$maxRetryCount) for $videoId: ${error.errorCodeName}")

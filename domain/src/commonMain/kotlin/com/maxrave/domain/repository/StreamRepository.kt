@@ -63,6 +63,20 @@ interface StreamRepository {
     suspend fun invalidateAllFormats() {}
 
     /**
+     * Same as [invalidateAllFormats], preserving entries for [exceptVideoIds] so an
+     * actively playing track is not invalidated mid-stream.
+     */
+    suspend fun invalidateAllFormatsExcept(exceptVideoIds: Set<String>) {
+        invalidateAllFormats()
+    }
+
+    /**
+     * Returns and clears the last unrecoverable resolution reason (such as a YouTube refusal)
+     * for [videoId], so the player retry policy can fail fast instead of burning outage retries.
+     */
+    fun consumeLastUnrecoverableError(videoId: String): String? = null
+
+    /**
      * Warm the stream decipher pipeline (current player id, remote player table, player
      * script, QuickJS solver) ahead of the first play, so the first resolution does not
      * pay that one-time setup inside the play path. A default no-op keeps the other

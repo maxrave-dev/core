@@ -18,6 +18,7 @@ import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.CacheRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.Resource
+import com.maxrave.kotlinytmusicscraper.StreamResolutionException
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
@@ -32,6 +33,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.concurrent.Volatile
 
 internal class StreamRepositoryImpl(
     private val localDataSource: LocalDataSource,
@@ -40,6 +42,9 @@ internal class StreamRepositoryImpl(
 ) : StreamRepository {
     // For work a resolve starts but playback must not wait for (Tidal metadata).
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var lastUnrecoverableError: Pair<String, String>? = null
     override suspend fun insertNewFormat(newFormat: NewFormatEntity) =
         withContext(Dispatchers.IO) {
             // Encode guard: the playback cache is keyed only by media id, so when a
@@ -155,6 +160,9 @@ internal class StreamRepositoryImpl(
         muxed: Boolean,
     ): Flow<String?> =
         flow {
+            if (lastUnrecoverableError?.first == videoId) {
+                lastUnrecoverableError = null
+            }
             val itag =
                 if (isDownloading) {
                     QUALITY.itagOf(dataStoreManager.downloadQuality.first())
@@ -362,6 +370,9 @@ internal class StreamRepositoryImpl(
                         )
                     }
                 }.onFailure {
+                    if (it is StreamResolutionException && it.reason != StreamResolutionException.Reason.NO_NETWORK) {
+                        lastUnrecoverableError = videoId to (it.message ?: "YouTube refused $videoId")
+                    }
                     it.printStackTrace()
                     Logger.e("Stream", "Error: ${it.message}")
                     emit(null)
@@ -469,6 +480,24 @@ internal class StreamRepositoryImpl(
             val deleted = localDataSource.deleteAllNewFormats()
             Logger.d("Stream", "Invalidated all stored formats ($deleted rows)")
         }
+    }
+
+    override suspend fun invalidateAllFormatsExcept(exceptVideoIds: Set<String>) {
+        if (exceptVideoIds.isEmpty()) {
+            invalidateAllFormats()
+            return
+        }
+        withContext(Dispatchers.IO) {
+            val deleted = localDataSource.deleteAllNewFormatsExcept(exceptVideoIds.toList())
+            Logger.d("Stream", "Invalidated stored formats except $exceptVideoIds ($deleted rows)")
+        }
+    }
+
+    override fun consumeLastUnrecoverableError(videoId: String): String? {
+        val current = lastUnrecoverableError ?: return null
+        if (current.first != videoId) return null
+        lastUnrecoverableError = null
+        return current.second
     }
 
     /**

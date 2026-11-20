@@ -117,6 +117,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import org.koin.mp.KoinPlatform.getKoin
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.PI
@@ -317,9 +318,16 @@ internal class MediaServiceHandlerImpl(
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private var secondLoudnessEnhancer: LoudnessEnhancer? = null
 
+    @Volatile
     private var skipSilent = false
 
+    @Volatile
     private var normalizeVolume = false
+
+    @Volatile
+    private var endlessQueueEnabled = false
+
+    private val pendingQualityEvictVideoIds = ConcurrentHashMap.newKeySet<String>()
 
     /** Written by the equalizer-type collector; read on the player's thread by [shouldOpenOrCloseEqualizerIntent]. */
     @Volatile
@@ -461,13 +469,25 @@ internal class MediaServiceHandlerImpl(
                 val previous = lastQuality
                 lastQuality = quality
                 if (previous != null && previous != quality) {
+                    val activeBaseId =
+                        withContext(Dispatchers.Main) {
+                            player.currentMediaItem?.mediaId
+                        }?.removePrefix(MERGING_DATA_TYPE.VIDEO)?.takeIf { it.isNotBlank() }
                     Logger.i(
                         TAG,
                         "Audio quality changed ($previous -> $quality): " +
-                            "clearing player cache and stored formats",
+                            "clearing player cache and stored formats" +
+                            (activeBaseId?.let { " (deferring active track $it)" } ?: ""),
                     )
-                    streamRepository.invalidateAllFormats()
-                    cacheRepository.clearCache(PLAYER_CACHE)
+                    if (activeBaseId != null) {
+                        pendingQualityEvictVideoIds.add(activeBaseId)
+                        val protectedKeys = setOf(activeBaseId, "${MERGING_DATA_TYPE.VIDEO}$activeBaseId")
+                        streamRepository.invalidateAllFormatsExcept(protectedKeys)
+                        cacheRepository.clearCacheExcept(PLAYER_CACHE, protectedKeys)
+                    } else {
+                        streamRepository.invalidateAllFormats()
+                        cacheRepository.clearCache(PLAYER_CACHE)
+                    }
                 }
             }
         }
@@ -482,7 +502,21 @@ internal class MediaServiceHandlerImpl(
         getSkipSegmentsJob = Job()
         getFormatJob = Job()
         jobWatchtime = Job()
-        skipSilent = runBlocking { dataStoreManager.skipSilent.first() == TRUE }
+        backgroundScope.launch {
+            dataStoreManager.skipSilent.distinctUntilChanged().collect { value ->
+                skipSilent = value == TRUE
+            }
+        }
+        backgroundScope.launch {
+            dataStoreManager.normalizeVolume.distinctUntilChanged().collect { value ->
+                normalizeVolume = value == TRUE
+            }
+        }
+        backgroundScope.launch {
+            dataStoreManager.endlessQueue.distinctUntilChanged().collect { value ->
+                endlessQueueEnabled = value == TRUE
+            }
+        }
         // Collected rather than read once like the settings around it: the equalizer is adjusted
         // while music is playing, and a curve that only takes effect after a restart is useless
         // for judging what you just changed.
@@ -1239,6 +1273,7 @@ internal class MediaServiceHandlerImpl(
                 stopProgressUpdate()
                 player.stop()
                 _nowPlayingState.value = NowPlayingTrackState.initial()
+                flushPendingQualityEvictions(keepBaseId = null)
             }
 
             is PlayerEvent.UpdateProgress -> {
@@ -1806,7 +1841,7 @@ internal class MediaServiceHandlerImpl(
                                             ),
                                     )
                                 }
-                                if (runBlocking { dataStoreManager.endlessQueue.first() } == TRUE) {
+                                if (endlessQueueEnabled) {
                                     Logger.w(TAG, "loadMore: Endless Queue")
                                     val lastTrack =
                                         queueData.value.data.listTracks
@@ -1836,7 +1871,7 @@ internal class MediaServiceHandlerImpl(
                         }
                 }
             }
-        } else if (runBlocking { dataStoreManager.endlessQueue.first() } == TRUE) {
+        } else if (endlessQueueEnabled) {
             Logger.w(TAG, "loadMore: Endless Queue")
             val lastTrack =
                 queueData.value.data.listTracks
@@ -2574,9 +2609,6 @@ internal class MediaServiceHandlerImpl(
     }
 
     override fun mayBeNormalizeVolume() {
-        runBlocking {
-            normalizeVolume = dataStoreManager.normalizeVolume.first() == TRUE
-        }
         if (!normalizeVolume) {
             loudnessEnhancer?.enabled = false
             loudnessEnhancer?.release()
@@ -2921,6 +2953,9 @@ internal class MediaServiceHandlerImpl(
             PlayerConstants.STATE_ENDED -> {
                 _simpleMediaState.value = SimpleMediaState.Ended
                 Logger.d(TAG, "onPlaybackStateChanged: Ended")
+                if (player.repeatMode != PlayerConstants.REPEAT_MODE_ONE) {
+                    flushPendingQualityEvictions(keepBaseId = null)
+                }
             }
 
             PlayerConstants.STATE_READY -> {
@@ -3001,6 +3036,8 @@ internal class MediaServiceHandlerImpl(
         mediaItem: GenericMediaItem?,
         reason: Int,
     ) {
+        val nextBaseId = mediaItem?.mediaId?.removePrefix(MERGING_DATA_TYPE.VIDEO)?.takeIf { it.isNotBlank() }
+        flushPendingQualityEvictions(keepBaseId = nextBaseId)
         Logger.w(TAG, "Checking current state before transition ${simpleMediaState.value}")
         val lastPlayed = nowPlayingState.value.songEntity
         val currentState = simpleMediaState.value
@@ -3031,7 +3068,7 @@ internal class MediaServiceHandlerImpl(
             nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
         }
         queueData.value.data.listTracks.let { list ->
-            if ((list.size > 3 || runBlocking { dataStoreManager.endlessQueue.first() == TRUE }) &&
+            if ((list.size > 3 || endlessQueueEnabled) &&
                 list.size - player.currentMediaItemIndex < 3 &&
                 list.size - player.currentMediaItemIndex >= 0 &&
                 queueData.value.queueState == QueueData.StateSource.STATE_INITIALIZED
@@ -3123,6 +3160,24 @@ internal class MediaServiceHandlerImpl(
     /** Item that already spent its single AudioTrack recovery attempt (see onPlayerError). */
     private var audioTrackRecoveryMediaId: String? = null
 
+    private fun flushPendingQualityEvictions(keepBaseId: String?) {
+        if (pendingQualityEvictVideoIds.isEmpty()) return
+        val toEvict = pendingQualityEvictVideoIds.filter { it != keepBaseId }
+        if (toEvict.isEmpty()) return
+        pendingQualityEvictVideoIds.removeAll(toEvict.toSet())
+        backgroundScope.launch {
+            toEvict.forEach { baseId ->
+                runCatching {
+                    cacheRepository.removeCachedSong(baseId)
+                    streamRepository.invalidateFormat(baseId)
+                    streamRepository.invalidateFormat("${MERGING_DATA_TYPE.VIDEO}$baseId")
+                }.onFailure { e ->
+                    Logger.w(TAG, "Deferred quality cleanup failed for $baseId: ${e.message}")
+                }
+            }
+        }
+    }
+
     override fun onPlayerError(error: PlayerError) {
         Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
         // An AudioTrack failure (Media3's 5xxx family: init/write) is not a stream
@@ -3139,7 +3194,7 @@ internal class MediaServiceHandlerImpl(
                 }
             }
         }
-        if (isRecoverableStreamError(error.errorCode) && tryScheduleStreamRecovery()) {
+        if (error.recoverable && isRecoverableStreamError(error.errorCode) && tryScheduleStreamRecovery()) {
             // The timed attempts are now pending; if the connection itself comes back first,
             // the network callback resumes at once instead of waiting them out.
             resumeWhenNetworkReturns = true

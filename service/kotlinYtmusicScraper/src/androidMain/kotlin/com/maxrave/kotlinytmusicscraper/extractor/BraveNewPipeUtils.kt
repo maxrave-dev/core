@@ -10,6 +10,7 @@ import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import java.io.IOException
 import java.net.Proxy
+import java.util.concurrent.TimeUnit
 
 internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     val itags = this.mapTo(HashSet()) { it.first }
@@ -21,6 +22,9 @@ internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
 private val streamHealthCheckClient: OkHttpClient by lazy {
     OkHttpClient
         .Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(8, TimeUnit.SECONDS)
         .build()
 }
 

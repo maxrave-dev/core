@@ -5,6 +5,12 @@ interface CacheRepository {
 
     fun clearCache(cacheName: String)
 
+    /** Clears [cacheName] while preserving entries whose keys are in [exceptKeys]. */
+    fun clearCacheExcept(
+        cacheName: String,
+        exceptKeys: Set<String>,
+    ) = clearCache(cacheName)
+
     suspend fun getAllCacheKeys(cacheName: String): List<String>
 
     /**

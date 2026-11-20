@@ -17,6 +17,7 @@ import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.Proxy
+import java.util.concurrent.TimeUnit
 
 /**
  * One connection pool underneath both extractor downloaders (PipePipe here, BravePipe in
@@ -25,7 +26,14 @@ import java.net.Proxy
  * warmed the same host up in another pool. Clients derived with [OkHttpClient.newBuilder]
  * share the base's connection pool and dispatcher; only the proxy differs.
  */
-private val extractorBaseClient: OkHttpClient by lazy { OkHttpClient.Builder().build() }
+private val extractorBaseClient: OkHttpClient by lazy {
+    OkHttpClient
+        .Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .callTimeout(15, TimeUnit.SECONDS)
+        .build()
+}
 
 internal fun extractorHttpClient(proxy: Proxy?): OkHttpClient = extractorBaseClient.newBuilder().proxy(proxy).build()
 

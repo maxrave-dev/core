@@ -26,7 +26,11 @@ internal suspend fun HttpClient.getTextWithoutRedirects(
         HttpClient(engine) {
             expectSuccess = false
             followRedirects = false
-            install(HttpTimeout)
+            install(HttpTimeout) {
+                requestTimeoutMillis = 12_000
+                connectTimeoutMillis = 8_000
+                socketTimeoutMillis = 10_000
+            }
         }
     return try {
         val response = directClient.get(url, configure)

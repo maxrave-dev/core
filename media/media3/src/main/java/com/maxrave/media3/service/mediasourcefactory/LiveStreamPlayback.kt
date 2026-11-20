@@ -58,10 +58,19 @@ internal fun Throwable.isLiveStreamDetected(): Boolean =
  * re-resolve a fresh URL instead of burning the outage window on a dead address. Errors the
  * default policy already treats as fatal (parser errors, missing files, ...) stay fatal.
  */
+internal class UnrecoverableStreamException(
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
+internal fun Throwable.isUnrecoverableStreamFailure(): Boolean =
+    generateSequence(this) { it.cause }.take(8).any { it is UnrecoverableStreamException }
+
 @UnstableApi
 internal class LiveStreamAwareLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy() {
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         if (loadErrorInfo.exception.isLiveStreamDetected()) return C.TIME_UNSET
+        if (loadErrorInfo.exception.isUnrecoverableStreamFailure()) return C.TIME_UNSET
         if (loadErrorInfo.exception.hasDeadHttpStatus()) return C.TIME_UNSET
         if (super.getRetryDelayMsFor(loadErrorInfo) == C.TIME_UNSET) return C.TIME_UNSET
         // errorCount includes the error being answered, so the first retry waits the base delay.

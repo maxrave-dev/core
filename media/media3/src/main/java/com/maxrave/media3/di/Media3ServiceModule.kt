@@ -426,6 +426,11 @@ private fun provideResolvingDataSourceFactory(
         // not be read as a file, so this source fails and the track is rebuilt as HLS.
         if (LiveStreamRegistry.isLive(videoId)) throw LiveStreamDetectedException(videoId)
         if (!resolved) {
+            val refusal = streamRepository.consumeLastUnrecoverableError(videoId)
+            if (refusal != null) {
+                Logger.e("Stream", "Unrecoverable stream failure for $mediaId: $refusal")
+                throw com.maxrave.media3.service.mediasourcefactory.UnrecoverableStreamException(refusal)
+            }
             Logger.e("Stream", "Failed to resolve stream URL for $mediaId")
             throw java.io.IOException("Failed to resolve stream URL for $mediaId")
         }
