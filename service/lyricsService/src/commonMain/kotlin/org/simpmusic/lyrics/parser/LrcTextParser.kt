@@ -200,6 +200,102 @@ fun parseRichSyncLyrics(data: String): Lyrics {
 }
 
 
+private val TTML_P_OPEN_REGEX = Regex("""<p(?=\s|>)([^>]*)>""", RegexOption.IGNORE_CASE)
+private val TTML_P_CLOSE_REGEX = Regex("""</p\s*>""", RegexOption.IGNORE_CASE)
+private val TTML_SPAN_TAG_REGEX = Regex("""<(/?)span(?=\s|>|/)([^>]*)>""", RegexOption.IGNORE_CASE)
+private val TTML_BEGIN_ATTR_REGEX = Regex("""\bbegin\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+private val TTML_END_ATTR_REGEX = Regex("""\bend\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+private val TTML_IGNORED_ROLE_REGEX =
+    Regex("""\b(?:ttm:)?role\s*=\s*["']\s*(?:x-translation|x-roman)\s*["']""", RegexOption.IGNORE_CASE)
+private val TTML_IGNORED_SPAN_REGEX =
+    Regex(
+        """<span\b[^>]*\b(?:ttm:)?role\s*=\s*["']\s*(?:x-translation|x-roman)\s*["'][^>]*>[\s\S]*?</span\s*>""",
+        RegexOption.IGNORE_CASE,
+    )
+private val TTML_BR_TAG_REGEX = Regex("""<br\s*/?>""", RegexOption.IGNORE_CASE)
+private val TTML_ANY_TAG_REGEX = Regex("""<[^>]*>""")
+
+private class TtmlSpanFrame(
+    val openTagStartOffset: Int,
+    val openEndOffset: Int,
+    val beginMs: Long?,
+    val endMs: Long?,
+    val ignored: Boolean,
+    var hasChildSpan: Boolean = false,
+)
+
+private data class TtmlLeafSpan(
+    val rawStartOffset: Int,
+    val openEndOffset: Int,
+    val closeStartOffset: Int,
+    val rawEndOffset: Int,
+    val beginMs: Long,
+    val endMs: Long?,
+)
+
+private fun extractTtmlLeafSpans(innerContent: String): List<TtmlLeafSpan> {
+    if ("span" !in innerContent.lowercase()) return emptyList()
+    val leaves = ArrayList<TtmlLeafSpan>()
+    val stack = ArrayList<TtmlSpanFrame>()
+    var ignoredDepth = 0
+
+    for (tagMatch in TTML_SPAN_TAG_REGEX.findAll(innerContent)) {
+        val isClosing = tagMatch.groupValues[1].isNotEmpty()
+        val rawTail = tagMatch.groupValues[2]
+        if (!isClosing) {
+            val isSelfClosing = rawTail.trimEnd().endsWith("/")
+            val hasIgnoredRole = TTML_IGNORED_ROLE_REGEX.containsMatchIn(rawTail)
+            if (!hasIgnoredRole && stack.isNotEmpty() && ignoredDepth == 0) {
+                stack.last().hasChildSpan = true
+            }
+            if (isSelfClosing) continue
+
+            val spanIgnored = hasIgnoredRole || ignoredDepth > 0
+            if (spanIgnored) ignoredDepth++
+            val beginMs =
+                if (!spanIgnored) {
+                    TTML_BEGIN_ATTR_REGEX.find(rawTail)?.groupValues?.get(1)?.let(::parseTtmlTime)
+                } else {
+                    null
+                }
+            val endMs =
+                if (!spanIgnored) {
+                    TTML_END_ATTR_REGEX.find(rawTail)?.groupValues?.get(1)?.let(::parseTtmlTime)
+                } else {
+                    null
+                }
+            stack.add(
+                TtmlSpanFrame(
+                    openTagStartOffset = tagMatch.range.first,
+                    openEndOffset = tagMatch.range.last + 1,
+                    beginMs = beginMs,
+                    endMs = endMs,
+                    ignored = spanIgnored,
+                ),
+            )
+        } else if (stack.isNotEmpty()) {
+            val frame = stack.removeAt(stack.lastIndex)
+            if (frame.ignored) {
+                if (ignoredDepth > 0) ignoredDepth--
+                continue
+            }
+            if (!frame.hasChildSpan && frame.beginMs != null) {
+                leaves.add(
+                    TtmlLeafSpan(
+                        rawStartOffset = frame.openTagStartOffset,
+                        openEndOffset = frame.openEndOffset,
+                        closeStartOffset = tagMatch.range.first,
+                        rawEndOffset = tagMatch.range.last + 1,
+                        beginMs = frame.beginMs,
+                        endMs = frame.endMs,
+                    ),
+                )
+            }
+        }
+    }
+    return leaves
+}
+
 /**
  * Parse TTML (Timed Text Markup Language) lyrics from BetterLyrics.
  * Supports both line-synced and word-by-word synced lyrics.
@@ -212,32 +308,68 @@ fun parseTtmlLyrics(data: String): Lyrics {
     val linesLyrics = ArrayList<Lyrics.LyricsX.Line>()
     var hasWordTiming = false
 
-    // Match each <p ...>...</p> element (use [\s\S] instead of . with DOT_MATCHES_ALL)
-    val pRegex = Regex("""<p\s[^>]*begin="([^"]+)"[^>]*end="([^"]+)"[^>]*>([\s\S]*?)</p>""")
-    // Match each <span ...>word</span> element
-    val spanRegex = Regex("""<span\s[^>]*begin="([^"]+)"[^>]*end="([^"]+)"[^>]*>(.*?)</span>""")
+    for (pOpen in TTML_P_OPEN_REGEX.findAll(data)) {
+        val attrs = pOpen.groupValues[1]
+        if (attrs.trimEnd().endsWith("/")) continue
+        if (TTML_IGNORED_ROLE_REGEX.containsMatchIn(attrs)) continue
 
-    for (pMatch in pRegex.findAll(data)) {
-        val lineBegin = parseTtmlTime(pMatch.groupValues[1])
-        val lineEnd = parseTtmlTime(pMatch.groupValues[2])
-        val innerContent = pMatch.groupValues[3]
+        val pClose = TTML_P_CLOSE_REGEX.find(data, pOpen.range.last + 1) ?: continue
+        val innerContent = data.substring(pOpen.range.last + 1, pClose.range.first)
 
-        val spans = spanRegex.findAll(innerContent).toList()
+        val attrBegin = TTML_BEGIN_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.let(::parseTtmlTime)
+        val attrEnd = TTML_END_ATTR_REGEX.find(attrs)?.groupValues?.get(1)?.let(::parseTtmlTime)
 
+        val spans = extractTtmlLeafSpans(innerContent)
         if (spans.isNotEmpty()) {
-            hasWordTiming = true
-            // Build word-by-word content with <MM:SS.mm> timing format for rich sync
-            val wordParts = StringBuilder()
+            val tokens = ArrayList<Pair<Long, StringBuilder>>(spans.size)
+            var lastTokenSpanEnd = -1
+            var lastSpanEndedWithSpace = false
+            var minSpanBegin = Long.MAX_VALUE
+            var maxSpanEnd = 0L
+
             for (span in spans) {
-                val spanBegin = parseTtmlTime(span.groupValues[1])
-                val word = span.groupValues[3].trim()
-                if (word.isNotEmpty()) {
-                    val beginFormatted = formatMsToLrc(spanBegin)
-                    wordParts.append("<$beginFormatted>$word ")
+                if (span.beginMs < minSpanBegin) minSpanBegin = span.beginMs
+                if (span.endMs != null && span.endMs > maxSpanEnd) maxSpanEnd = span.endMs
+
+                val rawSlice = TTML_BR_TAG_REGEX.replace(innerContent.substring(span.openEndOffset, span.closeStartOffset), " ")
+                val plain = decodeHtmlEntities(TTML_ANY_TAG_REGEX.replace(rawSlice, ""))
+                val trimmed = plain.trim()
+
+                if (trimmed.isEmpty()) {
+                    if (plain.any { it.isWhitespace() }) {
+                        lastSpanEndedWithSpace = true
+                    }
+                    lastTokenSpanEnd = span.rawEndOffset
+                    continue
                 }
+
+                val gap =
+                    if (lastTokenSpanEnd >= 0 && lastTokenSpanEnd <= span.rawStartOffset) {
+                        innerContent.substring(lastTokenSpanEnd, span.rawStartOffset)
+                    } else {
+                        ""
+                    }
+                val gapHasSpace = gap.any { it.isWhitespace() } || TTML_BR_TAG_REGEX.containsMatchIn(gap)
+                val startsWithSpace = plain.firstOrNull()?.isWhitespace() == true
+                val isSeparateWord = tokens.isEmpty() || lastSpanEndedWithSpace || gapHasSpace || startsWithSpace
+
+                if (isSeparateWord) {
+                    tokens.add(span.beginMs to StringBuilder(trimmed))
+                } else {
+                    tokens.last().second.append(trimmed)
+                }
+                lastSpanEndedWithSpace = plain.lastOrNull()?.isWhitespace() == true
+                lastTokenSpanEnd = span.rawEndOffset
             }
-            val words = wordParts.toString().trimEnd()
-            if (words.isNotBlank()) {
+
+            val lineBegin = attrBegin ?: if (minSpanBegin != Long.MAX_VALUE) minSpanBegin else null
+            val lineEnd = attrEnd ?: if (maxSpanEnd > 0L) maxSpanEnd else lineBegin ?: 0L
+            if (lineBegin != null && tokens.isNotEmpty()) {
+                hasWordTiming = true
+                val words =
+                    tokens.joinToString(" ") { (startMs, text) ->
+                        "<${formatMsToLrc(startMs)}>$text"
+                    }
                 linesLyrics.add(
                     Lyrics.LyricsX.Line(
                         startTimeMs = lineBegin.toString(),
@@ -247,14 +379,15 @@ fun parseTtmlLyrics(data: String): Lyrics {
                     ),
                 )
             }
-        } else {
-            // No spans — extract plain text (strip any remaining tags)
-            val plainText = innerContent.replace(Regex("<[^>]*>"), "").trim()
+        } else if (attrBegin != null) {
+            val withoutIgnored = TTML_IGNORED_SPAN_REGEX.replace(innerContent, "")
+            val withLineSpaces = TTML_BR_TAG_REGEX.replace(withoutIgnored, " ")
+            val plainText = decodeHtmlEntities(TTML_ANY_TAG_REGEX.replace(withLineSpaces, "")).trim()
             if (plainText.isNotBlank()) {
                 linesLyrics.add(
                     Lyrics.LyricsX.Line(
-                        startTimeMs = lineBegin.toString(),
-                        endTimeMs = lineEnd.toString(),
+                        startTimeMs = attrBegin.toString(),
+                        endTimeMs = (attrEnd ?: attrBegin).toString(),
                         syllables = listOf(),
                         words = plainText,
                     ),
@@ -263,10 +396,12 @@ fun parseTtmlLyrics(data: String): Lyrics {
         }
     }
 
+    val sortedLines = linesLyrics.sortedBy { it.startTimeMs.toLongOrNull() ?: 0L }
+
     return Lyrics(
         lyrics =
             Lyrics.LyricsX(
-                lines = linesLyrics,
+                lines = sortedLines,
                 syncType = if (hasWordTiming) "RICH_SYNCED" else "LINE_SYNCED",
             ),
     )

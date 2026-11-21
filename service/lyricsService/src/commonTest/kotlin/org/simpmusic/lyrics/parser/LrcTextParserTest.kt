@@ -118,4 +118,53 @@ class LrcTextParserTest {
     fun unsyncedBlankInputReturnsEmptyLines() {
         assertTrue(parseUnsyncedLyrics("   \n  \t ").lyrics?.lines.isNullOrEmpty())
     }
+
+    @Test
+    fun ttmlParsesAttributeOrderNestedSpansSyllablesEntitiesAndSkipsTranslations() {
+        val ttml =
+            """
+            <tt>
+              <body>
+                <div>
+                  <p end="00:10.000" begin="00:08.000">
+                    <span end="00:09.000" begin="00:08.000">Second</span>
+                  </p>
+                  <p begin="00:01.000" end="00:04.000">
+                    <span ttm:role="x-bg">
+                      <span begin="00:01.000" end="00:01.200">Hel</span><span begin="00:01.200" end="00:01.500">lo</span>
+                    </span>
+                    <span ttm:role="x-translation"><span begin="00:01.000" end="00:02.000">Olá</span></span>
+                    <span ttm:role="x-roman"><span begin="00:01.000" end="00:02.000">he-lo</span></span>
+                    <span begin="00:01.600" end="00:02.000">Don&apos;t</span>
+                  </p>
+                </div>
+              </body>
+            </tt>
+            """.trimIndent()
+
+        val parsed = parseTtmlLyrics(ttml).lyrics
+        assertEquals("RICH_SYNCED", parsed?.syncType)
+        assertEquals(listOf("1000", "8000"), parsed?.lines?.map { it.startTimeMs })
+        assertEquals("<00:01.00>Hello <00:01.60>Don't", parsed?.lines?.first()?.words)
+        assertEquals("<00:08.00>Second", parsed?.lines?.last()?.words)
+    }
+
+    @Test
+    fun ttmlLineSyncedSkipsTranslationAndRomanSpansAndDecodesEntities() {
+        val ttml =
+            """
+            <tt>
+              <body>
+                <div>
+                  <p end="00:05.000" begin="00:02.500">Rock &amp; Roll<span ttm:role="x-translation">Rock e Roll</span><span role="x-roman">rokku</span></p>
+                </div>
+              </body>
+            </tt>
+            """.trimIndent()
+
+        val parsed = parseTtmlLyrics(ttml).lyrics
+        assertEquals("LINE_SYNCED", parsed?.syncType)
+        assertEquals("2500", parsed?.lines?.single()?.startTimeMs)
+        assertEquals("Rock & Roll", parsed?.lines?.single()?.words)
+    }
 }

@@ -46,6 +46,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.simpmusic.aiservice.AiClient
+import org.simpmusic.lyrics.LyricsQueryNormalizer
 import org.simpmusic.lyrics.SimpMusicLyricsApiException
 import org.simpmusic.lyrics.SimpMusicLyricsClient
 import org.simpmusic.lyrics.am.AMAlbumResource
@@ -56,6 +57,7 @@ import org.simpmusic.lyrics.am.AMSongWithAlbum
 import org.simpmusic.lyrics.am.toImageUrl
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
+import org.simpmusic.lyrics.models.response.LyricsResponse
 import org.simpmusic.lyrics.parser.parseTtmlLyrics
 import kotlin.math.abs
 import kotlin.time.Clock
@@ -937,11 +939,7 @@ internal class LyricsCanvasRepositoryImpl(
             LyricsSource.SIMPMUSIC ->
                 simpMusicLyrics.getLyrics(request.videoId).fold(
                     onSuccess = { lyrics ->
-                        val result = lyrics.firstOrNull() ?: return ProviderFetchOutcome.DefinitiveNotFound
-                        val appLyrics =
-                            result.toLyrics()?.takeIf { !it.lines.isNullOrEmpty() }?.copy(
-                                simpMusicLyrics = SimpMusicLyrics(id = result.id, vote = result.vote),
-                            )
+                        val appLyrics = pickBestSimpMusicLyrics(lyrics)
                         if (appLyrics != null) {
                             ProviderFetchOutcome.Success(appLyrics)
                         } else {
@@ -959,9 +957,7 @@ internal class LyricsCanvasRepositoryImpl(
                 )
 
             LyricsSource.LRCLIB -> {
-                val qartist = request.artist.cleanForSearch()
-                val qtrack = request.title.cleanForSearch()
-                simpMusicLyrics.searchLrclibLyrics(qtrack, qartist, request.durationSeconds).fold(
+                simpMusicLyrics.searchLrclibLyrics(request.title, request.artist, request.durationSeconds).fold(
                     onSuccess = { parsed ->
                         val mapped = parsed?.toLyrics()?.takeIf { !it.lines.isNullOrEmpty() }
                         if (mapped != null) {
@@ -981,12 +977,10 @@ internal class LyricsCanvasRepositoryImpl(
             }
 
             LyricsSource.BETTER_LYRICS -> {
-                val qartist = request.artist.cleanForSearch()
-                val qtrack = request.title.cleanForSearch()
                 simpMusicLyrics
                     .searchBetterLyrics(
-                        q_track = qtrack,
-                        q_artist = qartist,
+                        q_track = request.title,
+                        q_artist = request.artist,
                         durationSeconds = request.durationSeconds?.takeIf { it > 0 },
                     ).fold(
                         onSuccess = { ttml ->
@@ -1027,12 +1021,29 @@ internal class LyricsCanvasRepositoryImpl(
                 )
             }
 
-            LyricsSource.SPOTIFY ->
-                fetchSpotifyLyricsOutcome(
-                    dataStoreManager = dataStoreManager,
-                    query = "${request.title} ${request.artist}",
-                    duration = request.durationSeconds,
-                )
+            LyricsSource.SPOTIFY -> {
+                val queryCandidates =
+                    LyricsQueryNormalizer
+                        .buildQueryCandidates(request.title, request.artist)
+                        .map { (track, artist) -> "$track $artist".trim() }
+                        .filter { it.isNotEmpty() }
+                        .distinct()
+                var lastOutcome: ProviderFetchOutcome = ProviderFetchOutcome.DefinitiveNotFound
+                for (candidateQuery in queryCandidates) {
+                    val outcome =
+                        fetchSpotifyLyricsOutcome(
+                            dataStoreManager = dataStoreManager,
+                            query = candidateQuery,
+                            duration = request.durationSeconds,
+                        )
+                    when (outcome) {
+                        is ProviderFetchOutcome.Success -> return outcome
+                        is ProviderFetchOutcome.TransientFailure -> return outcome
+                        ProviderFetchOutcome.DefinitiveNotFound -> lastOutcome = outcome
+                    }
+                }
+                lastOutcome
+            }
         }
 
     private suspend fun fetchSpotifyLyricsOutcome(
@@ -1040,7 +1051,8 @@ internal class LyricsCanvasRepositoryImpl(
         query: String,
         duration: Int?,
     ): ProviderFetchOutcome {
-        val q = query.cleanForSearch()
+        val q = query.trim()
+        if (q.isEmpty()) return ProviderFetchOutcome.DefinitiveNotFound
         Logger.d("Lyrics", "query: $q")
         var spotifyPersonalToken = ""
         var spotifyClientToken = ""
@@ -1370,4 +1382,26 @@ internal fun pickSpotifyTrack(
                 ?: return@find false
         abs(trackDurationSec - validDuration) <= SPOTIFY_DURATION_TOLERANCE_SECONDS
     } ?: items.firstOrNull()
+}
+
+internal fun pickBestSimpMusicLyrics(candidates: List<LyricsResponse>): Lyrics? {
+    var bestLyrics: Lyrics? = null
+    var bestLevel = LyricsQuality.LEVEL_INVALID
+    var bestVote = Int.MIN_VALUE
+
+    for (candidate in candidates) {
+        val mapped =
+            candidate
+                .toLyrics()
+                ?.takeIf { !it.lines.isNullOrEmpty() }
+                ?.copy(simpMusicLyrics = SimpMusicLyrics(id = candidate.id, vote = candidate.vote))
+                ?: continue
+        val level = LyricsQuality.level(mapped)
+        if (level > bestLevel || (level == bestLevel && candidate.vote > bestVote)) {
+            bestLevel = level
+            bestVote = candidate.vote
+            bestLyrics = mapped
+        }
+    }
+    return bestLyrics
 }

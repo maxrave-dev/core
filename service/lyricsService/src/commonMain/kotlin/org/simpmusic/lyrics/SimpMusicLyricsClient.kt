@@ -194,20 +194,53 @@ class SimpMusicLyricsClient(
         q_artist: String,
         duration: Int?,
     ) = suspendRunCatching {
-        val response =
-            lyricsService.searchLrclibLyrics(
-                q_track = q_track,
-                q_artist = q_artist,
-            )
-        when (response.status.value) {
-            404, 204 -> null
-            in 200..299 -> {
-                val rs = response.body<List<LrclibObject>>()
-                val lrclibObject = selectLrclibLyricsRecord(rs, duration)
-                lrclibObject?.let { parseLrclibLyrics(it) }
+        val validDuration = duration?.takeIf { it > 0 }
+        val candidates = LyricsQueryNormalizer.buildQueryCandidates(q_track, q_artist)
+        var plainFallbackRecord: LrclibObject? = null
+
+        for ((track, artist) in candidates) {
+            if (validDuration != null && track.isNotBlank() && artist.isNotBlank()) {
+                val exactResponse =
+                    lyricsService.getLrclibLyricsExact(
+                        trackName = track,
+                        artistName = artist,
+                        durationSeconds = validDuration,
+                    )
+                if (exactResponse.status.value in 200..299) {
+                    val exact = exactResponse.body<LrclibObject>()
+                    if (!exact.instrumental) {
+                        if (exact.hasWordSync || !exact.syncedLyrics.isNullOrBlank()) {
+                            return@suspendRunCatching parseLrclibLyrics(exact)
+                        }
+                        if (!exact.plainLyrics.isNullOrBlank() && plainFallbackRecord == null) {
+                            plainFallbackRecord = exact
+                        }
+                    }
+                }
             }
-            else -> throw SimpMusicLyricsApiException(response.status.value, "LRCLIB failed: ${response.status.value}")
+
+            val response =
+                lyricsService.searchLrclibLyrics(
+                    q_track = track,
+                    q_artist = artist,
+                )
+            when (response.status.value) {
+                404, 204 -> Unit
+                in 200..299 -> {
+                    val rs = response.body<List<LrclibObject>>()
+                    val best = selectLrclibLyricsRecord(rs, duration)
+                    if (best != null) {
+                        return@suspendRunCatching parseLrclibLyrics(best)
+                    }
+                }
+                else ->
+                    if (plainFallbackRecord == null) {
+                        throw SimpMusicLyricsApiException(response.status.value, "LRCLIB failed: ${response.status.value}")
+                    }
+            }
         }
+
+        plainFallbackRecord?.let { parseLrclibLyrics(it) }
     }
 
     suspend fun searchBetterLyrics(
@@ -215,17 +248,27 @@ class SimpMusicLyricsClient(
         q_artist: String,
         durationSeconds: Int?,
     ) = suspendRunCatching {
-        val response =
-            lyricsService.searchBetterLyrics(
-                q_track = q_track,
-                q_artist = q_artist,
-                durationSeconds = durationSeconds?.takeIf { it > 0 },
-            )
-        when (response.status.value) {
-            404, 204 -> null
-            in 200..299 -> response.body<BetterLyricsResponse>().ttml
-            else -> throw SimpMusicLyricsApiException(response.status.value, "BetterLyrics failed: ${response.status.value}")
+        val validDuration = durationSeconds?.takeIf { it > 0 }
+        val candidates = LyricsQueryNormalizer.buildQueryCandidates(q_track, q_artist)
+        for ((track, artist) in candidates) {
+            val response =
+                lyricsService.searchBetterLyrics(
+                    q_track = track,
+                    q_artist = artist,
+                    durationSeconds = validDuration,
+                )
+            when (response.status.value) {
+                404, 204 -> Unit
+                in 200..299 -> {
+                    val ttml = response.body<BetterLyricsResponse>().ttml
+                    if (!ttml.isNullOrBlank()) {
+                        return@suspendRunCatching ttml
+                    }
+                }
+                else -> throw SimpMusicLyricsApiException(response.status.value, "BetterLyrics failed: ${response.status.value}")
+            }
         }
+        null
     }
 
     suspend fun searchAMArtist(
@@ -382,11 +425,18 @@ internal fun selectLrclibLyricsRecord(
     duration: Int?,
 ): LrclibObject? {
     val validDuration = duration?.takeIf { it > 0 }
+    val usable =
+        records.filter { candidate ->
+            !candidate.instrumental &&
+                (!candidate.syncedLyrics.isNullOrBlank() || !candidate.plainLyrics.isNullOrBlank())
+        }
     val candidates =
         if (validDuration != null) {
-            records.filter { abs(it.duration.toInt() - validDuration) <= 10 }
+            usable.filter { abs(it.duration.toInt() - validDuration) <= 10 }
         } else {
-            records
+            usable
         }
-    return candidates.firstOrNull { it.hasWordSync } ?: candidates.firstOrNull()
+    return candidates.firstOrNull { it.hasWordSync }
+        ?: candidates.firstOrNull { !it.syncedLyrics.isNullOrBlank() }
+        ?: candidates.firstOrNull { !it.plainLyrics.isNullOrBlank() }
 }

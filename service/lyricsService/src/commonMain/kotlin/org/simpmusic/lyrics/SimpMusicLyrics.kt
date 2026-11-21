@@ -186,6 +186,17 @@ class SimpMusicLyrics {
         )
     }
 
+    suspend fun getLrclibLyricsExact(
+        trackName: String,
+        artistName: String,
+        durationSeconds: Int,
+    ) = httpClient.get("https://lrclib.net/api/get") {
+        buildDefaultHeaders()
+        parameter("track_name", trackName)
+        parameter("artist_name", artistName)
+        parameter("duration", durationSeconds)
+    }
+
     suspend fun searchLrclibLyrics(
         q_track: String,
         q_artist: String,

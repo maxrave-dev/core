@@ -94,8 +94,11 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.collectLatest
@@ -244,6 +247,7 @@ internal class MediaServiceHandlerImpl(
                     resumeWhenNetworkReturns = false
                     val mediaIdAtReconnect = player.currentMediaItem?.mediaId
                     streamRepository.invalidateAllFormats()
+                    _networkRestoredEvents.tryEmit(Unit)
                     if (!shouldResume || terminalError) return@launch
                     if (!resumePlaybackAfterReconnect()) {
                         delay(2_000)
@@ -257,6 +261,9 @@ internal class MediaServiceHandlerImpl(
                 }
             }
         }
+
+    private val _networkRestoredEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    override val networkRestoredEvents: Flow<Unit> = _networkRestoredEvents.asSharedFlow()
 
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
