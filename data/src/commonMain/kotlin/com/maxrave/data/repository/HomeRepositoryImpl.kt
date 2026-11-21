@@ -19,6 +19,7 @@ import com.maxrave.domain.repository.HomeRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.logger.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
@@ -217,6 +218,9 @@ internal class HomeRepositoryImpl(
                     }.onFailure { error ->
                         emit(Resource.Error<Triple<String?, List<HomeItem>, String?>>(error.message.toString()))
                     }
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                emit(Resource.Error<Triple<String?, List<HomeItem>, String?>>(error.message.toString()))
             }
         }.flowOn(Dispatchers.IO)
 
@@ -275,9 +279,8 @@ internal class HomeRepositoryImpl(
                             result.contents
                                 ?.singleColumnBrowseResultsRenderer
                                 ?.tabs
-                                ?.get(
-                                    0,
-                                )?.tabRenderer
+                                ?.firstOrNull()
+                                ?.tabRenderer
                                 ?.content
                                 ?.sectionListRenderer
                         val chart = parseChart(data)
@@ -289,6 +292,9 @@ internal class HomeRepositoryImpl(
                     }.onFailure { error ->
                         emit(Resource.Error<Chart>(error.message.toString()))
                     }
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                emit(Resource.Error<Chart>(error.message.toString()))
             }
         }.flowOn(Dispatchers.IO)
 
