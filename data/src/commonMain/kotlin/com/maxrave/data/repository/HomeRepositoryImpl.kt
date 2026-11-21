@@ -86,65 +86,56 @@ internal class HomeRepositoryImpl(
                         if (result.contents
                                 ?.singleColumnBrowseResultsRenderer
                                 ?.tabs
-                                ?.get(
-                                    0,
-                                )?.tabRenderer
+                                ?.firstOrNull()
+                                ?.tabRenderer
                                 ?.content
                                 ?.sectionListRenderer
                                 ?.contents
-                                ?.get(
-                                    0,
-                                )?.musicCarouselShelfRenderer
+                                ?.firstOrNull()
+                                ?.musicCarouselShelfRenderer
                                 ?.header
                                 ?.musicCarouselShelfBasicHeaderRenderer
                                 ?.strapline
                                 ?.runs
-                                ?.get(
-                                    0,
-                                )?.text != null
+                                ?.firstOrNull()
+                                ?.text != null
                         ) {
                             val accountName =
                                 result.contents
                                     ?.singleColumnBrowseResultsRenderer
                                     ?.tabs
-                                    ?.get(
-                                        0,
-                                    )?.tabRenderer
+                                    ?.firstOrNull()
+                                    ?.tabRenderer
                                     ?.content
                                     ?.sectionListRenderer
                                     ?.contents
-                                    ?.get(
-                                        0,
-                                    )?.musicCarouselShelfRenderer
+                                    ?.firstOrNull()
+                                    ?.musicCarouselShelfRenderer
                                     ?.header
                                     ?.musicCarouselShelfBasicHeaderRenderer
                                     ?.strapline
                                     ?.runs
-                                    ?.get(
-                                        0,
-                                    )?.text ?: ""
+                                    ?.firstOrNull()
+                                    ?.text ?: ""
                             val accountThumbUrl =
                                 result.contents
                                     ?.singleColumnBrowseResultsRenderer
                                     ?.tabs
-                                    ?.get(
-                                        0,
-                                    )?.tabRenderer
+                                    ?.firstOrNull()
+                                    ?.tabRenderer
                                     ?.content
                                     ?.sectionListRenderer
                                     ?.contents
-                                    ?.get(
-                                        0,
-                                    )?.musicCarouselShelfRenderer
+                                    ?.firstOrNull()
+                                    ?.musicCarouselShelfRenderer
                                     ?.header
                                     ?.musicCarouselShelfBasicHeaderRenderer
                                     ?.thumbnail
                                     ?.musicThumbnailRenderer
                                     ?.thumbnail
                                     ?.thumbnails
-                                    ?.get(
-                                        0,
-                                    )?.url
+                                    ?.firstOrNull()
+                                    ?.url
                                     ?.replace("s88", "s352") ?: ""
                             if (accountName != "" && accountThumbUrl != "") {
                                 dataStoreManager.putString("AccountName", accountName)
@@ -155,23 +146,20 @@ internal class HomeRepositoryImpl(
                             result.contents
                                 ?.singleColumnBrowseResultsRenderer
                                 ?.tabs
-                                ?.get(
-                                    0,
-                                )?.tabRenderer
+                                ?.firstOrNull()
+                                ?.tabRenderer
                                 ?.content
                                 ?.sectionListRenderer
                                 ?.continuations
-                                ?.get(
-                                    0,
-                                )?.nextContinuationData
+                                ?.firstOrNull()
+                                ?.nextContinuationData
                                 ?.continuation
                         val data =
                             result.contents
                                 ?.singleColumnBrowseResultsRenderer
                                 ?.tabs
-                                ?.get(
-                                    0,
-                                )?.tabRenderer
+                                ?.firstOrNull()
+                                ?.tabRenderer
                                 ?.content
                                 ?.sectionListRenderer
                                 ?.contents
@@ -229,30 +217,34 @@ internal class HomeRepositoryImpl(
         viewString: String,
         songString: String
     ): Flow<Resource<Pair<String?, List<HomeItem>>>> = flow {
-        youTube
-            .customQuery(browseId = "", continuation = continueParam)
-            .onSuccess { response ->
-                val newContinueParam =
-                    response.continuationContents
-                        ?.sectionListContinuation
-                        ?.continuations
-                        ?.get(
-                            0,
-                        )?.nextContinuationData
-                        ?.continuation
-                Logger.d("Repository", "continueParam: $continueParam")
-                val dataContinue =
-                    response.continuationContents?.sectionListContinuation?.contents
-                val list =
-                    parseMixedContent(
-                        dataContinue,
-                        viewString,
-                        songString,
-                    )
-                emit(Resource.Success(newContinueParam to list))
-            }.onFailure {
-                emit(Resource.Error<Pair<String?, List<HomeItem>>>(it.message.toString()))
-            }
+        runCatching {
+            youTube
+                .customQuery(browseId = "", continuation = continueParam)
+                .onSuccess { response ->
+                    val newContinueParam =
+                        response.continuationContents
+                            ?.sectionListContinuation
+                            ?.continuations
+                            ?.firstOrNull()
+                            ?.nextContinuationData
+                            ?.continuation
+                    Logger.d("Repository", "continueParam: $continueParam")
+                    val dataContinue =
+                        response.continuationContents?.sectionListContinuation?.contents
+                    val list =
+                        parseMixedContent(
+                            dataContinue,
+                            viewString,
+                            songString,
+                        )
+                    emit(Resource.Success(newContinueParam to list))
+                }.onFailure {
+                    emit(Resource.Error<Pair<String?, List<HomeItem>>>(it.message.toString()))
+                }
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            emit(Resource.Error<Pair<String?, List<HomeItem>>>(error.message.toString()))
+        }
     }.flowOn(Dispatchers.IO)
 
     override fun getNewRelease(
@@ -260,13 +252,18 @@ internal class HomeRepositoryImpl(
         musicVideoString: String,
     ): Flow<Resource<List<HomeItem>>> =
         flow {
-            youTube
-                .newRelease()
-                .onSuccess { result ->
-                    emit(Resource.Success<List<HomeItem>>(parseNewRelease(result, newReleaseString, musicVideoString)))
-                }.onFailure { error ->
-                    emit(Resource.Error<List<HomeItem>>(error.message.toString()))
-                }
+            runCatching {
+                youTube
+                    .newRelease()
+                    .onSuccess { result ->
+                        emit(Resource.Success<List<HomeItem>>(parseNewRelease(result, newReleaseString, musicVideoString)))
+                    }.onFailure { error ->
+                        emit(Resource.Error<List<HomeItem>>(error.message.toString()))
+                    }
+            }.onFailure { error ->
+                if (error is CancellationException) throw error
+                emit(Resource.Error<List<HomeItem>>(error.message.toString()))
+            }
         }.flowOn(Dispatchers.IO)
 
     override fun getChartData(countryCode: String): Flow<Resource<Chart>> =
@@ -397,6 +394,9 @@ internal class HomeRepositoryImpl(
                     }.onFailure { e ->
                         emit(Resource.Error<MoodsMomentObject>(e.message.toString()))
                     }
+            }.onFailure { e ->
+                if (e is CancellationException) throw e
+                emit(Resource.Error<MoodsMomentObject>(e.message.toString()))
             }
         }.flowOn(Dispatchers.IO)
 
@@ -417,6 +417,9 @@ internal class HomeRepositoryImpl(
                     }.onFailure { e ->
                         emit(Resource.Error<GenreObject>(e.message.toString()))
                     }
+            }.onFailure { e ->
+                if (e is CancellationException) throw e
+                emit(Resource.Error<GenreObject>(e.message.toString()))
             }
         }.flowOn(Dispatchers.IO)
 

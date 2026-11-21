@@ -34,11 +34,11 @@ internal fun parseMixedContent(
                 val title =
                     results.header
                         ?.runs
-                        ?.get(0)
+                        ?.firstOrNull()
                         ?.text ?: ""
                 val content =
                     results.description.runs
-                        ?.get(0)
+                        ?.firstOrNull()
                         ?.text ?: ""
                 if (title.isNotEmpty()) {
                     list.add(
@@ -71,7 +71,7 @@ internal fun parseMixedContent(
                         ?.musicCarouselShelfBasicHeaderRenderer
                         ?.title
                         ?.runs
-                        ?.get(0)
+                        ?.firstOrNull()
                         ?.text
                         ?: ""
                 Logger.d("parse_mixed_content", "$title: ${contentList?.size ?: 0} items")
@@ -366,7 +366,7 @@ internal fun parseMixedContent(
                                         title =
                                             musicTwoRowItemRenderer.title
                                                 ?.runs
-                                                ?.get(0)
+                                                ?.firstOrNull()
                                                 ?.text
                                                 ?: "",
                                         videoId = "",
@@ -375,14 +375,8 @@ internal fun parseMixedContent(
                                 )
                             } else if (musicTwoRowItemRenderer.isPlaylist) {
                                 val subtitle1 = musicTwoRowItemRenderer.subtitle
-                                var description = ""
-                                if (subtitle1 != null) {
-                                    if (subtitle1.runs != null) {
-                                        for (run in subtitle1.runs!!) {
-                                            description += run.text
-                                        }
-                                    }
-                                }
+                                val description =
+                                    subtitle1?.runs?.joinToString(separator = "") { it.text }.orEmpty()
                                 if (musicTwoRowItemRenderer.navigationEndpoint?.browseEndpoint?.browseId?.startsWith(
                                         "MPRE",
                                     ) == true
@@ -411,9 +405,8 @@ internal fun parseMixedContent(
                                             title =
                                                 musicTwoRowItemRenderer.title
                                                     ?.runs
-                                                    ?.get(
-                                                        0,
-                                                    )?.text ?: "",
+                                                    ?.firstOrNull()
+                                                    ?.text ?: "",
                                             videoId = "",
                                             views = "",
                                         ),
@@ -475,7 +468,7 @@ internal fun parseMixedContent(
                                         title =
                                             musicTwoRowItemRenderer.title
                                                 ?.runs
-                                                ?.get(0)
+                                                ?.firstOrNull()
                                                 ?.text
                                                 ?: "",
                                         videoId = null,
@@ -493,27 +486,26 @@ internal fun parseMixedContent(
                                     listContent.last()?.copy(playEndpoint = musicTwoRowItemRenderer.playEndpoint())
                             }
                         } else if (result1.musicResponsiveListItemRenderer != null) {
+                            val renderer = result1.musicResponsiveListItemRenderer ?: continue
                             // Debug only: the full renderer is huge and used to make up ~90% of app.log.
                             Logger.d("parse Song flat", "Parsing a flat song renderer")
                             val ytItem =
-                                RelatedPage.fromMusicResponsiveListItemRenderer(result1.musicResponsiveListItemRenderer!!)
+                                RelatedPage.fromMusicResponsiveListItemRenderer(renderer)
                             if (ytItem != null) {
                                 val content =
                                     Content(
                                         album = ytItem.album?.let { Album(name = it.name, id = it.id) },
                                         artists =
-                                            result1.musicResponsiveListItemRenderer!!.let { renderer ->
-                                                parseSongArtistsAt(
-                                                    renderer,
-                                                    findSongColumns(renderer).artistIndex,
-                                                )
-                                            },
+                                            parseSongArtistsAt(
+                                                renderer,
+                                                findSongColumns(renderer).artistIndex,
+                                            ),
                                         description = null,
                                         isExplicit = ytItem.explicit,
                                         playlistId = null,
                                         browseId = null,
                                         thumbnails =
-                                            result1.musicResponsiveListItemRenderer!!
+                                            renderer
                                                 .thumbnail
                                                 ?.musicThumbnailRenderer
                                                 ?.thumbnail
@@ -524,7 +516,7 @@ internal fun parseMixedContent(
                                         videoId = ytItem.id,
                                         views = "",
                                         radio = null,
-                                        isLive = result1.musicResponsiveListItemRenderer!!.isLive,
+                                        isLive = renderer.isLive,
                                     )
                                 listContent.add(content)
                             }
@@ -547,7 +539,7 @@ internal fun parseMixedContent(
                                     title =
                                         multiRow.title
                                             ?.runs
-                                            ?.get(0)
+                                            ?.firstOrNull()
                                             ?.text ?: "",
                                     videoId = multiRow.onTap?.watchEndpoint?.videoId ?: "",
                                     album = null,
@@ -613,16 +605,18 @@ internal fun parseSongFlat(
                     ?.toListThumbnail()
                     ?: listOf(),
             title =
-                column[0]
+                column
+                    .firstOrNull()
                     ?.text
                     ?.runs
-                    ?.get(0)
+                    ?.firstOrNull()
                     ?.text ?: "",
             videoId =
-                column[0]
+                column
+                    .firstOrNull()
                     ?.text
                     ?.runs
-                    ?.get(0)
+                    ?.firstOrNull()
                     ?.navigationEndpoint
                     ?.watchEndpoint
                     ?.videoId
@@ -658,39 +652,16 @@ internal fun parsePlaylist(
     data: MusicTwoRowItemRenderer,
     viewString: String,
 ): Content {
-    val subtitle = data.subtitle
-    var description = ""
-    var count = ""
+    val subtitleRuns = data.subtitle?.runs.orEmpty()
+    val description = subtitleRuns.joinToString(separator = "") { it.text }
     val author: MutableList<Artist> = mutableListOf()
     val thumbnails =
         data.thumbnailRenderer
             ?.musicThumbnailRenderer
             ?.thumbnail
             ?.thumbnails
-    if (subtitle != null) {
-        if (subtitle.runs != null) {
-            for (run in subtitle.runs!!) {
-                description += run.text
-            }
-            if (subtitle.runs!!.size == 3) {
-                if (data.subtitle!!
-                        .runs
-                        ?.get(2)
-                        ?.text
-                        ?.split(" ")
-                        ?.get(0) != null
-                ) {
-                    count +=
-                        data.subtitle!!
-                            .runs
-                            ?.get(2)
-                            ?.text
-                            ?.split(" ")
-                            ?.get(0)
-                }
-                author.addAll(parseSongArtistsRuns(subtitle.runs!!.take(1)))
-            }
-        }
+    if (subtitleRuns.size == 3) {
+        author.addAll(parseSongArtistsRuns(subtitleRuns.take(1)))
     }
     Logger.w("parse_playlist", description)
     return Content(
@@ -701,7 +672,7 @@ internal fun parsePlaylist(
         playlistId =
             data.title
                 ?.runs
-                ?.get(0)
+                ?.firstOrNull()
                 ?.navigationEndpoint
                 ?.browseEndpoint
                 ?.browseId,
@@ -710,7 +681,7 @@ internal fun parsePlaylist(
         title =
             data.title
                 ?.runs
-                ?.get(0)
+                ?.firstOrNull()
                 ?.text ?: "",
         videoId = null,
         views = null,
