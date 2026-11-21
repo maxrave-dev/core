@@ -123,6 +123,6 @@ class HomeParserHardeningTest {
         val genre = assertNotNull(parseGenreObject(emptyTabsResponse))
         assertTrue(mood.items.isEmpty())
         assertTrue(genre.itemsPlaylist.isEmpty())
-        assertTrue(genre.itemsSong.isEmpty())
+        assertTrue(genre.itemsSong.isNullOrEmpty())
     }
 }
