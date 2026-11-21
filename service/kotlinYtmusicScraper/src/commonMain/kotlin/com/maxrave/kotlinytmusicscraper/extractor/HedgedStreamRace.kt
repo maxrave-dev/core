@@ -28,7 +28,7 @@ internal suspend fun <T : Any> racePrimaryWithHedgedFallback(
     if (isCancelled()) return null
 
     val outcomes = Channel<Pair<Boolean, T?>>(capacity = 2)
-    val primaryDone = CompletableDeferred<Unit>()
+    val primarySucceeded = CompletableDeferred<Boolean>()
 
     scope.launch {
         val result =
@@ -37,18 +37,23 @@ internal suspend fun <T : Any> racePrimaryWithHedgedFallback(
             } catch (_: Throwable) {
                 null
             }
-        primaryDone.complete(Unit)
+        primarySucceeded.complete(result != null)
         outcomes.trySend(true to result)
     }
 
     val fallbackStarter =
         scope.launch {
             if (hedgeDelayMs > 0L) {
-                withTimeoutOrNull(hedgeDelayMs) {
-                    primaryDone.await()
+                val succeeded =
+                    withTimeoutOrNull(hedgeDelayMs) {
+                        primarySucceeded.await()
+                    }
+                if (succeeded == true) {
+                    outcomes.trySend(false to null)
+                    return@launch
                 }
             }
-            if (isCancelled()) {
+            if (isCancelled() || (primarySucceeded.isCompleted && primarySucceeded.await())) {
                 outcomes.trySend(false to null)
                 return@launch
             }
