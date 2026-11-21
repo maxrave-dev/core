@@ -241,6 +241,8 @@ internal fun parseMixedContent(
                                             isLive = musicTwoRowItemRenderer.isLive,
                                         ),
                                     )
+                                } else {
+                                    parseTwoRowWatchFallback(musicTwoRowItemRenderer)?.let { listContent.add(it) }
                                 }
                             } else if (musicTwoRowItemRenderer.isVideo) {
                                 val ytItem =
@@ -298,6 +300,8 @@ internal fun parseMixedContent(
                                             isLive = musicTwoRowItemRenderer.isLive,
                                         ),
                                     )
+                                } else {
+                                    parseTwoRowWatchFallback(musicTwoRowItemRenderer)?.let { listContent.add(it) }
                                 }
                             } else if (musicTwoRowItemRenderer.isArtist || musicTwoRowItemRenderer.isUserChannel) {
                                 val ytItem =
@@ -551,7 +555,7 @@ internal fun parseMixedContent(
                                 )
                             listContent.add(content)
                         } else {
-                            break
+                            continue
                         }
                     }
                 }
@@ -568,11 +572,168 @@ internal fun parseMixedContent(
                             playAllEndpoint = playAllEndpoint,
                         ),
                     )
+                } else {
+                    val shelf = row.musicShelfRenderer
+                    val shelfTitle =
+                        shelf
+                            ?.title
+                            ?.runs
+                            ?.firstOrNull()
+                            ?.text
+                            ?: ""
+                    if (shelf != null && shelfTitle.isNotEmpty()) {
+                        val shelfContent = mutableListOf<Content?>()
+                        shelf.contents.orEmpty().forEach { item ->
+                            val renderer = item.musicResponsiveListItemRenderer
+                            if (renderer != null) {
+                                val ytItem = RelatedPage.fromMusicResponsiveListItemRenderer(renderer)
+                                if (ytItem != null) {
+                                    shelfContent.add(
+                                        Content(
+                                            album = ytItem.album?.let { Album(name = it.name, id = it.id) },
+                                            artists =
+                                                parseSongArtistsAt(
+                                                    renderer,
+                                                    findSongColumns(renderer).artistIndex,
+                                                ),
+                                            description = null,
+                                            isExplicit = ytItem.explicit,
+                                            playlistId = null,
+                                            browseId = null,
+                                            thumbnails =
+                                                renderer
+                                                    .thumbnail
+                                                    ?.musicThumbnailRenderer
+                                                    ?.thumbnail
+                                                    ?.thumbnails
+                                                    ?.toListThumbnail()
+                                                    ?: listOf(),
+                                            title = ytItem.title,
+                                            videoId = ytItem.id,
+                                            views = "",
+                                            radio = null,
+                                            videoType = ytItem.musicVideoType,
+                                            isLive = renderer.isLive,
+                                        ),
+                                    )
+                                } else {
+                                    parseSongFlat(renderer, viewString)?.takeIf { it.title.isNotEmpty() || !it.videoId.isNullOrEmpty() }?.let {
+                                        shelfContent.add(it)
+                                    }
+                                }
+                            } else if (item.musicMultiRowListItemRenderer != null) {
+                                val multiRow = item.musicMultiRowListItemRenderer
+                                if (multiRow != null) {
+                                    shelfContent.add(
+                                        Content(
+                                            description = multiRow.description?.runs?.firstOrNull()?.text,
+                                            thumbnails =
+                                                multiRow.thumbnail
+                                                    ?.musicThumbnailRenderer
+                                                    ?.thumbnail
+                                                    ?.thumbnails
+                                                    ?.toListThumbnail()
+                                                    ?: listOf(),
+                                            title = multiRow.title?.runs?.firstOrNull()?.text ?: "",
+                                            videoId = multiRow.onTap?.watchEndpoint?.videoId ?: "",
+                                            album = null,
+                                            artists = emptyList(),
+                                            isExplicit = false,
+                                            playlistId = null,
+                                            browseId = null,
+                                            views = null,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                        if (shelfContent.isNotEmpty()) {
+                            list.add(
+                                HomeItem(
+                                    contents = shelfContent,
+                                    title = shelfTitle,
+                                    moreEndpoint =
+                                        shelf.moreContentButton
+                                            ?.buttonRenderer
+                                            ?.navigationEndpoint
+                                            ?.browseEndpoint
+                                            ?.toMoreEndpoint()
+                                            ?: shelf.bottomEndpoint?.browseEndpoint?.toMoreEndpoint(),
+                                    playAllEndpoint =
+                                        shelf.moreContentButton
+                                            ?.buttonRenderer
+                                            ?.navigationEndpoint
+                                            ?.watchEndpoint
+                                            ?.toYouTubeWatchEndpoint(),
+                                ),
+                            )
+                        }
+                    }
                 }
             }
         }
     }
     return list
+}
+
+private fun parseTwoRowWatchFallback(renderer: MusicTwoRowItemRenderer): Content? {
+    val title = renderer.title.runs?.firstOrNull()?.text.orEmpty()
+    val videoId =
+        renderer.navigationEndpoint.watchEndpoint?.videoId
+            ?: renderer.navigationEndpoint.watchPlaylistEndpoint?.videoId
+            ?: renderer.thumbnailOverlay
+                ?.musicItemThumbnailOverlayRenderer
+                ?.content
+                ?.musicPlayButtonRenderer
+                ?.playNavigationEndpoint
+                ?.watchEndpoint
+                ?.videoId
+    val playlistId =
+        renderer.navigationEndpoint.watchPlaylistEndpoint?.playlistId
+            ?: renderer.navigationEndpoint.watchEndpoint?.playlistId
+            ?: renderer.playlistId
+    if (videoId.isNullOrEmpty() && playlistId.isNullOrEmpty()) return null
+    val thumbnails =
+        renderer.thumbnailRenderer
+            .musicThumbnailRenderer
+            ?.thumbnail
+            ?.thumbnails
+            ?.toListThumbnail()
+            ?: listOf()
+    val subtitleText = renderer.subtitle?.runs?.joinToString(separator = "") { it.text }.orEmpty()
+    val artists =
+        renderer.subtitle
+            ?.runs
+            ?.mapNotNull { run ->
+                run.navigationEndpoint
+                    ?.browseEndpoint
+                    ?.browseId
+                    ?.let { id -> Artist(id = id, name = run.text) }
+            }.orEmpty()
+            .ifEmpty {
+                renderer.subtitle
+                    ?.runs
+                    ?.firstOrNull()
+                    ?.text
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { listOf(Artist(id = null, name = it)) }
+                    ?: emptyList()
+            }
+    return Content(
+        album = null,
+        artists = artists,
+        description = subtitleText.takeIf { it.isNotBlank() },
+        isExplicit = false,
+        playlistId = if (videoId.isNullOrEmpty()) playlistId else null,
+        browseId = if (videoId.isNullOrEmpty()) playlistId else null,
+        thumbnails = thumbnails,
+        title = title,
+        videoId = videoId,
+        views = null,
+        radio = null,
+        videoType = renderer.musicVideoType,
+        isLive = renderer.isLive,
+    )
 }
 
 internal fun parseSongFlat(
@@ -612,14 +773,15 @@ internal fun parseSongFlat(
                     ?.firstOrNull()
                     ?.text ?: "",
             videoId =
-                column
-                    .firstOrNull()
-                    ?.text
-                    ?.runs
-                    ?.firstOrNull()
-                    ?.navigationEndpoint
-                    ?.watchEndpoint
-                    ?.videoId
+                data.videoId
+                    ?: column
+                        .firstOrNull()
+                        ?.text
+                        ?.runs
+                        ?.firstOrNull()
+                        ?.navigationEndpoint
+                        ?.watchEndpoint
+                        ?.videoId
                     ?: "",
             // A row shows either an album or a view count, never both — so a row that resolved an
             // album column reports no views, exactly as before. Only the detection changed: the

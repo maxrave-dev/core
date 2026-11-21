@@ -18,6 +18,7 @@ data class MusicTwoRowItemRenderer(
     val title: Runs,
     val subtitle: Runs?,
     val subtitleBadges: List<Badges>? = null,
+    val badges: List<Badges>? = null,
     val menu: Menu?,
     val thumbnailRenderer: ThumbnailRenderer,
     val navigationEndpoint: NavigationEndpoint,
@@ -26,7 +27,9 @@ data class MusicTwoRowItemRenderer(
 ) {
     /** A broadcast on air right now, as YouTube marks it with its LIVE chip. */
     val isLive: Boolean
-        get() = subtitleBadges?.any { it.liveBadgeRenderer != null } == true
+        get() =
+            subtitleBadges?.any { it.liveBadgeRenderer != null } == true ||
+                badges?.any { it.liveBadgeRenderer != null } == true
 
     val isSong: Boolean
         get() =
