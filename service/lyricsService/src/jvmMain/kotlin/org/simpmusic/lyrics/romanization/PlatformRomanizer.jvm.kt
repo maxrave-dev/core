@@ -37,18 +37,23 @@ internal actual object PlatformRomanizer {
             KanaRomanizer.romanize(reading)
         }.getOrNull()
 
+    // WITH_TONE_MARK is the reason for the other two settings, not a free choice: pinyin4j
+    // throws BadHanyuPinyinOutputFormatCombination if tone marks are asked for while
+    // vCharType is anything but WITH_U_UNICODE. That exception is the single most common
+    // way this library is mis-wired.
+    private val pinyinOutputFormat: HanyuPinyinOutputFormat by lazy {
+        HanyuPinyinOutputFormat().apply {
+            caseType = HanyuPinyinCaseType.LOWERCASE
+            toneType = HanyuPinyinToneType.WITH_TONE_MARK
+            vCharType = HanyuPinyinVCharType.WITH_U_UNICODE
+        }
+    }
+
+    private val multiSpaceRegex = Regex(" {2,}")
+
     actual fun chinese(line: String): String? =
         runCatching {
-            // WITH_TONE_MARK is the reason for the other two settings, not a free choice: pinyin4j
-            // throws BadHanyuPinyinOutputFormatCombination if tone marks are asked for while
-            // vCharType is anything but WITH_U_UNICODE. That exception is the single most common
-            // way this library is mis-wired.
-            val format =
-                HanyuPinyinOutputFormat().apply {
-                    caseType = HanyuPinyinCaseType.LOWERCASE
-                    toneType = HanyuPinyinToneType.WITH_TONE_MARK
-                    vCharType = HanyuPinyinVCharType.WITH_U_UNICODE
-                }
+            val format = pinyinOutputFormat
             buildString {
                 line.forEach { char ->
                     // isHan(), not the library's own predicate: the same test the script detector
@@ -72,6 +77,6 @@ internal actual object PlatformRomanizer {
                         append(char)
                     }
                 }
-            }.replace(Regex(" {2,}"), " ").trim()
+            }.replace(multiSpaceRegex, " ").trim()
         }.getOrNull()
 }

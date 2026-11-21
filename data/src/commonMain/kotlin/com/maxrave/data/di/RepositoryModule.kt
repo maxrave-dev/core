@@ -46,15 +46,15 @@ import org.koin.dsl.module
 
 val repositoryModule =
     module {
-        single<AccountRepository>(createdAtStart = true) {
+        single<AccountRepository> {
             AccountRepositoryImpl(get(), get())
         }
 
-        single<AlbumRepository>(createdAtStart = true) {
+        single<AlbumRepository> {
             AlbumRepositoryImpl(get(), get())
         }
 
-        single<ArtistRepository>(createdAtStart = true) {
+        single<ArtistRepository> {
             ArtistRepositoryImpl(get(), get(), get())
         }
 
@@ -84,47 +84,47 @@ val repositoryModule =
             LyricsRomanizerRepositoryImpl("${fileDir()}/kuromoji-ipadic", get())
         }
 
-        single<HomeRepository>(createdAtStart = true) {
+        single<HomeRepository> {
             HomeRepositoryImpl(get(), get())
         }
 
-        single<ImportRepository>(createdAtStart = true) {
+        single<ImportRepository> {
             ImportRepositoryImpl(get())
         }
 
-        single<LocalPlaylistRepository>(createdAtStart = true) {
+        single<LocalPlaylistRepository> {
             LocalPlaylistRepositoryImpl(get(), get())
         }
 
-        single<LyricsCanvasRepository>(createdAtStart = true) {
-            LyricsCanvasRepositoryImpl(get(), get(), get(), get(), get())
+        single<LyricsCanvasRepository> {
+            LyricsCanvasRepositoryImpl(get(), get(), get(), get(), get(), get())
         }
 
-        single<PlaylistRepository>(createdAtStart = true) {
+        single<PlaylistRepository> {
             PlaylistRepositoryImpl(get(), get(), get())
         }
 
-        single<PodcastRepository>(createdAtStart = true) {
+        single<PodcastRepository> {
             PodcastRepositoryImpl(get(), get())
         }
 
-        single<SearchRepository>(createdAtStart = true) {
+        single<SearchRepository> {
             SearchRepositoryImpl(get(), get())
         }
 
-        single<SongRepository>(createdAtStart = true) {
+        single<SongRepository> {
             SongRepositoryImpl(get(), get(), get())
         }
 
-        single<StreamRepository>(createdAtStart = true) {
-            StreamRepositoryImpl(get(), get())
+        single<StreamRepository> {
+            StreamRepositoryImpl(get(), get(), get())
         }
 
-        single<UpdateRepository>(createdAtStart = true) {
+        single<UpdateRepository> {
             UpdateRepositoryImpl(get())
         }
 
-        single<AnalyticsRepository>(createdAtStart = true) {
+        single<AnalyticsRepository> {
             AnalyticsRepositoryImpl(get())
         }
 

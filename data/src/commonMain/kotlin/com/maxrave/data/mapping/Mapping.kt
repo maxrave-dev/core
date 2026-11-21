@@ -245,17 +245,22 @@ internal fun YouTubeInitialPage.toTrack(): Track {
     )
 }
 
+private val TRANSCRIPT_HTML_TAG_REGEX = Regex("<[^>]*>")
+
 internal fun Transcript.toLyrics(): Lyrics {
     val lines =
-        this.text.map {
+        this.text.mapNotNull {
+            val cleaned = it.content.replace(TRANSCRIPT_HTML_TAG_REGEX, "").trim()
+            if (cleaned.isEmpty()) return@mapNotNull null
+            val startMs = ((it.start.toDoubleOrNull() ?: return@mapNotNull null) * 1000.0).toLong().coerceAtLeast(0L)
             Line(
                 endTimeMs = "0",
-                startTimeMs = (it.start.toFloat() * 1000).toInt().toString(),
+                startTimeMs = startMs.toString(),
                 syllables = listOf(),
-                words = it.content.replace(Regex("<[^>]*>"), ""),
+                words = cleaned,
             )
         }
-    val sortedLine = lines.sortedBy { it.startTimeMs.toInt() }
+    val sortedLine = lines.sortedBy { it.startTimeMs.toLong() }
     return Lyrics(
         error = false,
         lines = sortedLine,
@@ -291,22 +296,32 @@ internal fun AlbumItem.toAlbumsResult(): AlbumsResult =
     )
 
 // SimpMusic Lyrics Extension
-internal fun LyricsResponse.toLyrics(): Lyrics? =
-    (
-        richSyncLyrics?.takeIf { it.isNotEmpty() }?.let {
-            parseRichSyncLyrics(it)
-        }
-            ?: syncedLyrics?.let { if (it.isNotEmpty() && it.isNotBlank()) parseSyncedLyrics(it) else null }
-            ?: (
-                if (plainLyric.isNotEmpty() && plainLyric.isNotBlank()) {
-                    parseUnsyncedLyrics(plainLyric)
-                } else {
-                    null
-                }
-            )
-    )?.toLyrics()
+internal fun LyricsResponse.toLyrics(): Lyrics? {
+    val richCandidate =
+        richSyncLyrics
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::parseRichSyncLyrics)
+            ?.takeIf { !it.lyrics?.lines.isNullOrEmpty() }
+    val selected =
+        richCandidate?.takeIf { it.lyrics?.syncType == "RICH_SYNCED" }
+            ?: syncedLyrics
+                ?.takeIf { it.isNotBlank() }
+                ?.let(::parseSyncedLyrics)
+                ?.takeIf { !it.lyrics?.lines.isNullOrEmpty() }
+            ?: richCandidate
+            ?: plainLyric
+                .takeIf { it.isNotBlank() }
+                ?.let(::parseUnsyncedLyrics)
+                ?.takeIf { !it.lyrics?.lines.isNullOrEmpty() }
+    return selected?.toLyrics()?.takeIf { !it.lines.isNullOrEmpty() }
+}
 
-internal fun TranslatedLyricsResponse.toLyrics(): Lyrics = parseSyncedLyrics(this.translatedLyric).toLyrics()
+internal fun TranslatedLyricsResponse.toLyrics(): Lyrics? =
+    translatedLyric
+        .takeIf { it.isNotBlank() }
+        ?.let(::parseSyncedLyrics)
+        ?.takeIf { !it.lyrics?.lines.isNullOrEmpty() }
+        ?.toLyrics()
 
 internal fun SearchSuggestions.toDomainSearchSuggestions(): com.maxrave.domain.data.model.searchResult.SearchSuggestions =
     com.maxrave.domain.data.model.searchResult.SearchSuggestions(

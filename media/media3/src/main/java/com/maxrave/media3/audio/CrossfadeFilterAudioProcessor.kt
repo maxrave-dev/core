@@ -31,7 +31,7 @@ class CrossfadeFilterAudioProcessor : BaseAudioProcessor() {
             if (field != value) {
                 field = value
                 if (!value) {
-                    filter.reset()
+                    pendingReset = true
                 }
             }
         }
@@ -65,6 +65,9 @@ class CrossfadeFilterAudioProcessor : BaseAudioProcessor() {
     @Volatile
     private var coefficientsDirty = true
 
+    @Volatile
+    private var pendingReset = false
+
     private var sampleRate = 0
     private var channelCount = 0
 
@@ -78,11 +81,16 @@ class CrossfadeFilterAudioProcessor : BaseAudioProcessor() {
         return inputAudioFormat
     }
 
-    override fun isActive(): Boolean = true
+    override fun isActive(): Boolean = super.isActive()
 
     override fun queueInput(inputBuffer: ByteBuffer) {
         val remaining = inputBuffer.remaining()
         if (remaining == 0) return
+
+        if (pendingReset) {
+            pendingReset = false
+            filter.reset()
+        }
 
         if (!enabled || sampleRate == 0) {
             // Pass through: copy input to output (avoid put(sameBuffer) which throws)
@@ -92,14 +100,14 @@ class CrossfadeFilterAudioProcessor : BaseAudioProcessor() {
             return
         }
 
-        // Recalculate coefficients if cutoff or type changed
+        // Recalculate coefficients on audio thread if cutoff or type changed
         if (coefficientsDirty) {
+            coefficientsDirty = false
             filter.updateCoefficients(
                 cutoffHz = cutoffFrequencyHz,
                 sampleRate = sampleRate,
                 type = filterType,
             )
-            coefficientsDirty = false
         }
 
         val output = replaceOutputBuffer(remaining)
@@ -117,22 +125,21 @@ class CrossfadeFilterAudioProcessor : BaseAudioProcessor() {
         output.flip()
     }
 
-    /**
-     * Copy bytes from src to dst. Use this instead of dst.put(src) because
-     * replaceOutputBuffer() may return the same buffer as input, and
-     * ByteBuffer.put(ByteBuffer) throws if source and destination are the same.
-     */
     private fun copyBuffer(src: ByteBuffer, dst: ByteBuffer, size: Int) {
         if (src === dst) {
             dst.position(0)
             dst.limit(size)
             return
         }
-        val pos = src.position()
-        for (i in 0 until size) {
-            dst.put(src.get(pos + i))
+        if (src.remaining() == size && dst.remaining() >= size) {
+            dst.put(src)
+        } else {
+            val pos = src.position()
+            for (i in 0 until size) {
+                dst.put(src.get(pos + i))
+            }
+            src.position(pos + size)
         }
-        src.position(pos + size)
     }
 
     private fun processMonoBlock(input: ByteBuffer, output: ByteBuffer) {
@@ -147,7 +154,8 @@ class CrossfadeFilterAudioProcessor : BaseAudioProcessor() {
         while (input.remaining() >= 4) {
             val left = input.short.toDouble() / Short.MAX_VALUE
             val right = input.short.toDouble() / Short.MAX_VALUE
-            val (filteredL, filteredR) = filter.processStereo(left, right)
+            val filteredL = filter.processStereoLeft(left)
+            val filteredR = filter.processStereoRight(right)
             output.putShort((filteredL.coerceIn(-1.0, 1.0) * Short.MAX_VALUE).toInt().toShort())
             output.putShort((filteredR.coerceIn(-1.0, 1.0) * Short.MAX_VALUE).toInt().toShort())
         }
@@ -155,14 +163,19 @@ class CrossfadeFilterAudioProcessor : BaseAudioProcessor() {
 
     override fun onFlush() {
         super.onFlush()
+        pendingReset = false
         filter.reset()
     }
 
     override fun onReset() {
         super.onReset()
         enabled = false
+        pendingReset = false
+        coefficientsDirty = true
         cutoffFrequencyHz = 20000f
         filterType = BiquadFilter.FilterType.LOW_PASS
+        sampleRate = 0
+        channelCount = 0
         filter.reset()
     }
 }

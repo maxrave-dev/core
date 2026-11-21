@@ -127,7 +127,7 @@ interface DatabaseDao {
             val fetched =
                 getDownloadedPlaylists(
                     limit = 100,
-                    offset = shouldContinue.second,
+                    offset = shouldContinuePlaylist.second,
                 )
             a.addAll(
                 fetched,
@@ -194,7 +194,7 @@ interface DatabaseDao {
             val fetched =
                 getDownloadingPlaylists(
                     limit = 100,
-                    offset = shouldContinue.second,
+                    offset = shouldContinuePlaylist.second,
                 )
             a.addAll(
                 fetched,
@@ -828,7 +828,7 @@ interface DatabaseDao {
     suspend fun getPlaylistPairOfSong(
         videoId: String,
         localPlaylistId: Long,
-    ): PairSongLocalPlaylist
+    ): PairSongLocalPlaylist?
 
     @Query("SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId ORDER BY position ASC LIMIT :limit OFFSET :offset")
     suspend fun getPlaylistPairSong(
@@ -1401,6 +1401,14 @@ interface DatabaseDao {
 
     @Query("DELETE FROM new_format WHERE videoId NOT IN (SELECT videoId FROM song)")
     suspend fun deleteStaleNewFormats(): Int
+
+    // Every stored stream format, library songs included — the quality-change sweep.
+    // Rows are re-created by the next resolve, so nothing but the stored URLs is lost.
+    @Query("DELETE FROM new_format")
+    suspend fun deleteAllNewFormats(): Int
+
+    @Query("DELETE FROM new_format WHERE videoId NOT IN (:exceptVideoIds)")
+    suspend fun deleteAllNewFormatsExcept(exceptVideoIds: List<String>): Int
 
     @Query("DELETE FROM lyrics WHERE videoId NOT IN (SELECT videoId FROM song)")
     suspend fun deleteStaleLyrics(): Int

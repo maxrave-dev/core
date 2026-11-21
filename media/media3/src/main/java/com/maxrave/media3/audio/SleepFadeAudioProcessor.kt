@@ -44,38 +44,34 @@ class SleepFadeAudioProcessor(
      * be consulted again until the next flush — by which point the sleep timer has already stopped
      * playback. The full-gain path below is cheap enough to keep it in place permanently.
      */
-    override fun isActive(): Boolean = true
+    override fun isActive(): Boolean = super.isActive()
 
     override fun queueInput(inputBuffer: ByteBuffer) {
         val remaining = inputBuffer.remaining()
         if (remaining == 0) return
 
         val output = replaceOutputBuffer(remaining)
-        val currentGain = gain()
+        val currentGain = gain().coerceIn(0f, 1f)
 
         if (currentGain >= 1f) {
-            // Bulk copy. This branch runs on every buffer for the whole of playback whether a sleep
-            // timer exists or not, so it must not be a per-byte loop. `replaceOutputBuffer` hands
-            // back this processor's own buffer while the input belongs to the previous one in the
-            // chain, so the two are never the same object and `put` cannot throw.
             output.put(inputBuffer)
             output.flip()
             return
         }
 
         inputBuffer.order(ByteOrder.nativeOrder())
-        // Channel count is irrelevant here: attenuation is per sample, and every channel of an
-        // interleaved frame takes the same factor.
         while (inputBuffer.remaining() >= 2) {
-            output.putShort((inputBuffer.short * currentGain).toInt().toShort())
+            val scaled = (inputBuffer.short * currentGain).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            output.putShort(scaled.toShort())
         }
-        // PCM16 frames are always an even number of bytes, so this should never fire. It is here
-        // because the contract is to consume the whole input: leaving a byte behind makes the
-        // pipeline re-offer the same buffer forever, having made no progress.
         while (inputBuffer.hasRemaining()) {
             output.put(inputBuffer.get())
         }
 
         output.flip()
+    }
+
+    override fun onReset() {
+        super.onReset()
     }
 }

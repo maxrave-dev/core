@@ -16,34 +16,49 @@ internal class CacheRepositoryImpl(
     private val canvasCache: SimpleCache,
 ) : CacheRepository {
     override suspend fun getCacheSize(cacheName: String): Long =
-        when (cacheName) {
-            Config.PLAYER_CACHE -> {
-                playerCache.cacheSpace
+        withContext(Dispatchers.IO) {
+            when (cacheName) {
+                Config.PLAYER_CACHE -> {
+                    playerCache.cacheSpace
+                }
+                Config.DOWNLOAD_CACHE -> {
+                    downloadCache.cacheSpace
+                }
+                Config.CANVAS_CACHE -> {
+                    canvasCache.cacheSpace
+                }
+                else -> 0L
             }
-            Config.DOWNLOAD_CACHE -> {
-                downloadCache.cacheSpace
-            }
-            Config.CANVAS_CACHE -> {
-                canvasCache.cacheSpace
-            }
-            else -> 0L
         }
 
     override fun clearCache(cacheName: String) {
+        clearCacheExcept(cacheName, emptySet())
+    }
+
+    override fun clearCacheExcept(
+        cacheName: String,
+        exceptKeys: Set<String>,
+    ) {
         when (cacheName) {
             Config.PLAYER_CACHE -> {
                 playerCache.keys.forEach { key ->
-                    playerCache.removeResource(key)
+                    if (key !in exceptKeys) {
+                        playerCache.removeResource(key)
+                    }
                 }
             }
             Config.DOWNLOAD_CACHE -> {
                 downloadCache.keys.forEach { key ->
-                    downloadCache.removeResource(key)
+                    if (key !in exceptKeys) {
+                        downloadCache.removeResource(key)
+                    }
                 }
             }
             Config.CANVAS_CACHE -> {
                 canvasCache.keys.forEach { key ->
-                    canvasCache.removeResource(key)
+                    if (key !in exceptKeys) {
+                        canvasCache.removeResource(key)
+                    }
                 }
             }
             else -> { /* no-op */ }
@@ -51,17 +66,19 @@ internal class CacheRepositoryImpl(
     }
 
     override suspend fun getAllCacheKeys(cacheName: String): List<String> =
-        when (cacheName) {
-            Config.PLAYER_CACHE -> {
-                playerCache.keys.toList()
+        withContext(Dispatchers.IO) {
+            when (cacheName) {
+                Config.PLAYER_CACHE -> {
+                    playerCache.keys.toList()
+                }
+                Config.DOWNLOAD_CACHE -> {
+                    downloadCache.keys.toList()
+                }
+                Config.CANVAS_CACHE -> {
+                    canvasCache.keys.toList()
+                }
+                else -> emptyList()
             }
-            Config.DOWNLOAD_CACHE -> {
-                downloadCache.keys.toList()
-            }
-            Config.CANVAS_CACHE -> {
-                canvasCache.keys.toList()
-            }
-            else -> emptyList()
         }
 
     // SimpleCache is synchronized, and a write in progress holds its lock, so these stay off the

@@ -10,18 +10,28 @@ import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import java.io.IOException
 import java.net.Proxy
+import java.util.concurrent.TimeUnit
 
 internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     val itags = this.mapTo(HashSet()) { it.first }
-    val hasAudio = ITAG.AUDIO.any { it in itags }
+    val hasAudio = ITAG.AUDIO_PLAYABLE.any { it in itags }
     val hasVideo = ITAG.VIDEO.any { it in itags }
     return hasAudio && hasVideo
 }
 
-private val streamHealthCheckClient: OkHttpClient by lazy {
-    OkHttpClient
-        .Builder()
+private fun buildHealthCheckClient(proxy: Proxy?): OkHttpClient =
+    extractorHttpClient(proxy)
+        .newBuilder()
+        .connectTimeout(2500, TimeUnit.MILLISECONDS)
+        .readTimeout(2500, TimeUnit.MILLISECONDS)
+        .callTimeout(3000, TimeUnit.MILLISECONDS)
         .build()
+
+@Volatile
+private var streamHealthCheckClient: OkHttpClient = buildHealthCheckClient(null)
+
+internal fun updateStreamHealthCheckProxy(proxy: Proxy?) {
+    streamHealthCheckClient = buildHealthCheckClient(proxy)
 }
 
 /**
@@ -29,9 +39,14 @@ private val streamHealthCheckClient: OkHttpClient by lazy {
  * only when the response code is in the 200..299 range. We only health-check those URLs because
  * they are the ones the player will actually use; lower-quality extras can stay unverified.
  */
-internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
-    val required = ITAG.AUDIO + ITAG.VIDEO
-    val candidate = this.filter { it.first in required }.randomOrNull() ?: return false
+internal fun List<Pair<Int, String>>.headCheckTarget(): Pair<Int, String>? =
+    ITAG.AUDIO_PLAYABLE.firstNotNullOfOrNull { target -> firstOrNull { it.first == target } }
+        ?: firstOrNull { it.first in ITAG.VIDEO }
+
+internal fun List<Pair<Int, String>>.headCheckRandomStream(trackRegistry: Boolean = true): Boolean {
+    val candidate = headCheckTarget() ?: return false
+    if (trackRegistry && ExtractorCallRegistry.isCurrentCancelled()) return false
+    val token = if (trackRegistry) ExtractorCallRegistry.activeToken() else null
     return runCatching {
         val request =
             okhttp3.Request
@@ -39,23 +54,50 @@ internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
                 .head()
                 .url(candidate.second)
                 .build()
-        streamHealthCheckClient.newCall(request).execute().use { response ->
-            response.code in 200..299
+        val call = streamHealthCheckClient.newCall(request)
+        if (token != null && !ExtractorCallRegistry.registerCall(token, call)) return false
+        try {
+            call.execute().use { response ->
+                response.code in 200..299
+            }
+        } finally {
+            if (token != null) ExtractorCallRegistry.unregisterCall(token, call)
         }
     }.getOrDefault(false)
 }
 
+/** Whether the list carries at least one audio stream URL, even with no video stream at all. */
+internal fun List<Pair<Int, String>>.hasAudioItag(): Boolean = any { it.first in ITAG.AUDIO_PLAYABLE }
+
+internal fun isStreamUrlReachable(url: String): Boolean =
+    runCatching {
+        val request =
+            okhttp3.Request
+                .Builder()
+                .head()
+                .url(url)
+                .build()
+        streamHealthCheckClient.newCall(request).execute().use { response ->
+            response.code in 200..299
+        }
+    }.getOrDefault(false)
+
 class BraveNewPipeDownloaderImpl(
     proxy: Proxy?,
 ) : Downloader() {
-    private val client =
-        OkHttpClient
-            .Builder()
-            .proxy(proxy)
-            .build()
+    @Volatile
+    private var client = extractorHttpClient(proxy)
+
+    fun updateProxy(proxy: Proxy?) {
+        client = extractorHttpClient(proxy)
+    }
 
     @Throws(IOException::class, ReCaptchaException::class)
     override fun execute(request: Request): Response {
+        val token = ExtractorCallRegistry.activeToken()
+        if (ExtractorCallRegistry.isCurrentCancelled()) {
+            throw IOException("Extraction cancelled")
+        }
         val httpMethod = request.httpMethod()
         val url = request.url()
         val headers = request.headers()
@@ -79,7 +121,16 @@ class BraveNewPipeDownloaderImpl(
             }
         }
 
-        val response = client.newCall(requestBuilder.build()).execute()
+        val call = client.newCall(requestBuilder.build())
+        if (!ExtractorCallRegistry.registerCall(token, call)) {
+            throw IOException("Extraction cancelled")
+        }
+        val response =
+            try {
+                call.execute()
+            } finally {
+                ExtractorCallRegistry.unregisterCall(token, call)
+            }
 
         if (response.code == 429) {
             response.close()

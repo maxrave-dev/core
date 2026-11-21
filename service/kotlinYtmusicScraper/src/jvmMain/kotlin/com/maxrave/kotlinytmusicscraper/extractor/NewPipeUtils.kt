@@ -18,14 +18,26 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.Proxy
 
+/**
+ * One connection pool underneath both extractor downloaders (PipePipe here, BravePipe in
+ * BraveNewPipeUtils). They only ever talk to the same hosts, so separate clients meant
+ * separate pools — and a fresh DNS + TLS handshake for a stage whose predecessor had just
+ * warmed the same host up in another pool. Clients derived with [OkHttpClient.newBuilder]
+ * share the base's connection pool and dispatcher; only the proxy differs.
+ */
+private val extractorBaseClient: OkHttpClient by lazy { com.maxrave.ktorext.SharedOkHttp.baseClient }
+
+internal fun extractorHttpClient(proxy: Proxy?): OkHttpClient = extractorBaseClient.newBuilder().proxy(proxy).build()
+
 class NewPipeDownloaderImpl(
     proxy: Proxy?,
 ) : Downloader() {
-    private val client =
-        OkHttpClient
-            .Builder()
-            .proxy(proxy)
-            .build()
+    @Volatile
+    private var client = extractorHttpClient(proxy)
+
+    fun updateProxy(proxy: Proxy?) {
+        client = extractorHttpClient(proxy)
+    }
 
     @Throws(IOException::class, ReCaptchaException::class)
     override fun execute(request: Request): Response {

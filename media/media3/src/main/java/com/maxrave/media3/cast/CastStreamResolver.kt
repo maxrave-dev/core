@@ -49,22 +49,36 @@ internal class CastStreamResolver(
                 ).lastOrNull() ?: return null
         val mimeType = streamRepository.getNewFormat(videoId).lastOrNull()?.mimeType
         Logger.d(TAG, "Resolved $videoId from fresh extraction")
-        return ResolvedStream(freshUrl, normalizeMimeType(mimeType))
+        return ResolvedStream(freshUrl, normalizeMimeType(mimeType, freshUrl))
     }
 
     suspend fun invalidate(mediaId: String) {
         streamRepository.invalidateFormat(mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO))
     }
 
-    private fun normalizeMimeType(mimeType: String?): String =
-        mimeType
+    private fun normalizeMimeType(
+        mimeType: String?,
+        url: String? = null,
+    ): String {
+        val cleanMime = mimeType?.substringBefore(';')?.trim()?.lowercase().orEmpty()
+        if (cleanMime == HLS_MIME_TYPE ||
+            cleanMime == "application/vnd.apple.mpegurl" ||
+            url?.contains(".m3u8", ignoreCase = true) == true ||
+            url?.contains("manifest/hls", ignoreCase = true) == true
+        ) {
+            return HLS_MIME_TYPE
+        }
+        return mimeType
             ?.substringBefore(';')
             ?.trim()
             ?.takeIf { it.isNotBlank() && it.startsWith("audio/") }
             ?: DEFAULT_AUDIO_MIME_TYPE
+    }
 
     companion object {
         private const val TAG = "CastStreamResolver"
+
+        private const val HLS_MIME_TYPE = "application/x-mpegURL"
 
         /** Default Media Receiver renders song metadata correctly only with an audio MIME type. */
         private const val DEFAULT_AUDIO_MIME_TYPE = "audio/mp4"

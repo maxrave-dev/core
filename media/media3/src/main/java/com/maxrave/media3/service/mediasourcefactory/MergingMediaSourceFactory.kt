@@ -17,9 +17,9 @@ import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.logger.Logger
 import com.maxrave.media3.extension.isFullyCached
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 
 @UnstableApi
 internal class MergingMediaSourceFactory(
@@ -29,7 +29,19 @@ internal class MergingMediaSourceFactory(
     private val dataStoreManager: DataStoreManager,
     private val context: Context,
     private val downloadCache: Cache,
+    coroutineScope: CoroutineScope,
 ) : MediaSource.Factory {
+    @Volatile
+    private var watchVideoEnabled: Boolean = false
+
+    init {
+        coroutineScope.launch(Dispatchers.IO) {
+            dataStoreManager.watchVideoInsteadOfPlayingAudio.collect { value ->
+                watchVideoEnabled = value == DataStoreManager.Values.TRUE
+            }
+        }
+    }
+
     override fun setDrmSessionManagerProvider(drmSessionManagerProvider: DrmSessionManagerProvider): MediaSource.Factory {
         defaultMediaSourceFactory.setDrmSessionManagerProvider(drmSessionManagerProvider)
         liveStreamMediaSourceFactory.setDrmSessionManagerProvider(drmSessionManagerProvider)
@@ -58,7 +70,7 @@ internal class MergingMediaSourceFactory(
             )
         }
         Logger.w("Merging Media Source", mediaItem.mediaMetadata.description.toString())
-        val getVideo = runBlocking(Dispatchers.IO) { dataStoreManager.watchVideoInsteadOfPlayingAudio.first() } == DataStoreManager.Values.TRUE
+        val getVideo = watchVideoEnabled
         Logger.w("Merging Media Source", getVideo.toString())
         if (mediaItem.mediaMetadata.description == MERGING_DATA_TYPE.VIDEO && getVideo && !isVideoUnreachable(mediaItem.mediaId)) {
             val videoItem =

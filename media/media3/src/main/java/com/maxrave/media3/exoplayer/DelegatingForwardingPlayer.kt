@@ -4,11 +4,14 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.TextureView
+import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import com.maxrave.logger.Logger
+import java.util.concurrent.CopyOnWriteArrayList
 
 private const val TAG = "DelegatingForwardingPlayer"
 
@@ -83,6 +86,28 @@ internal class DelegatingForwardingPlayer(
         fun pause()
 
         fun setPlayWhenReady(playWhenReady: Boolean)
+
+        fun stop()
+
+        fun getRepeatMode(): Int
+
+        fun setRepeatMode(repeatMode: Int)
+
+        fun getShuffleModeEnabled(): Boolean
+
+        fun setShuffleModeEnabled(shuffleModeEnabled: Boolean)
+
+        fun getPlaybackParameters(): PlaybackParameters
+
+        fun setPlaybackParameters(playbackParameters: PlaybackParameters)
+
+        fun setPlaybackSpeed(speed: Float)
+
+        fun seekTo(positionMs: Long)
+
+        fun seekBack()
+
+        fun seekForward()
     }
 
     /**
@@ -117,10 +142,10 @@ internal class DelegatingForwardingPlayer(
     // ========== Listener Tracking ==========
 
     // Track all externally registered listeners so we can re-register them after delegate swap
-    private val trackedListeners = mutableListOf<Player.Listener>()
+    private val trackedListeners = CopyOnWriteArrayList<Player.Listener>()
 
     override fun addListener(listener: Player.Listener) {
-        trackedListeners.add(listener)
+        trackedListeners.addIfAbsent(listener)
         super.addListener(listener)
     }
 
@@ -352,6 +377,82 @@ internal class DelegatingForwardingPlayer(
         if (nav != null) nav.setPlayWhenReady(playWhenReady) else super.setPlayWhenReady(playWhenReady)
     }
 
+    override fun stop() {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.stop() else super.stop()
+    }
+
+    override fun getRepeatMode(): Int = playlistNavigationProvider?.getRepeatMode() ?: super.getRepeatMode()
+
+    override fun setRepeatMode(repeatMode: Int) {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.setRepeatMode(repeatMode) else super.setRepeatMode(repeatMode)
+    }
+
+    override fun getShuffleModeEnabled(): Boolean =
+        playlistNavigationProvider?.getShuffleModeEnabled() ?: super.getShuffleModeEnabled()
+
+    override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.setShuffleModeEnabled(shuffleModeEnabled) else super.setShuffleModeEnabled(shuffleModeEnabled)
+    }
+
+    override fun getPlaybackParameters(): PlaybackParameters =
+        playlistNavigationProvider?.getPlaybackParameters() ?: super.getPlaybackParameters()
+
+    override fun setPlaybackParameters(playbackParameters: PlaybackParameters) {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.setPlaybackParameters(playbackParameters) else super.setPlaybackParameters(playbackParameters)
+    }
+
+    override fun setPlaybackSpeed(speed: Float) {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.setPlaybackSpeed(speed) else super.setPlaybackSpeed(speed)
+    }
+
+    override fun seekTo(positionMs: Long) {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.seekTo(positionMs) else super.seekTo(positionMs)
+    }
+
+    override fun seekTo(
+        mediaItemIndex: Int,
+        positionMs: Long,
+    ) {
+        val nav = playlistNavigationProvider
+        if (nav != null && (mediaItemIndex == C.INDEX_UNSET || mediaItemIndex == super.getCurrentMediaItemIndex())) {
+            // DelegatingForwardingPlayer exposes ExoPlayer's 1-window Timeline (index 0); notification/lockscreen
+            // scrubber drags land here with mediaItemIndex == 0 regardless of adapter playlist position.
+            nav.seekTo(positionMs)
+        } else {
+            super.seekTo(mediaItemIndex, positionMs)
+        }
+    }
+
+    override fun seekToDefaultPosition() {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.seekTo(0L) else super.seekToDefaultPosition()
+    }
+
+    override fun seekToDefaultPosition(mediaItemIndex: Int) {
+        val nav = playlistNavigationProvider
+        if (nav != null && (mediaItemIndex == C.INDEX_UNSET || mediaItemIndex == super.getCurrentMediaItemIndex())) {
+            nav.seekTo(0L)
+        } else {
+            super.seekToDefaultPosition(mediaItemIndex)
+        }
+    }
+
+    override fun seekBack() {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.seekBack() else super.seekBack()
+    }
+
+    override fun seekForward() {
+        val nav = playlistNavigationProvider
+        if (nav != null) nav.seekForward() else super.seekForward()
+    }
+
     // NOTE: Do NOT override getMediaItemCount() or getCurrentMediaItemIndex() here.
     // These must remain consistent with the underlying ExoPlayer's Timeline (1 item, index 0).
     // Media3's PlayerWrapper.createPositionInfo() validates that currentMediaItemIndex < timeline.windowCount.
@@ -448,6 +549,41 @@ internal class DelegatingForwardingPlayer(
                 listener.onPlaybackStateChanged(state)
             } catch (e: Exception) {
                 Logger.w(TAG, "Error notifying listener about media item change: ${e.message}")
+            }
+        }
+    }
+
+    fun notifyAvailableCommandsChanged() {
+        val commands = getAvailableCommands()
+        trackedListeners.forEach { listener ->
+            try {
+                listener.onAvailableCommandsChanged(commands)
+            } catch (e: Exception) {
+                Logger.w(TAG, "Error notifying listener about available commands: ${e.message}")
+            }
+        }
+    }
+
+    fun notifyRepeatModeChanged(repeatMode: Int) {
+        val commands = getAvailableCommands()
+        trackedListeners.forEach { listener ->
+            try {
+                listener.onRepeatModeChanged(repeatMode)
+                listener.onAvailableCommandsChanged(commands)
+            } catch (e: Exception) {
+                Logger.w(TAG, "Error notifying listener about repeat mode: ${e.message}")
+            }
+        }
+    }
+
+    fun notifyShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+        val commands = getAvailableCommands()
+        trackedListeners.forEach { listener ->
+            try {
+                listener.onShuffleModeEnabledChanged(shuffleModeEnabled)
+                listener.onAvailableCommandsChanged(commands)
+            } catch (e: Exception) {
+                Logger.w(TAG, "Error notifying listener about shuffle mode: ${e.message}")
             }
         }
     }

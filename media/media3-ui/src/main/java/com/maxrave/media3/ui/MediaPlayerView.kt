@@ -234,7 +234,7 @@ fun MediaPlayerView(
 fun rememberVideoAspectRatio(playerName: String): Float? {
     val player: Player = koinInject(named(playerName))
     val size = rememberPresentationState(player).videoSizeDp ?: return null
-    return size.width / size.height
+    return if (size.width > 0f && size.height > 0f) size.width / size.height else null
 }
 
 @Composable
@@ -268,6 +268,10 @@ fun MediaPlayerViewWithSubtitle(
 
     var showArtwork by rememberSaveable {
         mutableStateOf(false)
+    }
+
+    var isPlayerPlaying by remember {
+        mutableStateOf(player.isPlaying)
     }
 
     var artworkUri by rememberSaveable {
@@ -351,28 +355,18 @@ fun MediaPlayerViewWithSubtitle(
 
                 override fun onTracksChanged(tracks: Tracks) {
                     super.onTracksChanged(tracks)
-                    if (!tracks.groups.isEmpty()) {
-                        for (arrayIndex in 0 until tracks.groups.size) {
-                            var done = false
-                            for (groupIndex in 0 until tracks.groups[arrayIndex].length) {
-                                val sampleMimeType = tracks.groups[arrayIndex].getTrackFormat(groupIndex).sampleMimeType
-                                if (sampleMimeType != null && sampleMimeType.contains("video")) {
-                                    showArtwork = false
-                                    done = true
-                                    break
-                                } else {
-                                    showArtwork = true
-                                }
-                            }
-                            if (done) {
-                                break
+                    val hasVideoTrack =
+                        tracks.groups.any { group ->
+                            (0 until group.length).any { idx ->
+                                group.getTrackFormat(idx).sampleMimeType?.contains("video") == true
                             }
                         }
-                    }
+                    showArtwork = !hasVideoTrack
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     super.onIsPlayingChanged(isPlaying)
+                    isPlayerPlaying = isPlaying
                     shouldEnterPipMode = isPlaying && shouldPip
                 }
             }
@@ -396,6 +390,7 @@ fun MediaPlayerViewWithSubtitle(
     LaunchedEffect(player) {
         // Same reason as the aspect ratio below: a view composed mid-song (Now Playing reopened,
         // fullscreen) hears no track or item change, so start from what the player already has.
+        isPlayerPlaying = player.isPlaying
         playerListener.onTracksChanged(player.currentTracks)
         artworkUri = player.currentMediaItem?.mediaMetadata?.artworkUri?.toString()
         player.addListener(playerListener)
@@ -446,7 +441,9 @@ fun MediaPlayerViewWithSubtitle(
                 ),
         contentAlignment = Alignment.Center,
     ) {
-        KeepScreenOn()
+        if (isPlayerPlaying) {
+            KeepScreenOn()
+        }
         Crossfade(showArtwork) {
             if (it) {
                 AsyncImage(
@@ -478,7 +475,12 @@ fun MediaPlayerViewWithSubtitle(
                             // the Full build's session player is a CastPlayer, which only reports a
                             // size that differs from its last one, so a view composed mid-video
                             // (Now Playing reopened after fullscreen) never heard it and sat at 16:9.
-                            .aspectRatio(presentationState.videoSizeDp?.let { it.width / it.height } ?: 16f / 9)
+                            .aspectRatio(
+                                presentationState.videoSizeDp
+                                    ?.takeIf { size -> size.width > 0f && size.height > 0f }
+                                    ?.let { size -> size.width / size.height }
+                                    ?: (16f / 9f),
+                            )
                             .align(Alignment.Center),
                 )
 

@@ -55,6 +55,13 @@ class LrclibSelectionTest {
     }
 
     @Test
+    fun durationZeroAndNegativeTreatedAsUnknown() {
+        val song = record(1, 200f, hasWordSync = false)
+        assertEquals(song, selectLrclibLyricsRecord(listOf(song), 0))
+        assertEquals(song, selectLrclibLyricsRecord(listOf(song), -1))
+    }
+
+    @Test
     fun emptyResultsStillReturnNull() {
         assertNull(selectLrclibLyricsRecord(emptyList(), null))
         assertNull(selectLrclibLyricsRecord(emptyList(), 137))
@@ -73,10 +80,25 @@ class LrclibSelectionTest {
         assertEquals(true, Json.decodeFromString<LrclibObject>(source).hasWordSync)
     }
 
+    @Test
+    fun filtersOutInstrumentalAndEmptyLyricsAndPrefersSyncedOverPlain() {
+        val instrumental = record(1, 137f, instrumental = true)
+        val blankBoth = record(2, 137f, plainLyrics = "   ", syncedLyrics = null)
+        val plainOnly = record(3, 137f, plainLyrics = "Plain words", syncedLyrics = null)
+        val synced = record(4, 138f, plainLyrics = "Plain", syncedLyrics = "[00:01.00]Synced")
+
+        assertEquals(synced, selectLrclibLyricsRecord(listOf(instrumental, blankBoth, plainOnly, synced), 137))
+        assertEquals(plainOnly, selectLrclibLyricsRecord(listOf(instrumental, blankBoth, plainOnly), 137))
+        assertNull(selectLrclibLyricsRecord(listOf(instrumental, blankBoth), 137))
+    }
+
     private fun record(
         id: Int,
         duration: Float,
         hasWordSync: Boolean = false,
+        instrumental: Boolean = false,
+        plainLyrics: String? = "Example",
+        syncedLyrics: String? = "[00:01.00]Example",
     ): LrclibObject =
         LrclibObject(
             id = id,
@@ -85,9 +107,9 @@ class LrclibSelectionTest {
             artistName = "Example",
             albumName = "Example",
             duration = duration,
-            instrumental = false,
-            plainLyrics = "Example",
-            syncedLyrics = "[00:01.00]Example",
+            instrumental = instrumental,
+            plainLyrics = plainLyrics,
+            syncedLyrics = syncedLyrics,
             hasWordSync = hasWordSync,
         )
 }

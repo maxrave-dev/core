@@ -291,8 +291,16 @@ object ITAG {
     /** H.264 360p and AAC muxed into ONE progressive stream, for the single-URL (muxed) path. */
     const val MUXED_360P: Int = 18
 
+    /** AAC 128 kbps and 48 kbps, plus Opus 70 kbps — common fallback itags on Kids/restricted tracks. */
+    const val AUDIO_AAC_LOW: Int = 139
+    const val AUDIO_AAC_MEDIUM: Int = 140
+    const val AUDIO_OPUS_ALT: Int = 250
+
     /** Every adaptive audio itag the app knows how to play. */
     val AUDIO: Set<Int> = setOf(AUDIO_OPUS_LOW, AUDIO_OPUS_MEDIUM, AUDIO_OPUS_HIGH, AUDIO_AAC_HIGH)
+
+    /** Broad playable set for extractors so fallback audio (e.g. itag 140 M4A) is not discarded. */
+    val AUDIO_PLAYABLE: Set<Int> = AUDIO + setOf(AUDIO_AAC_LOW, AUDIO_AAC_MEDIUM, AUDIO_OPUS_ALT)
 
     /** Every adaptive video itag the app knows how to play. */
     val VIDEO: Set<Int> = setOf(VIDEO_1080P, VIDEO_720P, VIDEO_360P)

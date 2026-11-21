@@ -7,6 +7,7 @@ import dev.maxrave.pipepipe.extractor.NewPipe
 import dev.maxrave.pipepipe.extractor.ServiceList
 import dev.maxrave.pipepipe.extractor.services.youtube.YoutubeApiDecoder
 import dev.maxrave.pipepipe.extractor.stream.StreamInfo
+import io.ktor.client.engine.ProxyConfig
 import org.schabi.newpipe.extractor.NewPipe as BraveNewPipe
 import org.schabi.newpipe.extractor.ServiceList as BraveServiceList
 import org.schabi.newpipe.extractor.stream.StreamInfo as BraveStreamInfo
@@ -19,6 +20,7 @@ actual class Extractor {
     private var newPipeDownloader = NewPipeDownloaderImpl(proxy = null)
     private var braveNewPipeDownloader = BraveNewPipeDownloaderImpl(proxy = null)
     private val faradayDecoder = FaradayJsDecoder()
+    private val pipePipeLock = Any()
 
     actual fun init() {
         NewPipe.init(newPipeDownloader)
@@ -26,55 +28,90 @@ actual class Extractor {
         YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
     }
 
+    actual fun setProxy(proxy: ProxyConfig?) {
+        newPipeDownloader.updateProxy(proxy)
+        braveNewPipeDownloader.updateProxy(proxy)
+        faradayDecoder.setProxy(proxy)
+    }
+
+    actual fun warmUp() = faradayDecoder.warmUp()
+
+    actual fun onStreamRejected(videoId: String) {}
+
+    actual fun clearHeadTrust() {}
+
+    actual fun isStreamUrlReachable(url: String): Boolean = com.maxrave.kotlinytmusicscraper.extractor.isStreamUrlReachable(url)
+
     actual fun logIn(cookie: String?) {
         ServiceList.YouTube.tokens = cookie ?: ""
     }
 
-    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
-        // Three attempts, kept separate on purpose. PipePipe's own local-then-server fallback lives
-        // inside a single StreamInfo call and only fires when the local decoder THROWS — but the
-        // failure that actually happens is a stale player table, where the signature is well-formed
-        // and merely rejected by the CDN. Nothing throws, so the server tier is never asked, and a
-        // 403 used to skip straight to BravePipe. Driving the two as separate attempts is what
-        // stops that jump.
+    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> = newPipePlayer(videoId) { false }
+
+    actual fun newPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> = newPipePlayer(videoId, extractionId, requireVideo = true, isCancelled)
+
+    actual fun cancelExtraction(extractionId: Long) {}
+
+    actual fun newPipePlayer(
+        videoId: String,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> = newPipePlayer(videoId, 0L, requireVideo = true, isCancelled)
+
+    actual fun newPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        requireVideo: Boolean,
+        isCancelled: () -> Boolean,
+    ): List<Pair<Int, String>> {
+        var audioOnlyResult: List<Pair<Int, String>>? = null
+        val collectAudioOnly: (List<Pair<Int, String>>) -> Unit = { streams ->
+            if (audioOnlyResult == null) audioOnlyResult = streams
+        }
+
+        if (isCancelled()) return emptyList()
 
         // Tier 1 — ciphers solved locally.
-        // Re-registered every time: PipePipe drops the local decoder for good the first time it
-        // throws, and the getter is package-private so its state cannot be read from here. Setting
-        // it again turns "disabled forever" into "skipped for one track".
-        YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
-        pipePipeStreams(videoId, LOCAL_TIER)?.let { return it }
+        pipePipeStreams(videoId, LOCAL_TIER, useLocalDecoder = true, requireVideo, collectAudioOnly)?.let { return it }
+
+        if (isCancelled()) return emptyList()
 
         // Tier 2 — same extractor with no local decoder at all, so every challenge is solved at
         // api.pipepipe.dev. This is the tier a 403 from tier 1 must reach.
-        //
-        // Clearing it is what `setLocalDecoder(null)` does: both call sites read the field and
-        // null-check it before use — `decodeBatch` and `getPlayerMetadata` each branch straight to
-        // the API path when it is absent (verified in the bytecode of the pinned f8982ca9e7 jar).
-        // PipePipe's own `disableLocalDecoder` does exactly this but is private, which is why it
-        // cannot simply be called from here.
-        YoutubeApiDecoder.setLocalDecoder(null)
-        pipePipeStreams(videoId, REMOTE_TIER)?.let { return it }
+        pipePipeStreams(videoId, REMOTE_TIER, useLocalDecoder = false, requireVideo, collectAudioOnly)?.let { return it }
+
+        if (isCancelled()) return emptyList()
 
         // Tier 3 — a different extractor entirely.
-        return braveStreams(videoId)
+        val braveResult = braveStreams(videoId)
+        if (braveResult.isNotEmpty()) return braveResult
+        // No tier produced a complete result; an audio-only one still plays.
+        return audioOnlyResult?.also {
+            ExtractSource.record(videoId, "PipePipe · audio-only")
+            Logger.d(TAG, "extract source=PipePipe audio-only fallback itags=${it.map { pair -> pair.first }} for $videoId")
+        } ?: emptyList()
     }
 
     actual fun liveHlsUrl(videoId: String): String? {
         // The same three tiers as newPipePlayer, in the same order and for the same reasons.
-        YoutubeApiDecoder.setLocalDecoder(faradayDecoder)
-        pipePipeLiveHlsUrl(videoId, LOCAL_TIER)?.let { return it }
-        YoutubeApiDecoder.setLocalDecoder(null)
-        pipePipeLiveHlsUrl(videoId, REMOTE_TIER)?.let { return it }
+        pipePipeLiveHlsUrl(videoId, LOCAL_TIER, useLocalDecoder = true)?.let { return it }
+        pipePipeLiveHlsUrl(videoId, REMOTE_TIER, useLocalDecoder = false)?.let { return it }
         return braveLiveHlsUrl(videoId)
     }
 
     private fun pipePipeLiveHlsUrl(
         videoId: String,
         tier: String,
+        useLocalDecoder: Boolean,
     ): String? =
         runCatching {
-            StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId").hlsUrl
+            synchronized(pipePipeLock) {
+                YoutubeApiDecoder.setLocalDecoder(if (useLocalDecoder) faradayDecoder else null)
+                StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId").hlsUrl
+            }
         }.onFailure {
             Logger.w(TAG, "PipePipe[$tier] live extraction failed for $videoId: ${it.message}")
         }.getOrNull()
@@ -97,16 +134,22 @@ actual class Extractor {
             }
 
     /**
-     * One PipePipe extraction with whatever decoder is currently registered. Returns null when the
+     * One PipePipe extraction with whatever decoder is requested. Returns null when the
      * attempt produced nothing usable, so the caller moves on to the next tier.
      */
     private fun pipePipeStreams(
         videoId: String,
         tier: String,
+        useLocalDecoder: Boolean,
+        requireVideo: Boolean = true,
+        onAudioOnlyResult: (List<Pair<Int, String>>) -> Unit = {},
     ): List<Pair<Int, String>>? {
         try {
             val streamInfo =
-                StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
+                synchronized(pipePipeLock) {
+                    YoutubeApiDecoder.setLocalDecoder(if (useLocalDecoder) faradayDecoder else null)
+                    StreamInfo.getInfo(ServiceList.YouTube, "https://music.youtube.com/watch?v=$videoId")
+                }
             val streamsList = streamInfo.audioStreams + streamInfo.videoStreams + streamInfo.videoOnlyStreams
             val temp =
                 streamsList
@@ -116,16 +159,22 @@ actual class Extractor {
             val manifest = streamInfo.dashMpdUrl.takeIf { !it.isNullOrEmpty() } ?: streamInfo.hlsUrl
             if (!manifest.isNullOrEmpty()) temp.add(96 to manifest)
             val pipeResult = temp.toList()
-            if (!pipeResult.hasRequiredItags()) {
+            val complete = if (requireVideo) pipeResult.hasRequiredItags() else pipeResult.hasAudioItag()
+            if (!complete && !pipeResult.hasAudioItag()) {
                 Logger.d(TAG, "PipePipe[$tier] missing required itags for $videoId (got=${pipeResult.map { it.first }})")
                 return null
             }
-            if (!pipeResult.headCheckRandomStream()) {
-                Logger.d(TAG, "PipePipe[$tier] stream URL HEAD check failed (non 2xx) for $videoId")
-                // A rejected URL is the one symptom of a stale player table: the signature is
-                // well-formed and still wrong, so nothing threw on the way here. Only the on-device
-                // table can go stale, so only that tier is worth invalidating.
-                if (tier == LOCAL_TIER) faradayDecoder.invalidate()
+            // No HEAD probe on a random URL before accepting the tier: it taxed every
+            // extraction with a serial round-trip, and one dead URL (or a failed HEAD)
+            // discarded a result whose chosen URL might be perfectly fine. A deciphered
+            // URL that turns out dead is found by the player's own load now, which answers
+            // a 403 by dropping the stored format and re-resolving — the stale local player
+            // table surfaces that way too, instead of being sniffed out here.
+            if (!complete) {
+                // Audio with no video at all: playable (the player response's audio formats
+                // pair with these URLs), but a complete result from a later tier is better,
+                // so this goes to the caller as a fallback and the tiers keep going.
+                onAudioOnlyResult(pipeResult)
                 return null
             }
             val label = if (tier == LOCAL_TIER) faradayDecoder.lastOutcomeLabel else REMOTE_TIER

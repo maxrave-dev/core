@@ -39,6 +39,7 @@ import io.ktor.client.engine.ProxyConfig
 import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.plugins.HttpRedirect
 import io.ktor.client.plugins.HttpResponseValidator
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
@@ -105,7 +106,10 @@ class Ytmusic {
             explicitNulls = false
             encodeDefaults = true
         }
+    @Volatile
     private var httpClient = createClient()
+
+    @Volatile
     private var downloadClient: HttpClient? = null
 
     private fun getDownloadClient(): HttpClient =
@@ -114,6 +118,12 @@ class Ytmusic {
             install(HttpRedirect) {
                 checkHttpMethod = false
                 allowHttpsDowngrade = true
+            }
+            val activeProxy = proxy
+            if (activeProxy != null) {
+                engine {
+                    proxy = activeProxy
+                }
             }
             // Disable logging for download - significantly improves performance
             // Note: Don't install Logging plugin for download client
@@ -129,10 +139,14 @@ class Ytmusic {
     var visitorData: String? = null
     var dataSyncId: String? = null
     private var poTokenChallengeRequestKey = "O43z0dpjhgX20SCx4KAo"
-    var cookie: String? = null
+
+    @Volatile
+    private var cookieState: Pair<String?, Map<String, String>> = null to emptyMap()
+
+    var cookie: String?
+        get() = cookieState.first
         set(value) {
-            field = value
-            cookieMap = if (value == null) emptyMap() else parseCookieString(value)
+            cookieState = value to (if (value == null) emptyMap() else parseCookieString(value))
             extractor.logIn(value)
         }
 
@@ -150,14 +164,14 @@ class Ytmusic {
     var tidalClientId: String = ""
     var tidalClientSecret: String = ""
 
-    private var cookieMap = emptyMap<String, String>()
-
+    @Volatile
     var proxy: ProxyConfig? = null
         set(value) {
             if (field == value) return
             field = value
-            httpClient.close()
             httpClient = createClient()
+            downloadClient = null
+            extractor.setProxy(value)
         }
 
     private val extractor = Extractor()
@@ -191,7 +205,12 @@ class Ytmusic {
             }
             install(Logging) {
                 logger = io.ktor.client.plugins.logging.Logger.DEFAULT
-                level = LogLevel.ALL
+                level = if (Logger.debugLoggingEnabled) LogLevel.ALL else LogLevel.NONE
+            }
+            install(HttpTimeout) {
+                connectTimeoutMillis = 15_000
+                requestTimeoutMillis = 30_000
+                socketTimeoutMillis = 30_000
             }
             install(ContentNegotiation) {
                 protobuf()
@@ -214,9 +233,10 @@ class Ytmusic {
                 deflate(0.8F)
             }
 
-            if (proxy != null) {
+            val activeProxy = proxy
+            if (activeProxy != null) {
                 engine {
-                    proxy = this@Ytmusic.proxy
+                    proxy = activeProxy
                 }
             }
 
@@ -248,12 +268,13 @@ class Ytmusic {
                 append("Referer", client.referer)
             }
             if (setLogin) {
-                val cookie = customCookie ?: this@Ytmusic.cookie
-                cookie?.let { cookie ->
-                    append("Cookie", cookie)
-                    if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) return@let
-                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-                    val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+                val (storedCookie, storedMap) = cookieState
+                val activeCookie = customCookie ?: storedCookie
+                activeCookie?.let { cookieValue ->
+                    append("Cookie", cookieValue)
+                    val activeMap = if (customCookie != null) parseCookieString(cookieValue) else storedMap
+                    val sapisidCookie = activeMap["SAPISID"] ?: activeMap["__Secure-3PAPISID"] ?: return@let
+                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
                     val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
                     Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
                     append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
@@ -265,17 +286,39 @@ class Ytmusic {
     }
 
     @OptIn(ExperimentalTime::class)
-    internal fun getAuthorizationHeader(): String? =
-        cookie?.let { cookie ->
-            if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) null
-            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-            val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+    internal fun getAuthorizationHeader(): String? {
+        val (storedCookie, storedMap) = cookieState
+        return storedCookie?.let { _ ->
+            val sapisidCookie = storedMap["SAPISID"] ?: storedMap["__Secure-3PAPISID"] ?: return@let null
+            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
             val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
             Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
             "SAPISIDHASH ${currentTime}_$sapisidHash"
         }
+    }
 
-    fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
+    fun getNewPipePlayer(
+        videoId: String,
+        isCancelled: () -> Boolean = { false },
+    ): List<Pair<Int, String>> = extractor.newPipePlayer(videoId, isCancelled)
+
+    fun getNewPipePlayer(
+        videoId: String,
+        extractionId: Long,
+        isCancelled: () -> Boolean = { false },
+        requireVideo: Boolean = true,
+    ): List<Pair<Int, String>> = extractor.newPipePlayer(videoId, extractionId, requireVideo, isCancelled)
+
+    fun cancelExtraction(extractionId: Long) = extractor.cancelExtraction(extractionId)
+
+    /** Warm the extractor's local decoder ahead of the first play; see [Extractor.warmUp]. */
+    fun warmUpExtractor() = extractor.warmUp()
+
+    fun onStreamRejected(videoId: String) = extractor.onStreamRejected(videoId)
+
+    fun clearExtractorTrust() = extractor.clearHeadTrust()
+
+    fun isStreamUrlReachable(url: String): Boolean = extractor.isStreamUrlReachable(url)
 
     fun getLiveHlsUrl(videoId: String): String? = extractor.liveHlsUrl(videoId)
 
@@ -472,8 +515,9 @@ class Ytmusic {
         playlistId: String?,
         cpn: String?,
         signatureTimestamp: Int? = null,
+        setLogin: Boolean = true,
     ) = httpClient.post("player") {
-        ytClient(client, setLogin = true)
+        ytClient(client, setLogin = setLogin)
         setBody(
             PlayerBody(
                 context =

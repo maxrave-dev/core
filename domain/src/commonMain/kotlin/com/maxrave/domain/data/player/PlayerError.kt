@@ -7,4 +7,5 @@ data class PlayerError(
     val errorCode: Int,
     val errorCodeName: String,
     val message: String?,
+    val recoverable: Boolean = true,
 )

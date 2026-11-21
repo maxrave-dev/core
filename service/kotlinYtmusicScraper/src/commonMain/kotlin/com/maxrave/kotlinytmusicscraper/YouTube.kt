@@ -5,6 +5,7 @@ import com.maxrave.common.ITAG
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
+import com.maxrave.kotlinytmusicscraper.extractor.ExtractTiming
 import com.maxrave.kotlinytmusicscraper.extractor.contentLengthOf
 import com.maxrave.kotlinytmusicscraper.extractor.orderByAudioTrack
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
@@ -31,7 +32,10 @@ import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.YTItem
 import com.maxrave.kotlinytmusicscraper.models.YTItemType
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.IOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5_SIMPLY
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB_REMIX
 import com.maxrave.kotlinytmusicscraper.models.YouTubeLocale
@@ -96,21 +100,28 @@ import com.maxrave.logger.Logger
 import com.mohamedrejeb.ksoup.html.parser.KsoupHtmlHandler
 import com.mohamedrejeb.ksoup.html.parser.KsoupHtmlParser
 import io.ktor.client.call.body
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.engine.ProxyBuilder
 import io.ktor.client.engine.http
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
@@ -126,12 +137,17 @@ import okio.Path
 import kotlin.jvm.JvmInline
 import kotlin.math.abs
 import kotlin.math.round
+import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
 private const val TAG = "YouTubeScraper"
+
+/** Cap on one Innertube player request: a hung POST falls to the alternate client inside the
+ * resolver budget instead of eating the whole budget while the resolver waits on it. */
+private const val PLAYER_REQUEST_TIMEOUT_MS = 10_000L
 
 /**
  * Special thanks to [z-huang/InnerTune](https://github.com/z-huang/InnerTune)
@@ -144,6 +160,7 @@ private const val TAG = "YouTubeScraper"
 
 class YouTube {
     private val ytMusic = Ytmusic()
+    private val directTempRejectedIds = kotlinx.coroutines.flow.MutableStateFlow<Set<String>>(emptySet())
 
     private val tidalTokenMutex = Mutex()
     private var tidalAccessToken: String? = null
@@ -707,7 +724,9 @@ class YouTube {
                     ).body<BrowseResponse>()
             var continuation = initialResponse.getPlaylistContinuation()
             Logger.d(TAG, "YouTube: getSuggestionsTrackForPlaylist: $continuation")
-            while (continuation != null) {
+            // A token seen twice would loop forever.
+            val seenContinuations = mutableSetOf<String>()
+            while (continuation != null && seenContinuations.add(continuation)) {
                 val continuationResponse =
                     ytMusic
                         .browse(
@@ -734,7 +753,9 @@ class YouTube {
                 response.fromPlaylistToTrack(),
             )
             var continuation = response.getPlaylistContinuation()
-            while (continuation != null) {
+            // A token seen twice would loop forever.
+            val seenContinuations = mutableSetOf<String>()
+            while (continuation != null && seenContinuations.add(continuation)) {
                 val continuationResponse =
                     ytMusic
                         .browse(
@@ -1375,6 +1396,7 @@ class YouTube {
         videoId: String,
         tempRes: PlayerResponse,
         preferredAudioLanguage: String? = null,
+        prefetchedStreams: List<Pair<Int, String>>? = null,
     ): PlayerResponse? {
         val listUrlSig = mutableListOf<String>()
         var decodedSigResponse: PlayerResponse?
@@ -1385,7 +1407,10 @@ class YouTube {
         } else {
             sigResponse = tempRes
         }
-        val streamsList = ytMusic.getNewPipePlayer(videoId).orderByAudioTrack(preferredAudioLanguage)
+        // [prefetchedStreams] is the same extraction [player] starts alongside its player
+        // request; without it (any other caller) the extraction happens here, as before.
+        val streamsList =
+            (prefetchedStreams ?: ytMusic.getNewPipePlayer(videoId)).orderByAudioTrack(preferredAudioLanguage)
         if (streamsList.isEmpty()) return null
 
         decodedSigResponse =
@@ -1468,9 +1493,13 @@ class YouTube {
         listUrlSig.forEach {
             Logger.d(TAG, "YouTube NewPipe URL $it")
         }
-        val randomUrl = listUrlSig.randomOrNull() ?: return null
-        if (listUrlSig.isNotEmpty() && !is403Url(randomUrl)) {
-            Logger.d(TAG, "YouTube NewPipe Found URL $randomUrl")
+        // No random-URL HEAD probe on the way out: it taxed every fresh resolution with a
+        // serial round-trip, and one dead URL among formats nobody picked (or any network
+        // error during the HEAD, which is403Url reads as a 403) threw the whole resolution
+        // away. A URL that turns out dead is found by the player's own load instead, which
+        // already answers a 403 by dropping the stored format and re-resolving.
+        if (listUrlSig.isNotEmpty()) {
+            Logger.d(TAG, "YouTube NewPipe Found URL")
             return decodedSigResponse
         } else {
             Logger.d(TAG, "YouTube NewPipe No URL Found")
@@ -1540,11 +1569,134 @@ class YouTube {
         )
 
     @OptIn(ExperimentalTime::class)
+    /**
+     * One Innertube player request for [client], with the fexp fix-up the response's playback
+     * tracking needs. The fix-up only reads fields every client returns, so it applies to
+     * whichever client's response ends up being used.
+     */
+    private suspend fun fetchPlayerResponse(
+        client: YouTubeClient,
+        videoId: String,
+        playlistId: String?,
+        cpn: String,
+        signatureTimestamp: Int,
+        setLogin: Boolean = true,
+    ): PlayerResponse =
+        withTimeoutOrNull(PLAYER_REQUEST_TIMEOUT_MS) {
+            ytMusic
+                .player(client, videoId, playlistId, cpn, signatureTimestamp, setLogin = setLogin)
+                .body<PlayerResponse>()
+                .let {
+                    val fexp =
+                        it.streamingData
+                            ?.serverAbrStreamingUrl
+                            ?.toKmpUri()
+                            ?.getQueryParameter("fexp")
+                    val playbackTracking = it.playbackTracking
+                    it.copy(
+                        playbackTracking =
+                            playbackTracking?.copy(
+                                atrUrl =
+                                    playbackTracking.atrUrl?.copy(
+                                        baseUrl =
+                                            playbackTracking.atrUrl.baseUrl
+                                                ?.toKmpUri()
+                                                ?.buildUpon()
+                                                ?.apply {
+                                                    if (fexp != null) {
+                                                        appendQueryParameter("fexp", fexp)
+                                                    }
+                                                }?.build()
+                                                ?.toString(),
+                                    ),
+                                videostatsPlaybackUrl =
+                                    playbackTracking.videostatsPlaybackUrl?.copy(
+                                        baseUrl =
+                                            playbackTracking.videostatsPlaybackUrl.baseUrl
+                                                ?.toKmpUri()
+                                                ?.buildUpon()
+                                                ?.apply {
+                                                    if (fexp != null) {
+                                                        appendQueryParameter("fexp", fexp)
+                                                    }
+                                                }?.build()
+                                                ?.toString(),
+                                    ),
+                                videostatsWatchtimeUrl =
+                                    playbackTracking.videostatsWatchtimeUrl?.copy(
+                                        baseUrl =
+                                            playbackTracking.videostatsWatchtimeUrl.baseUrl
+                                                ?.toKmpUri()
+                                                ?.buildUpon()
+                                                ?.apply {
+                                                    if (fexp != null) {
+                                                        appendQueryParameter("fexp", fexp)
+                                                    }
+                                                }?.build()
+                                                ?.toString(),
+                                    ),
+                            ),
+                    )
+                }
+        } ?: throw Exception("Player request timed out after $PLAYER_REQUEST_TIMEOUT_MS ms")
+
+    /** Types a player request that failed on both clients: an HTTP answer means YouTube refused; no answer means the network did. */
+    private fun playerRequestFailure(
+        videoId: String,
+        error: Exception,
+    ): StreamResolutionException =
+        if (error is ResponseException) {
+            StreamResolutionException(
+                StreamResolutionException.Reason.REFUSED_BY_YOUTUBE,
+                "YouTube refused the player request for $videoId (HTTP ${error.response.status.value})",
+                error,
+            )
+        } else {
+            StreamResolutionException(
+                StreamResolutionException.Reason.NO_NETWORK,
+                "The player request for $videoId never got an answer (${error::class.simpleName}: ${error.message})",
+                error,
+            )
+        }
+
+    /** Types a resolution that produced no stream URL, keeping the refusal reason YouTube gave. */
+    private fun noStreamFailure(
+        videoId: String,
+        tempRes: PlayerResponse,
+        extractorProducedStreams: Boolean = false,
+    ): StreamResolutionException {
+        val playability = tempRes.playabilityStatus
+        if (playability.status == "OK") {
+            return StreamResolutionException(
+                // When YouTube itself returned OK but extractors produced zero streams (timeout,
+                // transient 429/connection failure, or pool starvation), treat it as recoverable
+                // instead of bricking playback with UnrecoverableStreamException.
+                if (extractorProducedStreams) StreamResolutionException.Reason.UNAVAILABLE else StreamResolutionException.Reason.NO_NETWORK,
+                "No stream URL found for $videoId",
+            )
+        }
+        val reasonText = playability.reason?.let { ": $it" } ?: ""
+        // A premiere or scheduled live that has not started reports LIVE_STREAM_OFFLINE; that
+        // is "not yet", not a refusal.
+        return if (playability.status == "LIVE_STREAM_OFFLINE") {
+            StreamResolutionException(
+                StreamResolutionException.Reason.UNAVAILABLE,
+                "The stream for $videoId has not started yet$reasonText",
+            )
+        } else {
+            StreamResolutionException(
+                StreamResolutionException.Reason.REFUSED_BY_YOUTUBE,
+                "YouTube refused $videoId (${playability.status})$reasonText",
+            )
+        }
+    }
+
     suspend fun player(
         videoId: String,
         playlistId: String? = null,
         noLogIn: Boolean = false,
         preferredAudioLanguage: String? = null,
+        isVideo: Boolean = true,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
             val cpn =
@@ -1559,98 +1711,258 @@ class YouTube {
                     }.joinToString("")
 
             var decodedSigResponse: PlayerResponse? = null
-            val tempRes =
-                ytMusic
-                    .player(
-                        WEB_REMIX,
-                        videoId,
-                        playlistId,
-                        cpn,
-                        signatureTimestamp =
-                            run {
-                                val today = Clock.System.todayIn(TimeZone.UTC)
-                                val epoch =
-                                    Instant
-                                        .fromEpochSeconds(0)
-                                        .toLocalDateTime(TimeZone.UTC)
-                                        .date
-                                epoch.daysUntil(today)
-                            },
-                    ).body<PlayerResponse>()
-                    .let {
-                        val fexp =
-                            it.streamingData
-                                ?.serverAbrStreamingUrl
-                                ?.toKmpUri()
-                                ?.getQueryParameter("fexp")
-                        val playbackTracking = it.playbackTracking
-                        it.copy(
-                            playbackTracking =
-                                playbackTracking?.copy(
-                                    atrUrl =
-                                        playbackTracking.atrUrl?.copy(
-                                            baseUrl =
-                                                playbackTracking.atrUrl.baseUrl
-                                                    ?.toKmpUri()
-                                                    ?.buildUpon()
-                                                    ?.apply {
-                                                        if (fexp != null) {
-                                                            appendQueryParameter("fexp", fexp)
-                                                        }
-                                                    }?.build()
-                                                    ?.toString(),
-                                        ),
-                                    videostatsPlaybackUrl =
-                                        playbackTracking.videostatsPlaybackUrl?.copy(
-                                            baseUrl =
-                                                playbackTracking.videostatsPlaybackUrl.baseUrl
-                                                    ?.toKmpUri()
-                                                    ?.buildUpon()
-                                                    ?.apply {
-                                                        if (fexp != null) {
-                                                            appendQueryParameter("fexp", fexp)
-                                                        }
-                                                    }?.build()
-                                                    ?.toString(),
-                                        ),
-                                    videostatsWatchtimeUrl =
-                                        playbackTracking.videostatsWatchtimeUrl?.copy(
-                                            baseUrl =
-                                                playbackTracking.videostatsWatchtimeUrl.baseUrl
-                                                    ?.toKmpUri()
-                                                    ?.buildUpon()
-                                                    ?.apply {
-                                                        if (fexp != null) {
-                                                            appendQueryParameter("fexp", fexp)
-                                                        }
-                                                    }?.build()
-                                                    ?.toString(),
-                                        ),
-                                ),
+            val signatureTimestamp =
+                run {
+                    val today = Clock.System.todayIn(TimeZone.UTC)
+                    val epoch =
+                        Instant
+                            .fromEpochSeconds(0)
+                            .toLocalDateTime(TimeZone.UTC)
+                            .date
+                    epoch.daysUntil(today)
+                }
+            // PlayTiming marks: when the player response landed and when the extractor landed,
+            // against the start of this resolution, so a slow start can be split into its
+            // stages and tiers in both debug and release app logs.
+            val resolveStartMs = Clock.System.now().toEpochMilliseconds()
+            var playerResponseMs = 0L
+            var extractorMs = 0L
+            // The extractor's half of a resolution does not depend on the player response —
+            // newPipePlayer only pairs the URLs it produces onto that response — so it starts
+            // now and runs alongside the POST below instead of after it. The merge still
+            // happens in the old order, with the old fallbacks; only the waiting changed. An
+            // extraction that fails degrades to the empty list the serial path would have
+            // ended with anyway. The deferred is a child of the caller's job, so cancelling
+            // the resolution cancels it too.
+            val extractionId = Random.nextLong().let { if (it == 0L) 1L else it }
+            val streamsDeferred =
+                CoroutineScope(coroutineContext).async(Dispatchers.IO) {
+                    val cancelHook =
+                        coroutineContext[Job]?.invokeOnCompletion { cause ->
+                            if (cause != null) ytMusic.cancelExtraction(extractionId)
+                        }
+                    try {
+                        ytMusic.getNewPipePlayer(
+                            videoId = videoId,
+                            extractionId = extractionId,
+                            isCancelled = { !isActive },
+                            requireVideo = isVideo,
                         )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Logger.w(TAG, "Extractor failed for $videoId (${e.message}); resolving without it")
+                        emptyList()
+                    } finally {
+                        cancelHook?.dispose()
                     }
+                }
+            var altClientTried = false
+            var tempRes: PlayerResponse =
+                try {
+                    fetchPlayerResponse(WEB_REMIX, videoId, playlistId, cpn, signatureTimestamp)
+                } catch (e: CancellationException) {
+                    streamsDeferred.cancel()
+                    throw e
+                } catch (e: Exception) {
+                    // The WEB_REMIX request itself failed (an HTTP error status, or no answer
+                    // at all). One attempt with the ANDROID client before giving up: a refusal
+                    // aimed at the web client does not necessarily apply to it, and the extra
+                    // request is also the pause a 429 asks for — the recovery layers above
+                    // would otherwise repeat this same call unchanged.
+                    altClientTried = true
+                    Logger.w(
+                        TAG,
+                        "WEB_REMIX player request failed for $videoId (${e.message}); trying the ANDROID client",
+                    )
+                    try {
+                        fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
+                    } catch (altError: CancellationException) {
+                        streamsDeferred.cancel()
+                        throw altError
+                    } catch (altError: Exception) {
+                        streamsDeferred.cancel()
+                        throw playerRequestFailure(videoId, altError)
+                    }
+                }
+
+            playerResponseMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
 
             // A live broadcast has no fixed-length formats to decode: it plays from one HLS
             // playlist. videoDetails is present even on a response this client was refused, so the
             // check comes before anything that requires an OK status.
             if (tempRes.videoDetails?.isLive == true) {
+                // The parallel extraction above is useless to a live broadcast; drop it.
+                streamsDeferred.cancel()
                 // tempRes carries an hlsManifestUrl of its own, and it is deliberately not used: the
                 // web clients' live playlists load, but every segment is refused with 403.
                 val liveHlsUrl =
                     liveStreamHlsUrl(videoId)
                         ?: ytMusic.getLiveHlsUrl(videoId)
                         ?: throw RuntimeException("No live HLS URL found for $videoId")
+                Logger.i(
+                    "PlayTiming",
+                    "id=$videoId live post=${playerResponseMs}ms total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
+                )
                 return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
             }
 
-            val response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
+            val streams = streamsDeferred.await()
+            extractorMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
+            var response = newPipePlayer(videoId, tempRes, preferredAudioLanguage, streams)
+            // The retries below pair the extractor's URLs onto another response, so they
+            // only make sense when the extractor produced URLs at all.
+            var altRes: PlayerResponse? = null
+            if (response == null && streams.isEmpty()) {
+                fun firstDirectAudioUrl(res: PlayerResponse): String? =
+                    res.streamingData
+                        ?.adaptiveFormats
+                        ?.firstOrNull { it.isAudio && !it.url.isNullOrEmpty() }
+                        ?.url
+                        ?: res.streamingData
+                            ?.formats
+                            ?.firstOrNull { !it.url.isNullOrEmpty() }
+                            ?.url
+                val directRejected = videoId in directTempRejectedIds.value
+                val directFromTemp =
+                    if (!directRejected) {
+                        tempRes
+                            .takeIf { res -> res.playabilityStatus.status == "OK" && firstDirectAudioUrl(res) != null }
+                            ?.takeIf { res ->
+                                val sample = firstDirectAudioUrl(res) ?: return@takeIf false
+                                ytMusic.isStreamUrlReachable(sample).also { ok ->
+                                    if (!ok) {
+                                        Logger.w(TAG, "WEB_REMIX direct URL failed HEAD check for $videoId; trying alternate clients")
+                                    }
+                                }
+                            }
+                    } else {
+                        null
+                    }
+                if (directFromTemp != null) {
+                    response = directFromTemp
+                } else {
+                    // Cascade through clients that often serve direct URLs without web PO tokens
+                    // (including Made-for-Kids tracks where anonymous web extractors fail).
+                    val fallbackClients =
+                        buildList {
+                            if (!altClientTried) add(ANDROID to false)
+                            add(IOS to false)
+                            add(TVHTML5_SIMPLY to false)
+                            add(ANDROID to true)
+                        }
+                    for ((client, withLogin) in fallbackClients) {
+                        altClientTried = true
+                        val candidate =
+                            try {
+                                fetchPlayerResponse(
+                                    client,
+                                    videoId,
+                                    playlistId,
+                                    cpn,
+                                    signatureTimestamp,
+                                    setLogin = withLogin,
+                                )
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Logger.w(TAG, "${client.clientName} direct fallback request failed for $videoId (${e.message})")
+                                null
+                            }
+                        if (candidate != null) {
+                            altRes = candidate
+                            if (candidate.playabilityStatus.status == "OK") {
+                                val sample = firstDirectAudioUrl(candidate)
+                                if (sample != null && ytMusic.isStreamUrlReachable(sample)) {
+                                    response = candidate.copy(playbackTracking = tempRes.playbackTracking)
+                                    break
+                                } else {
+                                    Logger.w(TAG, "${client.clientName} direct URL unusable for $videoId")
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (response == null && streams.isNotEmpty()) {
+                if (!altClientTried) {
+                    // The first pairing produced nothing: either WEB_REMIX refused this
+                    // track (bot check, region, age gate), so newPipePlayer never paired
+                    // at all, or it paired zero formats because none of this response's
+                    // itags matched the extractor's URLs. One attempt with the ANDROID
+                    // client's response: the extractor pairs its own URLs onto whichever
+                    // response it is given, other clients are often not refused, and a
+                    // different response carries a different format list that may match
+                    // where this one did not. The refused response keeps supplying the
+                    // playback tracking.
+                    altClientTried = true
+                    altRes =
+                        try {
+                            fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            Logger.w(TAG, "ANDROID player request failed for $videoId (${e.message})")
+                            null
+                        }
+                    if (altRes != null && altRes.playabilityStatus.status == "OK") {
+                        response =
+                            newPipePlayer(
+                                videoId,
+                                altRes.copy(playbackTracking = tempRes.playbackTracking),
+                                preferredAudioLanguage,
+                                streams,
+                            )
+                    }
+                }
+                // Forcing only changes anything when the response was actually refused:
+                // pairing an OK response again with the same URLs would fail the same way.
+                if (response == null && (altRes ?: tempRes).playabilityStatus.status != "OK") {
+                    // Last resort: every client response was refused, yet the extractor
+                    // produced URLs. The anonymous ones (VISIONOS) do not depend on this
+                    // session's playability verdict, and a refusal aimed at the logged-in
+                    // clients does not necessarily apply to them — the pattern of issue
+                    // #2861, where exactly those URLs were being thrown away here. Pair
+                    // over the refused response with the status forced to OK, the same
+                    // trick asLiveStream uses for live broadcasts, and let the player's
+                    // own load decide: a URL that turns out dead surfaces as a load
+                    // error, which the recovery layers already answer by dropping the
+                    // stored format and re-resolving.
+                    val refused = (altRes ?: tempRes).copy(playbackTracking = tempRes.playbackTracking)
+                    Logger.w(
+                        TAG,
+                        "Pairing extractor URLs over the refused response for $videoId " +
+                            "(status=${refused.playabilityStatus.status}) as a last resort",
+                    )
+                    response =
+                        newPipePlayer(
+                            videoId,
+                            refused.copy(
+                                playabilityStatus =
+                                    refused.playabilityStatus.copy(status = "OK", reason = null),
+                            ),
+                            preferredAudioLanguage,
+                            streams,
+                        )
+                }
+            }
             if (response != null) {
                 decodedSigResponse = response
                 Logger.d(TAG, "YouTube Player found URL")
             } else {
                 Logger.d(TAG, "YouTube Player no URL found")
             }
-            if (decodedSigResponse == null) throw RuntimeException("No URL found")
+            val tierSummary = ExtractTiming.consume(videoId) ?: "none"
+            if (decodedSigResponse == null) {
+                Logger.w(
+                    "PlayTiming",
+                    "id=$videoId fail post=${playerResponseMs}ms extractor=${extractorMs}ms tier=[$tierSummary] alt=$altClientTried total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
+                )
+                throw noStreamFailure(videoId, altRes ?: tempRes, extractorProducedStreams = streams.isNotEmpty())
+            }
+            Logger.i(
+                "PlayTiming",
+                "id=$videoId post=${playerResponseMs}ms extractor=${extractorMs}ms tier=[$tierSummary] alt=$altClientTried total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
+            )
             val firstThumb =
                 decodedSigResponse.videoDetails
                     ?.thumbnail
@@ -2064,35 +2376,45 @@ class YouTube {
     suspend fun getYouTubeCaption(
         videoId: String,
         preferLang: String,
-    ) = runCatching {
-        val ytWeb = ytMusic.player(WEB, videoId, null, null).body<YouTubeInitialPage>()
-        val baseCaption =
-            ytMusic
-                .getYouTubeCaption(
-                    ytWeb.captions?.playerCaptionsTracklistRenderer?.captionTracks?.firstOrNull()?.baseUrl?.replace(
-                        "&fmt=srv3",
-                        "",
-                    ) ?: "",
-                ).body<Transcript>()
-                .tryDecodeText()
-        val translateCaption =
-            try {
+    ): Result<Pair<Transcript, Transcript?>> =
+        try {
+            val ytWeb = ytMusic.player(WEB, videoId, null, null).body<YouTubeInitialPage>()
+            val baseUrl =
+                ytWeb.captions
+                    ?.playerCaptionsTracklistRenderer
+                    ?.captionTracks
+                    ?.firstOrNull()
+                    ?.baseUrl
+                    ?.replace("&fmt=srv3", "")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: return Result.failure(NoSuchElementException("No captions found for $videoId"))
+            val baseCaption =
                 ytMusic
-                    .getYouTubeCaption(
-                        "${
-                            ytWeb.captions?.playerCaptionsTracklistRenderer?.captionTracks?.firstOrNull()?.baseUrl?.replace(
-                                "&fmt=srv3",
-                                "",
-                            )
-                        }&tlang=$preferLang",
-                    ).body<Transcript>()
+                    .getYouTubeCaption(baseUrl)
+                    .body<Transcript>()
                     .tryDecodeText()
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
-        return@runCatching baseCaption to translateCaption
-    }
+            val translateCaption =
+                if (preferLang.isNotBlank()) {
+                    try {
+                        ytMusic
+                            .getYouTubeCaption("$baseUrl&tlang=$preferLang")
+                            .body<Transcript>()
+                            .tryDecodeText()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        null
+                    }
+                } else {
+                    null
+                }
+            Result.success(baseCaption to translateCaption)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
 
     suspend fun scrapeYouTube(videoId: String) =
         runCatching {
@@ -2404,6 +2726,22 @@ class YouTube {
     private fun Triple<Boolean, Float, Int>.isFailedDownload(): Boolean = first && second < 1f
 
     suspend fun is403Url(url: String) = ytMusic.is403Url(url)
+
+    /** Warm the stream decipher pipeline ahead of the first play; see [Ytmusic.warmUpExtractor]. */
+    fun warmUpDecoder() = ytMusic.warmUpExtractor()
+
+    fun onStreamRejected(videoId: String) {
+        directTempRejectedIds.value =
+            (directTempRejectedIds.value + videoId).let { set ->
+                if (set.size > 32) set.drop(set.size - 32).toSet() else set
+            }
+        ytMusic.onStreamRejected(videoId)
+    }
+
+    fun clearExtractorTrust() {
+        directTempRejectedIds.value = emptySet()
+        ytMusic.clearExtractorTrust()
+    }
 
     companion object {
         const val MAX_GET_QUEUE_SIZE = 1000

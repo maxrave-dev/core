@@ -393,17 +393,19 @@ fun Lyrics.toSyncedLrcString(): String? {
     if (lines.isNullOrEmpty() || this.syncType != "LINE_SYNCED") {
         return null
     }
-    return lines.joinToString("\n") { line ->
-        val startTimeMs = line.startTimeMs.toLong()
-        val minutes = (startTimeMs / 60000).toString().padStart(2, '0')
-        val seconds = ((startTimeMs % 60000) / 1000).toString().padStart(2, '0')
-        val milliseconds = ((startTimeMs % 1000) / 10).toString().padStart(2, '0')
+    val formatted =
+        lines.mapNotNull { line ->
+            val startTimeMs = line.startTimeMs.toLongOrNull()?.coerceAtLeast(0L) ?: return@mapNotNull null
+            val minutes = (startTimeMs / 60000).toString().padStart(2, '0')
+            val seconds = ((startTimeMs % 60000) / 1000).toString().padStart(2, '0')
+            val milliseconds = ((startTimeMs % 1000) / 10).toString().padStart(2, '0')
 
-        // Add space before the content as it was removed in the parsing function
-        val content = if (line.words == "♫") " " else " ${line.words}"
+            // Add space before the content as it was removed in the parsing function
+            val content = if (line.words == "♫") " " else " ${line.words}"
 
-        "[$minutes:$seconds.$milliseconds]$content"
-    }
+            "[$minutes:$seconds.$milliseconds]$content"
+        }
+    return if (formatted.isEmpty()) null else formatted.joinToString("\n")
 }
 
 /**
@@ -417,14 +419,16 @@ fun Lyrics.toRichSyncLrcString(): String? {
     if (lines.isNullOrEmpty() || this.syncType != "RICH_SYNCED") {
         return null
     }
-    return lines.joinToString("\n") { line ->
-        val startTimeMs = line.startTimeMs.toLongOrNull() ?: 0L
-        val minutes = (startTimeMs / 60000).toString().padStart(2, '0')
-        val seconds = ((startTimeMs % 60000) / 1000).toString().padStart(2, '0')
-        val centiseconds = ((startTimeMs % 1000) / 10).toString().padStart(2, '0')
+    val formatted =
+        lines.mapNotNull { line ->
+            val startTimeMs = line.startTimeMs.toLongOrNull()?.coerceAtLeast(0L) ?: return@mapNotNull null
+            val minutes = (startTimeMs / 60000).toString().padStart(2, '0')
+            val seconds = ((startTimeMs % 60000) / 1000).toString().padStart(2, '0')
+            val centiseconds = ((startTimeMs % 1000) / 10).toString().padStart(2, '0')
 
-        "[$minutes:$seconds.$centiseconds] ${line.words.replace("  ", " ")}"
-    }
+            "[$minutes:$seconds.$centiseconds] ${line.words.replace("  ", " ")}"
+        }
+    return if (formatted.isEmpty()) null else formatted.joinToString("\n")
 }
 
 /**

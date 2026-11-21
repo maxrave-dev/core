@@ -6,6 +6,9 @@ import com.maxrave.logger.Logger
 import io.ktor.client.call.body
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.simpmusic.lyrics.am.AMAlbumResource
 import org.simpmusic.lyrics.am.AMSongWithAlbum
 import org.simpmusic.lyrics.am.parseAMHlsVariants
@@ -23,6 +26,7 @@ import org.simpmusic.lyrics.parser.parseLrclibLyrics
 import kotlin.math.abs
 
 private const val TAG = "SimpMusicLyricsClient"
+private const val MAX_DEDUPE_CACHE_ENTRIES = 256
 
 /** An error the SimpMusic Lyrics API answered with; [code] 404 means nobody has added that song yet. */
 class SimpMusicLyricsApiException(
@@ -30,23 +34,35 @@ class SimpMusicLyricsApiException(
     message: String,
 ) : Exception(message)
 
-class SimpMusicLyricsClient {
+private inline fun <T> suspendRunCatching(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
+
+class SimpMusicLyricsClient(
+    private val lyricsService: SimpMusicLyrics = SimpMusicLyrics(),
+) {
     private val algorithm = ""
 
     private val hmacService = Hmac("HmacSHA256", "simpmusic-lyrics")
-    private val lyricsService = SimpMusicLyrics()
-    private var insertingLyrics: Pair<String?, Boolean> = (null to false)
-    private val isInsertingLyrics: Boolean
-        get() = insertingLyrics.second
+
+    // Guards the shared insert/rate-limit/dedupe state below: this client is shared across callers.
+    private val stateMutex = Mutex()
+
+    private val inFlightLyricsInserts = mutableSetOf<String>()
+    private val submittedLyricsByVideoId = LinkedHashMap<String, Pair<Int, LyricsResponse>>()
 
     private var tooManyRequest: Boolean = false
 
-    private var insertingTranslatedLyrics: Pair<String?, Boolean> = (null to false)
-    private val isInsertingTranslatedLyrics: Boolean
-        get() = insertingTranslatedLyrics.second
+    private val inFlightTranslatedInserts = mutableSetOf<Pair<String, String>>()
+    private val submittedTranslatedByKey = LinkedHashMap<Pair<String, String>, Pair<Int, TranslatedLyricsResponse>>()
 
     suspend fun getLyrics(videoId: String): Result<List<LyricsResponse>> =
-        runCatching {
+        suspendRunCatching {
             lyricsService.findLyricsByVideoId(videoId).bodyOrThrow<List<LyricsResponse>>()
         }
 
@@ -54,7 +70,7 @@ class SimpMusicLyricsClient {
         videoId: String,
         language: String,
     ): Result<TranslatedLyricsResponse> =
-        runCatching {
+        suspendRunCatching {
             if (language.length != 2) {
                 throw IllegalArgumentException("Language code must be a 2-letter code")
             }
@@ -62,42 +78,98 @@ class SimpMusicLyricsClient {
         }
 
     suspend fun insertLyrics(lyricsBody: LyricsBody): Result<LyricsResponse> =
-        runCatching {
-            if (tooManyRequest) {
-                throw IllegalStateException("Too many requests, please wait before trying again.")
+        suspendRunCatching {
+            val contentHash =
+                arrayOf(lyricsBody.plainLyric, lyricsBody.syncedLyrics, lyricsBody.richSyncLyrics).contentHashCode()
+            var claimed = false
+            stateMutex.withLock {
+                if (tooManyRequest) {
+                    throw IllegalStateException("Too many requests, please wait before trying again.")
+                }
+                val alreadySubmitted = submittedLyricsByVideoId[lyricsBody.videoId]
+                if (alreadySubmitted != null && alreadySubmitted.first == contentHash) {
+                    return@suspendRunCatching alreadySubmitted.second
+                }
+                if (!inFlightLyricsInserts.add(lyricsBody.videoId)) {
+                    throw IllegalStateException("Already inserting lyrics, please wait until the current operation is complete.")
+                }
+                claimed = true
             }
-            if (isInsertingLyrics && insertingLyrics.first == lyricsBody.videoId) {
-                throw IllegalStateException("Already inserting lyrics, please wait until the current operation is complete.")
+            try {
+                val hmacTimestamp =
+                    hmacService.getMacTimestampPair(
+                        HmacUri.BASE_HMAC_URI,
+                    )
+                val response = lyricsService.insertLyrics(lyricsBody, hmacTimestamp).bodyOrThrow<LyricsResponse>()
+                stateMutex.withLock {
+                    if (submittedLyricsByVideoId.size >= MAX_DEDUPE_CACHE_ENTRIES &&
+                        !submittedLyricsByVideoId.containsKey(lyricsBody.videoId)
+                    ) {
+                        submittedLyricsByVideoId.keys.firstOrNull()?.let { submittedLyricsByVideoId.remove(it) }
+                    }
+                    submittedLyricsByVideoId[lyricsBody.videoId] = contentHash to response
+                }
+                response
+            } finally {
+                if (claimed) {
+                    stateMutex.withLock {
+                        inFlightLyricsInserts.remove(lyricsBody.videoId)
+                    }
+                }
             }
-            insertingLyrics = lyricsBody.videoId to true
-            val hmacTimestamp =
-                hmacService.getMacTimestampPair(
-                    HmacUri.BASE_HMAC_URI,
-                )
-            lyricsService.insertLyrics(lyricsBody, hmacTimestamp).bodyOrThrow<LyricsResponse>()
         }
 
     suspend fun insertTranslatedLyrics(translatedLyricsBody: TranslatedLyricsBody): Result<TranslatedLyricsResponse> =
-        runCatching {
+        suspendRunCatching {
             if (translatedLyricsBody.language.length != 2) {
                 throw IllegalArgumentException("Language code must be a 2-letter code")
             }
-            if (isInsertingTranslatedLyrics && insertingTranslatedLyrics.first == translatedLyricsBody.videoId) {
-                throw IllegalStateException("Already inserting translated lyrics, please wait until the current operation is complete.")
+            val key = translatedLyricsBody.videoId to translatedLyricsBody.language
+            val contentHash = translatedLyricsBody.translatedLyric.hashCode()
+            var claimed = false
+            stateMutex.withLock {
+                if (tooManyRequest) {
+                    throw IllegalStateException("Too many requests, please wait before trying again.")
+                }
+                val alreadySubmitted = submittedTranslatedByKey[key]
+                if (alreadySubmitted != null && alreadySubmitted.first == contentHash) {
+                    return@suspendRunCatching alreadySubmitted.second
+                }
+                if (!inFlightTranslatedInserts.add(key)) {
+                    throw IllegalStateException("Already inserting translated lyrics, please wait until the current operation is complete.")
+                }
+                claimed = true
             }
-            insertingTranslatedLyrics = translatedLyricsBody.videoId to true
-            val hmacTimestamp =
-                hmacService.getMacTimestampPair(
-                    HmacUri.TRANSLATED_HMAC_URI,
-                )
-            lyricsService.insertTranslatedLyrics(translatedLyricsBody, hmacTimestamp).bodyOrThrow<TranslatedLyricsResponse>()
+            try {
+                val hmacTimestamp =
+                    hmacService.getMacTimestampPair(
+                        HmacUri.TRANSLATED_HMAC_URI,
+                    )
+                val response =
+                    lyricsService.insertTranslatedLyrics(translatedLyricsBody, hmacTimestamp).bodyOrThrow<TranslatedLyricsResponse>()
+                stateMutex.withLock {
+                    if (submittedTranslatedByKey.size >= MAX_DEDUPE_CACHE_ENTRIES &&
+                        !submittedTranslatedByKey.containsKey(key)
+                    ) {
+                        submittedTranslatedByKey.keys.firstOrNull()?.let { submittedTranslatedByKey.remove(it) }
+                    }
+                    submittedTranslatedByKey[key] = contentHash to response
+                }
+                response
+            } finally {
+                if (claimed) {
+                    stateMutex.withLock {
+                        inFlightTranslatedInserts.remove(key)
+                    }
+                }
+            }
         }
 
     suspend fun voteLyrics(
         lyricsId: String,
         upvote: Boolean,
     ): Result<LyricsResponse> =
-        runCatching {
+        suspendRunCatching {
             val hmacTimestamp =
                 hmacService.getMacTimestampPair(
                     HmacUri.VOTE_HMAC_URI,
@@ -109,7 +181,7 @@ class SimpMusicLyricsClient {
         translatedLyricsId: String,
         upvote: Boolean,
     ): Result<TranslatedLyricsResponse> =
-        runCatching {
+        suspendRunCatching {
             val hmacTimestamp =
                 hmacService.getMacTimestampPair(
                     HmacUri.VOTE_TRANSLATED_HMAC_URI,
@@ -121,30 +193,82 @@ class SimpMusicLyricsClient {
         q_track: String,
         q_artist: String,
         duration: Int?,
-    ) = runCatching {
-        val rs =
-            lyricsService
-                .searchLrclibLyrics(
-                    q_track = q_track,
-                    q_artist = q_artist,
-                ).body<List<LrclibObject>>()
-        val lrclibObject = selectLrclibLyricsRecord(rs, duration)
-        lrclibObject?.let { parseLrclibLyrics(it) }
+    ) = suspendRunCatching {
+        val validDuration = duration?.takeIf { it > 0 }
+        val candidates = LyricsQueryNormalizer.buildQueryCandidates(q_track, q_artist)
+        var plainFallbackRecord: LrclibObject? = null
+
+        for ((track, artist) in candidates) {
+            if (validDuration != null && track.isNotBlank() && artist.isNotBlank()) {
+                val exactResponse =
+                    lyricsService.getLrclibLyricsExact(
+                        trackName = track,
+                        artistName = artist,
+                        durationSeconds = validDuration,
+                    )
+                if (exactResponse.status.value in 200..299) {
+                    val exact = exactResponse.body<LrclibObject>()
+                    if (!exact.instrumental) {
+                        if (exact.hasWordSync || !exact.syncedLyrics.isNullOrBlank()) {
+                            return@suspendRunCatching parseLrclibLyrics(exact)
+                        }
+                        if (!exact.plainLyrics.isNullOrBlank() && plainFallbackRecord == null) {
+                            plainFallbackRecord = exact
+                        }
+                    }
+                }
+            }
+
+            val response =
+                lyricsService.searchLrclibLyrics(
+                    q_track = track,
+                    q_artist = artist,
+                )
+            when (response.status.value) {
+                404, 204 -> Unit
+                in 200..299 -> {
+                    val rs = response.body<List<LrclibObject>>()
+                    val best = selectLrclibLyricsRecord(rs, duration)
+                    if (best != null) {
+                        return@suspendRunCatching parseLrclibLyrics(best)
+                    }
+                }
+                else ->
+                    if (plainFallbackRecord == null) {
+                        throw SimpMusicLyricsApiException(response.status.value, "LRCLIB failed: ${response.status.value}")
+                    }
+            }
+        }
+
+        plainFallbackRecord?.let { parseLrclibLyrics(it) }
     }
 
     suspend fun searchBetterLyrics(
         q_track: String,
         q_artist: String,
         durationSeconds: Int?,
-    ) = runCatching {
-        val rs =
-            lyricsService
-                .searchBetterLyrics(
-                    q_track = q_track,
-                    q_artist = q_artist,
-                    durationSeconds = durationSeconds,
-                ).body<BetterLyricsResponse>()
-        rs.ttml
+    ) = suspendRunCatching {
+        val validDuration = durationSeconds?.takeIf { it > 0 }
+        val candidates = LyricsQueryNormalizer.buildQueryCandidates(q_track, q_artist)
+        for ((track, artist) in candidates) {
+            val response =
+                lyricsService.searchBetterLyrics(
+                    q_track = track,
+                    q_artist = artist,
+                    durationSeconds = validDuration,
+                )
+            when (response.status.value) {
+                404, 204 -> Unit
+                in 200..299 -> {
+                    val ttml = response.body<BetterLyricsResponse>().ttml
+                    if (!ttml.isNullOrBlank()) {
+                        return@suspendRunCatching ttml
+                    }
+                }
+                else -> throw SimpMusicLyricsApiException(response.status.value, "BetterLyrics failed: ${response.status.value}")
+            }
+        }
+        null
     }
 
     suspend fun searchAMArtist(
@@ -275,10 +399,10 @@ class SimpMusicLyricsClient {
 
     private suspend inline fun <reified T> HttpResponse.bodyOrThrow(): T {
         if (this.status.value == 429) {
-            tooManyRequest = true
+            stateMutex.withLock { tooManyRequest = true }
             Logger.e(TAG, "Too many requests: ${this.status.value}")
         } else {
-            tooManyRequest = false
+            stateMutex.withLock { tooManyRequest = false }
         }
         try {
             val data = body<BaseResponse<T>>()
@@ -300,11 +424,19 @@ internal fun selectLrclibLyricsRecord(
     records: List<LrclibObject>,
     duration: Int?,
 ): LrclibObject? {
-    val candidates =
-        if (duration != null) {
-            records.filter { abs(it.duration.toInt() - duration) <= 10 }
-        } else {
-            records
+    val validDuration = duration?.takeIf { it > 0 }
+    val usable =
+        records.filter { candidate ->
+            !candidate.instrumental &&
+                (!candidate.syncedLyrics.isNullOrBlank() || !candidate.plainLyrics.isNullOrBlank())
         }
-    return candidates.firstOrNull { it.hasWordSync } ?: candidates.firstOrNull()
+    val candidates =
+        if (validDuration != null) {
+            usable.filter { abs(it.duration.toInt() - validDuration) <= 10 }
+        } else {
+            usable
+        }
+    return candidates.firstOrNull { it.hasWordSync }
+        ?: candidates.firstOrNull { !it.syncedLyrics.isNullOrBlank() }
+        ?: candidates.firstOrNull { !it.plainLyrics.isNullOrBlank() }
 }

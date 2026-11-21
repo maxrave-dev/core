@@ -10,7 +10,9 @@ import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.data.player.PlayerError
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.utils.isEndlessQueueId
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * Handler interface for managing media playback service operations
@@ -30,6 +32,8 @@ interface MediaPlayerHandler {
     val format: StateFlow<NewFormatEntity?>
     val currentSongIndex: StateFlow<Int>
     val castState: StateFlow<GenericCastState>
+    val networkRestoredEvents: Flow<Unit>
+        get() = emptyFlow()
 
     // Listeners
     var onUpdateNotification: (List<GenericCommandButton>) -> Unit
@@ -168,6 +172,8 @@ interface MediaPlayerHandler {
     suspend fun restoreQueueAndPlay(): Boolean
 
     // Lifecycle
+    fun onTrimMemory(level: Int) {}
+
     fun shouldReleaseOnTaskRemoved(): Boolean
 
     fun release()

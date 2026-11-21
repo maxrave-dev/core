@@ -54,7 +54,7 @@ class AiClient {
         inputLyrics: Lyrics,
         targetLanguage: String,
     ): Result<Lyrics> =
-        runCatching {
+        try {
             val result =
                 aiService?.translateLyrics(inputLyrics, targetLanguage)
                     ?: throw IllegalStateException("AI service is not initialized. Please set host and apiKey.")
@@ -70,7 +70,11 @@ class AiClient {
                 throw IllegalStateException("Translation failed or returned empty lyrics or same language.")
             }
 
-            result
+            Result.success(result)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Result.failure(e)
         }
 
     /**

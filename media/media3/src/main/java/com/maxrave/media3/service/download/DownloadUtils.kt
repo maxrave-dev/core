@@ -44,7 +44,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import java.io.ByteArrayInputStream
+import java.net.Proxy
 import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
 
 @UnstableApi
 internal class DownloadUtils(
@@ -55,6 +57,7 @@ internal class DownloadUtils(
     private val streamRepository: StreamRepository,
     private val songRepository: SongRepository,
     databaseProvider: DatabaseProvider,
+    proxy: Proxy? = null,
 ) : DownloadHandler {
     private val coroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -63,10 +66,15 @@ internal class DownloadUtils(
             CacheDataSource
                 .Factory()
                 .setCache(playerCache)
+                .setCacheWriteDataSinkFactory(null)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
                 .setUpstreamDataSourceFactory(
                     OkHttpDataSource.Factory(
                         OkHttpClient
                             .Builder()
+                            .connectTimeout(30, TimeUnit.SECONDS)
+                            .readTimeout(30, TimeUnit.SECONDS)
+                            .proxy(proxy)
                             .build(),
                     ),
                 ),
@@ -99,7 +107,7 @@ internal class DownloadUtils(
             runBlocking(Dispatchers.IO) {
                 if (mediaId.contains(MERGING_DATA_TYPE.VIDEO)) {
                     val id = mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                    streamRepository.getNewFormat(id).lastOrNull()?.let {
+                    (streamRepository.getNewFormat(mediaId).lastOrNull() ?: streamRepository.getNewFormat(id).lastOrNull())?.let {
                         val videoUrl = it.videoUrl
                         if (videoUrl != null && it.expiredTime > now()) {
                             Logger.d("Stream", videoUrl)
@@ -183,7 +191,7 @@ internal class DownloadUtils(
             dataSourceFactory,
             Executor(Runnable::run),
         ).apply {
-            maxParallelDownloads = 20
+            maxParallelDownloads = 5
             minRetryCount = 3
             addListener(
                 MusicDownloadService.TerminalStateNotificationHelper(
@@ -241,12 +249,7 @@ internal class DownloadUtils(
                 .setData(title.toByteArray())
                 .setCustomCacheKey(videoId)
                 .build()
-        DownloadService.sendAddDownload(
-            context,
-            MusicDownloadService::class.java,
-            downloadRequest,
-            false,
-        )
+        sendAddDownload(downloadRequest)
         if (isVideo) {
             val id = MERGING_DATA_TYPE.VIDEO + videoId
             val downloadRequestVideo =
@@ -255,12 +258,26 @@ internal class DownloadUtils(
                     .setData("Video $title".toByteArray())
                     .setCustomCacheKey(id)
                     .build()
+            sendAddDownload(downloadRequestVideo)
+        }
+    }
+
+    /**
+     * [DownloadService.sendAddDownload] starts the download service; with the app in the
+     * background (a smart download queued by a sync, say) the start is refused with an
+     * [IllegalStateException] on Android 8+/12+, which used to crash the caller. The
+     * request is dropped instead — it can be queued again from the foreground.
+     */
+    private fun sendAddDownload(request: DownloadRequest) {
+        try {
             DownloadService.sendAddDownload(
                 context,
                 MusicDownloadService::class.java,
-                downloadRequestVideo,
+                request,
                 false,
             )
+        } catch (e: IllegalStateException) {
+            Logger.e("Download", "Could not start the download service for ${request.id}", e)
         }
     }
 

@@ -227,6 +227,7 @@ class RemotePlayerConfigStore(
                     val fetchedAt = Clock.System.now().toEpochMilliseconds()
                     repository.cachedAtMs = fetchedAt
                     if (!responseEtag.isNullOrBlank()) repository.cachedEtag = responseEtag
+                    repository.onCacheUpdated()
                     ensureLoadedFromCache(sourceUrl)
                     logger.d(TAG, "Remote player configs unchanged (304)")
                     return@stateLock false
@@ -245,6 +246,7 @@ class RemotePlayerConfigStore(
                         repository.cachedAtMs = Clock.System.now().toEpochMilliseconds()
                         repository.cachedSourceUrl = sourceUrl
                         responseEtag?.let { repository.cachedEtag = it }
+                        repository.onCacheUpdated()
                         logger.d(
                             TAG,
                             "Remote player configs applied (${result.configs.size} entries) changed=$changed epoch=$configEpoch",

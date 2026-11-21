@@ -16,6 +16,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.maxrave.common.MEDIA_NOTIFICATION
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
@@ -40,10 +41,12 @@ internal class SimpleMediaService :
     private val coilBitmapLoader: CoilBitmapLoader by inject<CoilBitmapLoader>()
 
     private var mediaSession: MediaLibrarySession? = null
+    private var controllerFuture: ListenableFuture<MediaController>? = null
 
     private val simpleMediaSessionCallback: MediaLibrarySession.Callback by inject<MediaLibrarySession.Callback>()
 
     private val simpleMediaServiceHandler: MediaPlayerHandler by inject<MediaPlayerHandler>()
+    private val castHandoffManager: com.maxrave.media3.cast.CastHandoffManager by inject()
 
     private val binder = MusicBinder()
 
@@ -75,6 +78,7 @@ internal class SimpleMediaService :
     override fun onCreate() {
         super.onCreate()
         Logger.w("Service", "Simple Media Service Created")
+        castHandoffManager
 
         setMediaNotificationProvider(
             DefaultMediaNotificationProvider(
@@ -104,15 +108,15 @@ internal class SimpleMediaService :
         }
 
         val sessionToken = SessionToken(this, ComponentName(this, SimpleMediaService::class.java))
-        val controllerFuture = MediaController.Builder(this, sessionToken).buildAsync()
-        controllerFuture.addListener({ controllerFuture.get() }, MoreExecutors.directExecutor())
-
-        simpleMediaServiceHandler.onUpdateNotification = { list ->
-            val commandButtonList = list.map { it.toCommandButton(this) }
-            mediaSession?.setMediaButtonPreferences(
-                commandButtonList,
-            )
-        }
+        val future = MediaController.Builder(this, sessionToken).buildAsync()
+        controllerFuture = future
+        future.addListener({
+            try {
+                future.get()
+            } catch (e: Exception) {
+                Logger.w("Service", "Warmup MediaController connection failed: ${e.message}")
+            }
+        }, MoreExecutors.directExecutor())
     }
 
     @UnstableApi
@@ -132,12 +136,33 @@ internal class SimpleMediaService :
         session: MediaSession,
         startInForegroundRequired: Boolean,
     ) {
-        super.onUpdateNotification(session, startInForegroundRequired)
+        try {
+            super.onUpdateNotification(session, startInForegroundRequired)
+        } catch (e: Exception) {
+            // The framework's notification provider performs the foreground promotion;
+            // if the system refuses it (Android 12+ restrictions on a cold start via a
+            // widget or a headset button), the exception used to escape the service
+            // uncaught. Log it instead of crashing the playback service over it.
+            Logger.e("Service", "onUpdateNotification failed", e)
+        }
+    }
+
+    private fun releaseControllerFuture() {
+        controllerFuture?.let { future ->
+            try {
+                MediaController.releaseFuture(future)
+            } catch (e: Exception) {
+                Logger.w("Service", "Error releasing warmup MediaController: ${e.message}")
+            }
+        }
+        controllerFuture = null
     }
 
     @UnstableApi
     fun release() {
         Logger.w("Service", "Starting release process")
+        simpleMediaServiceHandler.onUpdateNotification = {}
+        releaseControllerFuture()
         runBlocking {
             try {
                 // Release MediaSession (don't release player - CrossfadeExoPlayerAdapter manages it)
@@ -149,10 +174,11 @@ internal class SimpleMediaService :
                 }
                 // Release handler (contains coroutines and jobs, which also releases the adapter)
                 simpleMediaServiceHandler.release()
-                mediaSession = null
                 Logger.w("Service", "Simple Media Service Released")
             } catch (e: Exception) {
-                Logger.e("Service", "Error during release")
+                Logger.e("Service", "Error during release", e)
+            } finally {
+                mediaSession = null
             }
         }
     }
@@ -161,14 +187,25 @@ internal class SimpleMediaService :
     override fun onDestroy() {
         super.onDestroy()
         Logger.w("Service", "Simple Media Service Destroyed")
+        simpleMediaServiceHandler.onUpdateNotification = {}
+        releaseControllerFuture()
         if (simpleMediaServiceHandler.shouldReleaseOnTaskRemoved()) {
             release()
+        } else {
+            try {
+                mediaSession?.release()
+            } catch (e: Exception) {
+                Logger.w("Service", "Error releasing MediaSession in onDestroy: ${e.message}")
+            } finally {
+                mediaSession = null
+            }
         }
     }
 
     override fun onTrimMemory(level: Int) {
         Logger.w("Service", "Simple Media Service Trim Memory Level: $level")
         simpleMediaServiceHandler.mayBeSaveRecentSong()
+        simpleMediaServiceHandler.onTrimMemory(level)
     }
 
     @UnstableApi

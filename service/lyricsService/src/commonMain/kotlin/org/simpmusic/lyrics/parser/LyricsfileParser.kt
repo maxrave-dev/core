@@ -27,13 +27,17 @@ private val lyricsfileYaml =
 /** Prefer Lyricsfile without changing the legacy field fallbacks or record selection. */
 internal fun parseLrclibLyrics(record: LrclibObject): Lyrics? {
     record.lyricsfile?.let { source ->
-        parseLyricsfile(source)?.let { return it }
+        parseLyricsfile(source)?.takeIf { !it.lyrics?.lines.isNullOrEmpty() }?.let { return it }
     }
-    return when {
-        !record.syncedLyrics.isNullOrEmpty() -> parseSyncedLyrics(record.syncedLyrics)
-        !record.plainLyrics.isNullOrEmpty() -> parseUnsyncedLyrics(record.plainLyrics)
-        else -> null
+    record.syncedLyrics?.takeIf { it.isNotBlank() }?.let { source ->
+        val parsed = parseSyncedLyrics(source)
+        if (!parsed.lyrics?.lines.isNullOrEmpty()) return parsed
     }
+    record.plainLyrics?.takeIf { it.isNotBlank() }?.let { source ->
+        val parsed = parseUnsyncedLyrics(source)
+        if (!parsed.lyrics?.lines.isNullOrEmpty()) return parsed
+    }
+    return null
 }
 
 /**

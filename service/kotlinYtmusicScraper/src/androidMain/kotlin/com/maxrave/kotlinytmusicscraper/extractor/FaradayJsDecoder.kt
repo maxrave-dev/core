@@ -9,8 +9,13 @@ import dev.maxrave.pipepipe.extractor.exceptions.ParsingException
 import dev.maxrave.pipepipe.extractor.services.youtube.YoutubeApiDecoder
 import dev.maxrave.pipepipe.extractor.services.youtube.YoutubeJavaScriptDecoder
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.net.Proxy
 import java.util.concurrent.Executors
 
 private const val TAG = "FaradayJsDecoder"
@@ -58,11 +63,46 @@ internal class FaradayJsDecoder : YoutubeJavaScriptDecoder {
             .newSingleThreadExecutor { runnable -> Thread(null, runnable, "QuickJs", JS_THREAD_STACK_BYTES) }
             .asCoroutineDispatcher()
 
-    private val engine by lazy { FaradayCipherEngine(HttpClient(getEngine()), jsThread, bridgedLogger) }
+    private val cacheStore = FileFaradayCacheStore()
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val engineLock = Any()
+
+    @Volatile
+    private var currentProxy: Proxy? = null
+    private var engineProxy: Proxy? = null
+    private var engineInstance: FaradayCipherEngine? = null
+
+    private fun engine(): FaradayCipherEngine =
+        synchronized(engineLock) {
+            val proxy = currentProxy
+            val existing = engineInstance
+            if (existing != null && engineProxy == proxy) return existing
+            val client =
+                HttpClient(getEngine()) {
+                    if (proxy != null) {
+                        engine {
+                            this.proxy = proxy
+                        }
+                    }
+                }
+            FaradayCipherEngine(client, jsThread, bridgedLogger, cacheStore = cacheStore).also {
+                engineProxy = proxy
+                engineInstance = it
+            }
+        }
+
+    fun setProxy(proxy: Proxy?) {
+        synchronized(engineLock) {
+            currentProxy = proxy
+            if (engineInstance != null && engineProxy != proxy) {
+                engineInstance = null
+            }
+        }
+    }
 
     override fun getPlayerData(videoId: String): YoutubeJavaScriptDecoder.PlayerData {
         val info =
-            runBlocking { engine.playerInfo() }
+            runBlocking { engine().playerInfo() }
                 ?: run {
                     lastOutcome = "fallback:no-player-metadata"
                     throw ParsingException("Faraday: no player metadata")
@@ -77,7 +117,7 @@ internal class FaradayJsDecoder : YoutubeJavaScriptDecoder {
     ): YoutubeApiDecoder.BatchDecodeResult {
         val wantedSignatures = signatures.orEmpty().distinct()
         val wantedNParameters = throttlingParameters.orEmpty().distinct()
-        val result = runBlocking { engine.decode(playerId, wantedSignatures, wantedNParameters) }
+        val result = runBlocking { engine().decode(playerId, wantedSignatures, wantedNParameters) }
 
         // All or nothing: one unsolved challenge means the player table is stale or the script
         // changed shape, and both are reasons to let the whole batch go to the API rather than
@@ -95,8 +135,18 @@ internal class FaradayJsDecoder : YoutubeJavaScriptDecoder {
         return YoutubeApiDecoder.BatchDecodeResult(result.signatures, result.nParameters)
     }
 
+    /** Discard the cached player table and solver asynchronously so callers never block waiting for JS/net locks. */
+    fun invalidateAsync() {
+        backgroundScope.launch {
+            runCatching { engine().invalidate() }
+        }
+    }
+
     /** Discard the cached player table and solver after the CDN rejected a URL we deciphered. */
-    fun invalidate() = runBlocking { engine.invalidate() }
+    fun invalidate() = runBlocking { engine().invalidate() }
+
+    /** Pay the engine's one-time setup ahead of the first decode; see [FaradayCipherEngine.warmUp]. */
+    fun warmUp() = runBlocking { engine().warmUp() }
 
     private val bridgedLogger =
         InnerTubeLogger { event ->
