@@ -20,6 +20,7 @@ import java.io.IOException
 import java.net.Proxy
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Tracks active OkHttp calls per extraction token so cancelling a skipped/superseded track's
@@ -33,10 +34,45 @@ internal object ExtractorCallRegistry {
         @Volatile
         var cancelled: Boolean = false
         val calls: MutableSet<Call> = ConcurrentHashMap.newKeySet()
+        val childTokens: MutableSet<Long> = ConcurrentHashMap.newKeySet()
     }
 
     private val entries = ConcurrentHashMap<Long, Entry>()
     private val currentToken = ThreadLocal<Long?>()
+    private val nextChildToken = AtomicLong(-1L)
+
+    fun newChildToken(): Long {
+        while (true) {
+            val candidate = nextChildToken.decrementAndGet()
+            if (candidate != 0L) return candidate
+        }
+    }
+
+    fun registerChild(
+        parentToken: Long,
+        childToken: Long,
+    ) {
+        if (parentToken == 0L || childToken == 0L) return
+        val parent = entries[parentToken] ?: return
+        if (parent.cancelled || parent.isCancelled()) {
+            parent.cancelled = true
+            cancel(childToken)
+            return
+        }
+        parent.childTokens.add(childToken)
+        if (parent.cancelled || parent.isCancelled()) {
+            parent.cancelled = true
+            cancel(childToken)
+        }
+    }
+
+    fun unregisterChild(
+        parentToken: Long,
+        childToken: Long,
+    ) {
+        if (parentToken == 0L || childToken == 0L) return
+        entries[parentToken]?.childTokens?.remove(childToken)
+    }
 
     fun <T> runWithToken(
         token: Long,
@@ -64,6 +100,9 @@ internal object ExtractorCallRegistry {
                 call.cancel()
             } catch (_: Throwable) {
             }
+        }
+        entry.childTokens.forEach { child ->
+            cancel(child)
         }
     }
 
