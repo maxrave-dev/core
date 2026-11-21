@@ -987,6 +987,8 @@ internal class CrossfadeExoPlayerAdapter(
                 when (internalState) {
                     InternalState.PLAYING, InternalState.READY -> {
                         currentPlayer?.let { player ->
+                            val livePos = player.currentPosition
+                            if (livePos >= 0L) cachedPosition = livePos
                             player.pause()
                             transitionToState(InternalState.PAUSED)
                             internalPlayWhenReady = false
@@ -995,7 +997,16 @@ internal class CrossfadeExoPlayerAdapter(
 
                     InternalState.PREPARING -> {
                         internalPlayWhenReady = false
-                        currentPlayer?.pause()
+                        currentPlayer?.let { player ->
+                            val livePos = player.currentPosition
+                            if (livePos > 0L) cachedPosition = livePos
+                            player.pause()
+                        }
+                        if (cachedIsLoading) {
+                            cachedIsLoading = false
+                            listeners.forEach { it.onIsLoadingChanged(false) }
+                        }
+                        transitionToState(InternalState.PAUSED)
                     }
 
                     else -> {
@@ -2167,8 +2178,8 @@ internal class CrossfadeExoPlayerAdapter(
             // Audio focus is held at the adapter level (see Audio Focus section),
             // not per-player, so it survives this swap (#2155).
 
-            // 5. Auto-play if requested (respecting audio focus grant)
-            if (shouldPlay) {
+            // 5. Auto-play if requested (respecting audio focus grant and any mid-load pause)
+            if (shouldPlay && internalPlayWhenReady) {
                 if (!requestAudioFocusInternal()) {
                     Logger.w(TAG, "Load: audio focus denied; pausing until focus is granted")
                     resumeOnFocusGain = true
@@ -2181,7 +2192,7 @@ internal class CrossfadeExoPlayerAdapter(
                 }
             } else {
                 player.pause()
-                transitionToState(InternalState.READY)
+                transitionToState(if (!internalPlayWhenReady) InternalState.PAUSED else InternalState.READY)
             }
 
             forwardingPlayer.suppressPlaybackEnded = false
@@ -2295,9 +2306,13 @@ internal class CrossfadeExoPlayerAdapter(
                                 reason == Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE
                         )
                     ) {
+                        val pos = player.currentPosition
+                        if (pos >= 0L) cachedPosition = pos
                         internalPlayWhenReady = false
                         resumeOnFocusGain = false
-                        pause()
+                        if (internalState != InternalState.PAUSED) {
+                            pause()
+                        }
                     }
                 }
 

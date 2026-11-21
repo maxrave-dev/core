@@ -3053,8 +3053,8 @@ internal class MediaServiceHandlerImpl(
                 ) {
                     mayBeNormalizeVolume()
                 }
-                if (player.currentPosition == 0L && player.bufferedPosition == 0L && !player.isPlaying) {
-                    // Nothing buffered and nothing playing means it is still waiting: say Buffering instead.
+                if (player.currentPosition == 0L && player.bufferedPosition == 0L && player.playWhenReady && !player.isPlaying) {
+                    // Nothing buffered and waiting to play means it is still waiting: say Buffering instead.
                     _simpleMediaState.value = SimpleMediaState.Buffering(player.currentPosition)
                 } else {
                     _simpleMediaState.value = SimpleMediaState.Ready(durMs)
