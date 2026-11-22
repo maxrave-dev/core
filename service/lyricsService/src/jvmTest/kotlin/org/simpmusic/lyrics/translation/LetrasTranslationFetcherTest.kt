@@ -291,6 +291,64 @@ class LetrasTranslationFetcherTest {
         }
     }
 
+    @Test
+    fun combinesTwoLetrasLinesWhenSingleSyncedLineSpansBoth() {
+        runBlocking {
+            val lizHtml =
+                """
+                <!doctype html>
+                <html>
+                  <head>
+                    <link rel="canonical" href="https://www.letras.mus.br/remi-wolf/liz/traducao.html" />
+                  </head>
+                  <body>
+                    <h1>Liz</h1>
+                    <div class="lyric-stackedTranslation">
+                      <p>
+                        <span class="verse"><span class="romanization">Nobody, nobody, nobody calls</span><span>Ninguém, ninguém, ninguém liga</span></span>
+                        <span class="verse"><span class="romanization">She gets lonely</span><span>Ela fica sozinha</span></span>
+                        <span class="verse"><span class="romanization">And she wants to hold me</span><span>E ela quer me abraçar</span></span>
+                        <span class="verse"><span class="romanization">But I don't hold things</span><span>Mas eu não seguro as coisas</span></span>
+                        <span class="verse"><span class="romanization">No, I'm too lonely for that</span><span>Não, estou muito sozinho para isso</span></span>
+                      </p>
+                    </div>
+                  </body>
+                </html>
+                """.trimIndent()
+            val transport =
+                LetrasTransport { url ->
+                    if (url == "https://www.letras.mus.br/remi-wolf/liz/traducao.html") {
+                        LetrasPageFetchResult.Ok(finalPath = "/remi-wolf/liz/traducao.html", html = lizHtml)
+                    } else {
+                        LetrasPageFetchResult.NotFound
+                    }
+                }
+            val originalSynced =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            line("80100", "Nobody, nobody, nobody calls"),
+                            line("82790", "She gets lonely and she wants to hold me"),
+                            line("88460", "But I don't hold things, no, I'm too lonely for that"),
+                        ),
+                )
+
+            val fetcher = LetrasTranslationFetcher()
+            val result = fetcher.fetchTranslation(transport, "Liz", "Remi Wolf", originalSynced, "pt-BR")
+            assertNotNull(result)
+            assertEquals(
+                listOf(
+                    "Ninguém, ninguém, ninguém liga",
+                    "Ela fica sozinha e ela quer me abraçar",
+                    "Mas eu não seguro as coisas, não, estou muito sozinho para isso",
+                ),
+                result.lyrics.lines!!.map { it.words },
+            )
+        }
+    }
+
     private fun line(
         startMs: String,
         words: String,

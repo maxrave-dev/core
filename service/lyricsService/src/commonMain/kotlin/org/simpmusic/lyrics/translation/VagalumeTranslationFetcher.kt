@@ -250,7 +250,60 @@ internal fun alignHumanPairsToLyrics(
             }
         }
 
-        // 3. Check whether two consecutive original lines were combined into a single human pair.
+        // 3. Check whether 2 (or 3) consecutive human pairs combine into this single original line
+        // (common when Letras breaks one synced verse into two short visual lines, e.g. Remi Wolf's Liz).
+        if (bestScore < 0.94f) {
+            var bestSpanStart = -1
+            var bestSpanLen = 0
+            var bestSpanScore = bestScore
+
+            fun scanMultiSpan(rangeStart: Int, rangeEndExclusive: Int) {
+                for (span in 2..3) {
+                    val lastStart = rangeEndExclusive - span
+                    if (lastStart < rangeStart) continue
+                    for (p in rangeStart..lastStart) {
+                        val combinedPairNorm =
+                            buildString {
+                                for (k in 0 until span) {
+                                    if (isNotEmpty()) append(' ')
+                                    append(pairNorms[p + k])
+                                }
+                            }.trim()
+                        val combinedPairTokens = HashSet<String>(pairTokens[p].size * span)
+                        for (k in 0 until span) {
+                            combinedPairTokens.addAll(pairTokens[p + k])
+                        }
+                        val score = lineSimilarity(normOrig, tokensOrig, combinedPairNorm, combinedPairTokens)
+                        if (score > bestSpanScore) {
+                            bestSpanScore = score
+                            bestSpanStart = p
+                            bestSpanLen = span
+                        }
+                    }
+                }
+            }
+
+            scanMultiSpan(cursor, min(pairs.size, forwardEnd + 3))
+            if (bestSpanScore < 0.85f) {
+                scanMultiSpan(0, pairs.size)
+            }
+
+            if (bestSpanStart >= 0 && bestSpanScore >= 0.78f && bestSpanScore > bestScore + 0.08f) {
+                val parts =
+                    (0 until bestSpanLen).map { offset ->
+                        pairs[bestSpanStart + offset].translated
+                    }
+                matchedTranslations[index] = joinHumanTranslatedParts(parts)
+                matchedCount++
+                if (bestSpanStart in cursor..forwardEnd) {
+                    cursor = (bestSpanStart + bestSpanLen).coerceAtMost(pairs.lastIndex)
+                }
+                index++
+                continue
+            }
+        }
+
+        // 4. Check whether two consecutive original lines were combined into a single human pair.
         var mergedHandled = false
         if (bestScore < 0.76f && index + 1 < lines.size) {
             val nextClean = stripRichSyncMarkers(lines[index + 1].words)
@@ -394,6 +447,50 @@ private fun normalizeForMatch(text: String): String =
 
 private fun tokenizeForMatch(normalized: String): Set<String> =
     normalized.split(' ').filterTo(HashSet()) { it.isNotEmpty() }
+
+private val SPACE_JOIN_CONJUNCTIONS =
+    setOf("e", "mas", "ou", "nem", "porque", "pois", "quando", "então", "entao", "desde", "exceto", "senão", "senao")
+
+private val CONTINUATION_LOWERCASE_WORDS =
+    SPACE_JOIN_CONJUNCTIONS +
+        setOf(
+            "não", "nao", "sim", "assim", "como", "se", "que", "só", "so", "já", "ja",
+            "ainda", "agora", "eu", "ela", "ele", "elas", "eles", "você", "voce", "nós", "nos",
+            "isso", "isto", "aquilo", "tudo", "nada", "ninguém", "ninguem", "sempre", "nunca",
+            "chorando", "esperando", "tentando", "olhando", "pensando", "muito", "pouco",
+        )
+
+internal fun joinHumanTranslatedParts(parts: List<String>): String {
+    var acc = ""
+    for (raw in parts) {
+        val cleaned = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(raw)
+        if (cleaned.isEmpty()) continue
+        if (acc.isEmpty()) {
+            acc = cleaned
+            continue
+        }
+        val endsSentence = acc.endsWith("?") || acc.endsWith("!") || acc.endsWith("...") || acc.endsWith("…")
+        if (endsSentence) {
+            acc = "$acc $cleaned"
+            continue
+        }
+        val firstWordEnd = cleaned.indexOfFirst { !it.isLetter() }.let { if (it < 0) cleaned.length else it }
+        val firstWordLower = cleaned.substring(0, firstWordEnd).lowercase()
+        val normalizedPart =
+            if (firstWordLower in CONTINUATION_LOWERCASE_WORDS && cleaned[0].isUpperCase()) {
+                cleaned[0].lowercaseChar() + cleaned.substring(1)
+            } else {
+                cleaned
+            }
+        acc =
+            if (firstWordLower in SPACE_JOIN_CONJUNCTIONS) {
+                "$acc $normalizedPart"
+            } else {
+                "$acc, $normalizedPart"
+            }
+    }
+    return LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(acc)
+}
 
 private fun foldVagalumeAccent(ch: Char): Char =
     when (ch) {
