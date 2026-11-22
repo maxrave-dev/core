@@ -3,6 +3,7 @@ package org.simpmusic.lyrics.translation
 import com.maxrave.domain.data.model.metadata.Line
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.extension.decodeHtmlEntities
+import com.maxrave.domain.lyrics.LyricsHeaderSanitizer
 import com.maxrave.domain.lyrics.LyricsTranslationResult
 import com.maxrave.logger.Logger
 import io.ktor.client.HttpClient
@@ -20,8 +21,9 @@ private const val TAG = "VagalumeTranslator"
 private const val VAGALUME_BASE_URL = "https://www.vagalume.com.br"
 private const val VAGALUME_CONNECT_TIMEOUT_MS = 2_500L
 private const val VAGALUME_REQUEST_TIMEOUT_MS = 3_500L
-private const val MIN_COVERAGE_RATIO = 0.70f
+private const val MIN_COVERAGE_RATIO = 0.88f
 private const val MIN_PAIR_SIMILARITY = 0.58f
+private const val MIN_MERGED_PAIR_SIMILARITY = 0.68f
 
 private val BROWSER_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
@@ -209,14 +211,22 @@ internal fun alignHumanPairsToLyrics(
     var matchedCount = 0
     var cursor = 0
 
-    lines.forEachIndexed { index, line ->
+    var index = 0
+    while (index < lines.size) {
+        val line = lines[index]
         val cleanOrig = stripRichSyncMarkers(line.words)
-        if (!isTranslatableLyricLine(cleanOrig)) return@forEachIndexed
+        if (!isTranslatableLyricLine(cleanOrig)) {
+            index++
+            continue
+        }
         totalTranslatable++
 
         val normOrig = normalizeForMatch(cleanOrig)
         val tokensOrig = tokenizeForMatch(normOrig)
-        if (normOrig.isEmpty()) return@forEachIndexed
+        if (normOrig.isEmpty()) {
+            index++
+            continue
+        }
 
         // 1. Prefer a monotonic forward window match so repeated choruses align chronologically.
         var bestIdx = -1
@@ -240,13 +250,59 @@ internal fun alignHumanPairsToLyrics(
             }
         }
 
+        // 3. Check whether two consecutive original lines were combined into a single human pair.
+        var mergedHandled = false
+        if (bestScore < 0.76f && index + 1 < lines.size) {
+            val nextClean = stripRichSyncMarkers(lines[index + 1].words)
+            if (isTranslatableLyricLine(nextClean)) {
+                val combinedNorm = normalizeForMatch("$cleanOrig $nextClean")
+                val combinedTokens = tokenizeForMatch(combinedNorm)
+                var mergedIdx = -1
+                var mergedScore = 0f
+                for (p in cursor..forwardEnd) {
+                    val s = lineSimilarity(combinedNorm, combinedTokens, pairNorms[p], pairTokens[p])
+                    if (s > mergedScore) {
+                        mergedScore = s
+                        mergedIdx = p
+                    }
+                }
+                if (mergedScore < 0.78f) {
+                    for (p in pairs.indices) {
+                        val s = lineSimilarity(combinedNorm, combinedTokens, pairNorms[p], pairTokens[p])
+                        if (s > mergedScore) {
+                            mergedScore = s
+                            mergedIdx = p
+                        }
+                    }
+                }
+                if (mergedIdx >= 0 && mergedScore >= MIN_MERGED_PAIR_SIMILARITY && mergedScore > bestScore + 0.08f) {
+                    val splitParts =
+                        splitTranslatedProportionally(
+                            translated = pairs[mergedIdx].translated,
+                            originalParts = listOf(cleanOrig, nextClean),
+                        )
+                    matchedTranslations[index] = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(splitParts[0])
+                    matchedTranslations[index + 1] = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(splitParts[1])
+                    totalTranslatable++
+                    matchedCount += 2
+                    if (mergedIdx in cursor..forwardEnd) {
+                        cursor = (mergedIdx + 1).coerceAtMost(pairs.lastIndex)
+                    }
+                    index += 2
+                    mergedHandled = true
+                }
+            }
+        }
+        if (mergedHandled) continue
+
         if (bestIdx >= 0 && bestScore >= MIN_PAIR_SIMILARITY) {
-            matchedTranslations[index] = pairs[bestIdx].translated
+            matchedTranslations[index] = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(pairs[bestIdx].translated)
             matchedCount++
             if (bestIdx in cursor..forwardEnd) {
                 cursor = (bestIdx + 1).coerceAtMost(pairs.lastIndex)
             }
         }
+        index++
     }
 
     if (totalTranslatable == 0) return null

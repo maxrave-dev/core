@@ -78,10 +78,12 @@ private val INSTRUMENTAL_MARKER_KEYWORDS =
         "pausa instrumental",
     )
 
-private const val MAX_ASR_CUE_RATIO = 0.20f
+private const val MAX_ASR_CUE_RATIO = 0.15f
 private const val MIN_REAL_LINES_WITH_ASR_CUES = 3
-private const val MIN_AVG_WORDS_WITH_ASR_CUES = 2.8f
-private const val MAX_SHORT_LINE_RATIO_WITH_ASR_CUES = 0.70f
+private const val MIN_AVG_WORDS_WITH_ASR_CUES = 3.2f
+private const val MAX_SHORT_LINE_RATIO_WITH_ASR_CUES = 0.55f
+
+private val VALID_SINGLE_LETTER_WORDS = setOf("a", "e", "i", "o", "u", "y", "é", "à", "ó")
 
 /**
  * Detects unambiguous non-vocal / instrumental track titles so the app does not attach
@@ -101,8 +103,8 @@ object LyricsInstrumentalDetector {
 
 /**
  * Guards lyrics quality against corrupted YouTube automatic speech recognition (ASR) captions
- * (such as `[Muzică]`, `[Music]`, `[Applause]`, and garbled fragments) and instrumental-only
- * placeholders.
+ * (both tagged `[Muzică]`/`[Music]`/`[Applause]` and tagless garbled fragments like `.`, `soha`,
+ * `am`, `me f`, `de`) and instrumental-only placeholders.
  */
 object LyricsContentQualityGuard {
     fun isAsrSoundCueLine(rawLine: String): Boolean =
@@ -120,7 +122,7 @@ object LyricsContentQualityGuard {
 
     /**
      * Returns `true` when [lyrics] looks like genuine sung lyrics rather than empty markers,
-     * pure instrumental cues, or broken ASR captions (e.g. `[Muzică]` + sparse fragments).
+     * pure instrumental cues, or broken ASR captions (with or without `[Muzică]`/`[Music]` tags).
      */
     fun isAcceptableContent(lyrics: Lyrics?): Boolean {
         val lines = lyrics?.lines ?: return false
@@ -128,6 +130,7 @@ object LyricsContentQualityGuard {
 
         var asrCueCount = 0
         var instrumentalMarkerCount = 0
+        var punctuationOnlyCount = 0
         val realLines = ArrayList<String>(lines.size)
 
         for (line in lines) {
@@ -137,31 +140,52 @@ object LyricsContentQualityGuard {
                 isAsrSoundCueLine(plain) -> asrCueCount++
                 isInstrumentalOnlyMarkerLine(plain) -> instrumentalMarkerCount++
                 hasReadableChar(plain) -> realLines.add(plain)
+                else -> punctuationOnlyCount++
             }
         }
 
         if (realLines.isEmpty()) return false
 
-        // When no ASR audio cues exist, accept any lyrics with real lines (including short songs).
-        if (asrCueCount == 0) return true
-
-        val nonBlankCount = asrCueCount + instrumentalMarkerCount + realLines.size
-        if (asrCueCount >= 2 && asrCueCount.toFloat() / nonBlankCount.toFloat() >= MAX_ASR_CUE_RATIO) {
-            return false
-        }
-        if (realLines.size < MIN_REAL_LINES_WITH_ASR_CUES) {
-            return false
-        }
-
         val wordCounts = realLines.map(::effectiveWordCount)
         val avgWords = wordCounts.sum().toFloat() / realLines.size.toFloat()
-        if (avgWords < MIN_AVG_WORDS_WITH_ASR_CUES) {
-            return false
+        val shortLineRatio = wordCounts.count { it <= 2 }.toFloat() / realLines.size.toFloat()
+
+        // Rule A: Any ASR sound cue present (`[Muzică]`, `[Music]`, `[Applause]`, etc.).
+        if (asrCueCount > 0) {
+            val nonBlankCount = asrCueCount + instrumentalMarkerCount + punctuationOnlyCount + realLines.size
+            if (asrCueCount >= 2 && asrCueCount.toFloat() / nonBlankCount.toFloat() >= MAX_ASR_CUE_RATIO) {
+                return false
+            }
+            if (realLines.size < MIN_REAL_LINES_WITH_ASR_CUES) {
+                return false
+            }
+            if (avgWords < MIN_AVG_WORDS_WITH_ASR_CUES) {
+                return false
+            }
+            if (shortLineRatio >= MAX_SHORT_LINE_RATIO_WITH_ASR_CUES) {
+                return false
+            }
         }
 
-        if (realLines.size <= 16) {
-            val shortCount = wordCounts.count { it <= 2 }
-            if (shortCount.toFloat() / realLines.size.toFloat() >= MAX_SHORT_LINE_RATIO_WITH_ASR_CUES) {
+        // Rule B: Tagless garbled/phonetic ASR (e.g. ".", "min tamb passa", "soha", "am", "me f", "de").
+        // Guarded by uniqueRatio and non-CJK check so repetitive real choruses and CJK songs are never rejected.
+        val cjkLineCount = realLines.count(::isCjkLine)
+        val isCjkDominant = cjkLineCount.toFloat() / realLines.size.toFloat() >= 0.40f
+        if (!isCjkDominant && realLines.size >= 5) {
+            val uniqueCount = realLines.map { it.lowercase() }.distinct().size
+            val uniqueRatio = uniqueCount.toFloat() / realLines.size.toFloat()
+            val tinyOrFragmentCount = realLines.count(::isTinyOrFragmentLine)
+            val tinyOrFragmentRatio = tinyOrFragmentCount.toFloat() / realLines.size.toFloat()
+            val totalContentLines = realLines.size + punctuationOnlyCount
+            val junkLineRatio = (punctuationOnlyCount + tinyOrFragmentCount).toFloat() / totalContentLines.toFloat()
+
+            if (avgWords <= 2.3f && shortLineRatio >= 0.65f && tinyOrFragmentRatio >= 0.25f && uniqueRatio >= 0.55f) {
+                return false
+            }
+            if (tinyOrFragmentRatio >= 0.45f && avgWords <= 2.6f && uniqueRatio >= 0.50f) {
+                return false
+            }
+            if (junkLineRatio >= 0.45f && avgWords <= 2.5f && uniqueRatio >= 0.50f) {
                 return false
             }
         }
@@ -186,6 +210,26 @@ object LyricsContentQualityGuard {
         if (!removedAny || filtered.isEmpty()) return lyrics
         return lyrics.copy(lines = filtered)
     }
+
+    private fun isTinyOrFragmentLine(plainLine: String): Boolean {
+        val tokens = NON_WORD_SPLIT_REGEX.split(plainLine).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return true
+        val letterCount = plainLine.count { it.isLetterOrDigit() }
+        if (letterCount <= 3) return true
+        // Truncated phonetic fragment containing a dangling single consonant (e.g. "me f", "t b").
+        if (tokens.size <= 3 && tokens.any { it.length == 1 && it.lowercase() !in VALID_SINGLE_LETTER_WORDS }) {
+            return true
+        }
+        return false
+    }
+
+    private fun isCjkLine(plainLine: String): Boolean =
+        plainLine.count { ch ->
+            val code = ch.code
+            code in 0x3040..0x30FF ||
+                code in 0x4E00..0x9FFF ||
+                code in 0xAC00..0xD7AF
+        } >= 2
 
     private fun matchesCueOnlyLine(
         rawLine: String,

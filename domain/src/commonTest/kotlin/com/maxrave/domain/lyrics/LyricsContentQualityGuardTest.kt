@@ -98,6 +98,39 @@ class LyricsContentQualityGuardTest {
         assertTrue(LyricsMetadataMatcher.artistsMatch("dn", "Ugovhb", expectedTitleHint = "Ugovhb - GAROTA DE IPANEMA"))
     }
 
+    @Test
+    fun rejectsTaglessFragmentedAsrGarbageButPreservesRepetitiveRealChoruses() {
+        val taglessAsr =
+            Lyrics(
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        line("1000", "."),
+                        line("4000", "min tamb passa"),
+                        line("7000", "soha"),
+                        line("10000", "am"),
+                        line("13000", "me f"),
+                        line("16000", "de"),
+                    ),
+            )
+        assertFalse(LyricsContentQualityGuard.isAcceptableContent(taglessAsr))
+        assertEquals(LyricsQuality.LEVEL_INVALID, LyricsQuality.level(taglessAsr))
+
+        val repetitiveChorus =
+            Lyrics(
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        line("1000", "Oh yeah"),
+                        line("4000", "Oh yeah"),
+                        line("7000", "Oh yeah"),
+                        line("10000", "Oh yeah"),
+                        line("13000", "Oh yeah"),
+                    ),
+            )
+        assertTrue(LyricsContentQualityGuard.isAcceptableContent(repetitiveChorus))
+    }
+
     private fun line(
         startMs: String,
         words: String,

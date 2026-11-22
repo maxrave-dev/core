@@ -884,7 +884,9 @@ internal fun buildTranslatedLyrics(
     stanzas.forEach { stanza ->
         val translatedLines = translatedByKey[stanza.dedupeKey] ?: return@forEach
         stanza.lines.forEachIndexed { localIdx, origLine ->
-            val translated = translatedLines.getOrNull(localIdx)?.trim().orEmpty()
+            val translated =
+                com.maxrave.domain.lyrics.LyricsHeaderSanitizer
+                    .cleanTranslatedLinePunctuation(translatedLines.getOrNull(localIdx).orEmpty())
             if (translated.isNotEmpty() && !isSameTextNormalized(origLine.cleanedText, translated)) {
                 translatedByIndex[origLine.originalIndex] = translated
             }

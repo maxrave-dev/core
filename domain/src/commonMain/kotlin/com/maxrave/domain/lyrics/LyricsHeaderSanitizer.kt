@@ -17,7 +17,9 @@ private val NOISE_SUFFIX_REGEX =
         RegexOption.IGNORE_CASE,
     )
 private val FEAT_TAIL_REGEX = Regex("""\s+(?:feat\.?|ft\.?|featuring)\s+.*$""", RegexOption.IGNORE_CASE)
-private val TITLE_ARTIST_SEPARATORS = listOf(" - ", " – ", " — ", " | ", " / ", " • ", " : ")
+private val TITLE_ARTIST_SEPARATORS = listOf(" - ", " – ", " — ", " － ", " | ", " / ", " ／ ", " • ", " : ", " ： ")
+private val PAREN_GROUP_REGEX = Regex("""[\(\[（［]([^\)\]）］]+)[\)\]）］]""")
+private val ARTIST_SPLIT_CHARS_REGEX = Regex("""[,&•/／・、;]""")
 private val EXPLICIT_CREDIT_PREFIXES =
     listOf(
         "lyrics by:",
@@ -60,6 +62,7 @@ private val EXPLICIT_CREDIT_PREFIXES =
 
 /**
  * Strips leading/trailing metadata header lines (e.g. `Manic Pixie Dream Girl - EASHA` at 00:00,
+ * bilingual headers like `少女A (Young Girl A) - 椎名もた (ぽわぽわP) / 鏡音鈴 (鏡音リン)`,
  * consecutive `Title` / `Artist` header pairs, or `Lyrics by:` / `Written by:` credits) that
  * community LRC/RichSync providers sometimes embed as timed lines.
  *
@@ -75,7 +78,7 @@ object LyricsHeaderSanitizer {
         val originalLines = lyrics.lines
         if (originalLines.isNullOrEmpty() || originalLines.size <= 1) return lyrics
 
-        val normTitle = normalizeComparable(stripNoiseSuffixes(songTitle.orEmpty()))
+        val titleVariants = extractTitleVariants(songTitle.orEmpty())
         val primaryArtists = splitArtists(artistName.orEmpty())
         val isUnsynced = lyrics.syncType != "LINE_SYNCED" && lyrics.syncType != "RICH_SYNCED"
 
@@ -86,15 +89,15 @@ object LyricsHeaderSanitizer {
             }
 
         // 1. Consecutive [Title, Artist] or [Artist, Title] pair at the very start (<= 5s).
-        if (normTitle.isNotEmpty() && primaryArtists.isNotEmpty() && originalLines.size >= 3) {
+        if (titleVariants.isNotEmpty() && primaryArtists.isNotEmpty() && originalLines.size >= 3) {
             val t0 = originalLines[0].startTimeMs.toLongOrNull() ?: 0L
             val t1 = originalLines[1].startTimeMs.toLongOrNull() ?: 0L
             if (isUnsynced || (t0 <= HEADER_PAIR_MAX_TIME_MS && t1 <= HEADER_PAIR_MAX_TIME_MS)) {
-                val p0 = normalizeComparable(stripNoiseSuffixes(plainTexts[0]))
-                val p1 = normalizeComparable(stripNoiseSuffixes(plainTexts[1]))
-                val pairDirect = p0 == normTitle && matchesAnyArtist(p1, primaryArtists)
-                val pairSwapped = matchesAnyArtist(p0, primaryArtists) && p1 == normTitle
-                if (pairDirect || pairSwapped) {
+                val p0IsTitle = matchesTitleVariants(plainTexts[0], titleVariants)
+                val p1IsArtist = matchesAnyArtistText(plainTexts[1], primaryArtists)
+                val p0IsArtist = matchesAnyArtistText(plainTexts[0], primaryArtists)
+                val p1IsTitle = matchesTitleVariants(plainTexts[1], titleVariants)
+                if ((p0IsTitle && p1IsArtist) || (p0IsArtist && p1IsTitle)) {
                     dropIndices.add(0)
                     dropIndices.add(1)
                 }
@@ -116,9 +119,9 @@ object LyricsHeaderSanitizer {
 
             if (i < HEAD_SCAN_LIMIT &&
                 (isUnsynced || startMs <= HEADER_TITLE_ARTIST_MAX_TIME_MS) &&
-                normTitle.isNotEmpty() &&
+                titleVariants.isNotEmpty() &&
                 primaryArtists.isNotEmpty() &&
-                isTitleArtistHeaderLine(plain, normTitle, primaryArtists)
+                isTitleArtistHeaderLine(plain, titleVariants, primaryArtists)
             ) {
                 dropIndices.add(i)
             }
@@ -145,42 +148,83 @@ object LyricsHeaderSanitizer {
         }
     }
 
+    /**
+     * Strips isolated trailing punctuation (`,`, `;`, `.`, `、`, `，`, `；`, `。`) from translated
+     * lyric lines while preserving expressive punctuation (`?`, `!`, `...`, `…`).
+     */
+    fun cleanTranslatedLinePunctuation(text: String): String {
+        var result = text.trim()
+        if (result.isEmpty()) return result
+        while (result.isNotEmpty()) {
+            val last = result.last()
+            val shouldStrip =
+                when (last) {
+                    ',', ';', '、', '，', '；', '。' -> true
+                    '.' -> !result.endsWith("..")
+                    else -> false
+                }
+            if (!shouldStrip) break
+            result = result.dropLast(1).trimEnd()
+        }
+        return result
+    }
+
+    fun sanitizeTranslatedLyrics(lyrics: Lyrics): Lyrics {
+        val lines = lyrics.lines ?: return lyrics
+        var changed = false
+        val cleaned =
+            lines.map { line ->
+                val updated = cleanTranslatedLinePunctuation(line.words)
+                if (updated != line.words) {
+                    changed = true
+                    line.copy(words = updated)
+                } else {
+                    line
+                }
+            }
+        return if (changed) lyrics.copy(lines = cleaned) else lyrics
+    }
+
     private fun isTitleArtistHeaderLine(
         plainLine: String,
-        normTitle: String,
-        artists: List<String>,
+        titleVariants: Set<String>,
+        artists: Set<String>,
     ): Boolean {
-        val cleaned = stripNoiseSuffixes(plainLine)
+        val normalizedLine = normalizeFullwidth(plainLine)
         for (sep in TITLE_ARTIST_SEPARATORS) {
-            val idx = cleaned.indexOf(sep)
-            if (idx > 0 && idx + sep.length < cleaned.length) {
-                val left = normalizeComparable(cleaned.substring(0, idx))
-                val right = normalizeComparable(cleaned.substring(idx + sep.length))
-                if (left.isEmpty() || right.isEmpty()) continue
-                if ((left == normTitle && matchesAnyArtist(right, artists)) ||
-                    (matchesAnyArtist(left, artists) && right == normTitle)
+            var searchFrom = 0
+            while (searchFrom < normalizedLine.length) {
+                val idx = normalizedLine.indexOf(sep, searchFrom)
+                if (idx <= 0 || idx + sep.length >= normalizedLine.length) break
+                val left = normalizedLine.substring(0, idx)
+                val right = normalizedLine.substring(idx + sep.length)
+                if ((matchesTitleVariants(left, titleVariants) && matchesAnyArtistText(right, artists)) ||
+                    (matchesAnyArtistText(left, artists) && matchesTitleVariants(right, titleVariants))
+                ) {
+                    return true
+                }
+                searchFrom = idx + sep.length
+            }
+        }
+        // Also handle compact "Title-Artist" / "Title - Artist" with irregular spacing.
+        for (i in 1 until normalizedLine.length - 1) {
+            val ch = normalizedLine[i]
+            if (ch == '-' || ch == '–' || ch == '—') {
+                val left = normalizedLine.substring(0, i)
+                val right = normalizedLine.substring(i + 1)
+                if ((matchesTitleVariants(left, titleVariants) && matchesAnyArtistText(right, artists)) ||
+                    (matchesAnyArtistText(left, artists) && matchesTitleVariants(right, titleVariants))
                 ) {
                     return true
                 }
             }
         }
-        // Also handle compact "Title-Artist" / "Title - Artist" with irregular spacing.
-        val compactDashIdx = cleaned.indexOfFirst { it == '-' || it == '–' || it == '—' }
-        if (compactDashIdx > 0 && compactDashIdx + 1 < cleaned.length) {
-            val left = normalizeComparable(cleaned.substring(0, compactDashIdx))
-            val right = normalizeComparable(cleaned.substring(compactDashIdx + 1))
-            if ((left == normTitle && matchesAnyArtist(right, artists)) ||
-                (matchesAnyArtist(left, artists) && right == normTitle)
-            ) {
-                return true
-            }
-        }
         // Handle "<Title> by <Artist>" header lines.
-        val byIndex = cleaned.lowercase().indexOf(" by ")
-        if (byIndex > 0 && byIndex + 4 < cleaned.length) {
-            val left = normalizeComparable(cleaned.substring(0, byIndex))
-            val right = normalizeComparable(cleaned.substring(byIndex + 4))
-            if (left == normTitle && matchesAnyArtist(right, artists)) {
+        val byIndex = normalizedLine.lowercase().indexOf(" by ")
+        if (byIndex > 0 && byIndex + 4 < normalizedLine.length) {
+            val left = normalizedLine.substring(0, byIndex)
+            val right = normalizedLine.substring(byIndex + 4)
+            if (matchesTitleVariants(left, titleVariants) && matchesAnyArtistText(right, artists)) {
                 return true
             }
         }
@@ -193,26 +237,78 @@ object LyricsHeaderSanitizer {
         return EXPLICIT_CREDIT_PREFIXES.any { prefix -> lower.startsWith(prefix) }
     }
 
-    private fun splitArtists(artistName: String): List<String> {
-        if (artistName.isBlank()) return emptyList()
-        val results = ArrayList<String>(4)
-        val fullNorm = normalizeComparable(stripNoiseSuffixes(artistName))
-        if (fullNorm.isNotEmpty()) results.add(fullNorm)
-        artistName
-            .split(',', '&', '•', '/')
-            .map { normalizeComparable(stripNoiseSuffixes(it)) }
-            .filter { it.isNotEmpty() }
-            .forEach { if (it !in results) results.add(it) }
+    private fun extractTitleVariants(rawTitle: String): Set<String> {
+        if (rawTitle.isBlank()) return emptySet()
+        val normalized = normalizeFullwidth(rawTitle)
+        val stripped = stripNoiseSuffixes(normalized)
+        val variants = LinkedHashSet<String>(4)
+        normalizeComparable(stripped).takeIf { it.isNotEmpty() }?.let(variants::add)
+        // Extract outside-parentheses and inside-parentheses variants (e.g. "少女A (Young Girl A)").
+        val outside = PAREN_GROUP_REGEX.replace(stripped, " ").trim()
+        normalizeComparable(outside).takeIf { it.isNotEmpty() }?.let(variants::add)
+        PAREN_GROUP_REGEX.findAll(stripped).forEach { match ->
+            val inside = stripNoiseSuffixes(match.groupValues[1])
+            normalizeComparable(inside).takeIf { it.length >= 2 }?.let(variants::add)
+        }
+        return variants
+    }
+
+    private fun matchesTitleVariants(
+        candidateText: String,
+        expectedVariants: Set<String>,
+    ): Boolean {
+        if (expectedVariants.isEmpty() || candidateText.isBlank()) return false
+        val candidateVariants = extractTitleVariants(candidateText)
+        return candidateVariants.any { it in expectedVariants }
+    }
+
+    private fun splitArtists(artistName: String): Set<String> {
+        if (artistName.isBlank()) return emptySet()
+        val normalized = normalizeFullwidth(artistName)
+        val results = LinkedHashSet<String>(6)
+        fun addToken(token: String) {
+            val cleaned = stripNoiseSuffixes(token)
+            normalizeComparable(cleaned).takeIf { it.isNotEmpty() }?.let(results::add)
+            val outside = PAREN_GROUP_REGEX.replace(cleaned, " ").trim()
+            normalizeComparable(outside).takeIf { it.isNotEmpty() }?.let(results::add)
+            PAREN_GROUP_REGEX.findAll(cleaned).forEach { match ->
+                normalizeComparable(stripNoiseSuffixes(match.groupValues[1]))
+                    .takeIf { it.length >= 2 }
+                    ?.let(results::add)
+            }
+        }
+        addToken(normalized)
+        ARTIST_SPLIT_CHARS_REGEX.split(normalized).forEach(::addToken)
         return results
     }
 
-    private fun matchesAnyArtist(
-        candidateNorm: String,
-        artists: List<String>,
+    private fun matchesAnyArtistText(
+        candidateText: String,
+        expectedArtists: Set<String>,
     ): Boolean {
-        if (candidateNorm.isEmpty()) return false
-        return artists.any { candidateNorm == it }
+        if (expectedArtists.isEmpty() || candidateText.isBlank()) return false
+        val candidateParts = splitArtists(candidateText)
+        return candidateParts.any { it in expectedArtists }
     }
+
+    private fun normalizeFullwidth(text: String): String =
+        buildString(text.length) {
+            for (ch in text) {
+                append(
+                    when (ch) {
+                        '（' -> '('
+                        '）' -> ')'
+                        '［' -> '['
+                        '］' -> ']'
+                        '／' -> '/'
+                        '－' -> '-'
+                        '：' -> ':'
+                        '　' -> ' '
+                        else -> ch
+                    },
+                )
+            }
+        }
 
     internal fun stripRichSyncTags(text: String): String =
         RICH_SYNC_TIME_TAG_REGEX
@@ -241,13 +337,15 @@ object LyricsHeaderSanitizer {
 
 private fun foldAccent(ch: Char): Char =
     when (ch) {
-        'á', 'à', 'â', 'ã', 'ä', 'å' -> 'a'
+        'á', 'à', 'â', 'ã', 'ä', 'å', 'ă' -> 'a'
         'é', 'è', 'ê', 'ë' -> 'e'
         'í', 'ì', 'î', 'ï' -> 'i'
         'ó', 'ò', 'ô', 'õ', 'ö', 'ø' -> 'o'
         'ú', 'ù', 'û', 'ü' -> 'u'
         'ç' -> 'c'
         'ñ' -> 'n'
+        'ş', 'ș' -> 's'
+        'ţ', 'ț' -> 't'
         'ý', 'ÿ' -> 'y'
         else -> ch
     }

@@ -60,4 +60,30 @@ class LyricsTranslationSyncValidatorTest {
             )
         assertTrue(LyricsTranslationSyncValidator.isOutOfSync(trackA, trackBTranslated))
     }
+
+    @Test
+    fun rejectsMergedLineTranslationLeavingBlankGaps() {
+        val original =
+            Lyrics(
+                syncType = "RICH_SYNCED",
+                lines =
+                    listOf(
+                        Line("0", "1000", words = "After all I spent looking around for you"),
+                        Line("0", "6800", words = "Here you laid down"),
+                        Line("0", "12900", words = "The secrets inside your chest and I see nothing"),
+                        Line("0", "19700", words = "But losing her feels I should believe"),
+                    ),
+            )
+        val mergedIncomplete =
+            Lyrics(
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        Line("0", "1000", words = "Depois de tudo que passei procurando por você aqui se deitou"),
+                        Line("0", "12900", words = "Os segredos dentro do seu peito e eu não vejo nada"),
+                        Line("0", "19700", words = "Mas perdê-la parece que eu deveria acreditar"),
+                    ),
+            )
+        assertTrue(LyricsTranslationSyncValidator.isOutOfSync(original, mergedIncomplete))
+    }
 }

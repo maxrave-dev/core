@@ -260,6 +260,35 @@ class FreeLyricsTranslatorTest {
                     ),
             )
         assertNull(alignHumanPairsToLyrics(unrelated, pairs))
+
+        // Merged 2-line human pair should split across both lines cleanly and strip trailing punctuation.
+        val mergedPairs =
+            listOf(
+                BilingualLinePair(
+                    original = "After all I spent looking around for you here you laid down",
+                    translated = "Depois de tudo que passei procurando por você aqui você deitou,",
+                ),
+                BilingualLinePair(
+                    original = "The secrets inside your chest and I see nothing",
+                    translated = "Os segredos dentro do seu peito e não vejo nada.",
+                ),
+            )
+        val splitOriginal =
+            Lyrics(
+                error = false,
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        line("1000", "After all I spent looking around for you"),
+                        line("6800", "Here you laid down"),
+                        line("12900", "The secrets inside your chest and I see nothing"),
+                    ),
+            )
+        val mergedAligned = alignHumanPairsToLyrics(splitOriginal, mergedPairs)
+        assertEquals(3, mergedAligned?.lines?.size)
+        assertTrue(mergedAligned!!.lines!!.all { it.words.isNotBlank() })
+        assertFalse(mergedAligned.lines!![1].words.endsWith(","))
+        assertFalse(mergedAligned.lines!![2].words.endsWith("."))
     }
 
     @Test

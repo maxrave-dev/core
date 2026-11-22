@@ -105,6 +105,53 @@ class LyricsHeaderSanitizerTest {
         assertEquals(listOf("Real first verse", "Real last verse"), sanitized.lines?.map { it.words })
     }
 
+    @Test
+    fun removesBilingualParentheticalTitleAndArtistHeaderLikeYoungGirlA() {
+        val lyrics =
+            Lyrics(
+                error = false,
+                syncType = "RICH_SYNCED",
+                lines =
+                    listOf(
+                        line("0", "少女A（Young Girl A）- 椎名もた（ぽわぽわP）/ 鏡音鈴（鏡音リン）"),
+                        line("14000", "僕の命っつったって"),
+                        line("18000", "誰の命っつったって"),
+                    ),
+            )
+
+        val sanitized =
+            LyricsHeaderSanitizer.sanitize(
+                lyrics = lyrics,
+                songTitle = "Young Girl A (feat. Kagamine Rin)",
+                artistName = "椎名もた, 鏡音リン",
+            )
+        assertEquals(listOf("僕の命っつったって", "誰の命っつったって"), sanitized.lines?.map { it.words })
+    }
+
+    @Test
+    fun cleansTrailingCommasAndSinglePeriodsWhileKeepingExpressivePunctuation() {
+        assertEquals(
+            "Depois de tudo que passei olhando para você aqui previsto",
+            LyricsHeaderSanitizer.cleanTranslatedLinePunctuation("Depois de tudo que passei olhando para você aqui previsto,"),
+        )
+        assertEquals(
+            "Os segredos dentro do seu peito",
+            LyricsHeaderSanitizer.cleanTranslatedLinePunctuation("Os segredos dentro do seu peito."),
+        )
+        assertEquals(
+            "Se eu gosto dela?",
+            LyricsHeaderSanitizer.cleanTranslatedLinePunctuation("Se eu gosto dela?"),
+        )
+        assertEquals(
+            "Espere por mim...",
+            LyricsHeaderSanitizer.cleanTranslatedLinePunctuation("Espere por mim..."),
+        )
+        assertEquals(
+            "Olhe para mim!",
+            LyricsHeaderSanitizer.cleanTranslatedLinePunctuation("Olhe para mim!"),
+        )
+    }
+
     private fun line(
         startMs: String,
         words: String,

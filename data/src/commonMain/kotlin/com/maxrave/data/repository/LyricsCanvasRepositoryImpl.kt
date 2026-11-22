@@ -1570,14 +1570,17 @@ internal fun pickBestSimpMusicLyrics(
             if (abs(candidate.durationSeconds - validExpectedDur) > SIMPMUSIC_DURATION_TOLERANCE_SECONDS) continue
         }
 
-        val mapped =
+        val rawMapped =
             candidate
                 .toLyrics()
                 ?.takeIf { !it.lines.isNullOrEmpty() }
-                ?.let { LyricsContentQualityGuard.stripAsrSoundCueLines(it) }
-                ?.copy(simpMusicLyrics = SimpMusicLyrics(id = candidate.id, vote = candidate.vote))
                 ?: continue
-        val level = LyricsQuality.level(mapped)
+        val level = LyricsQuality.level(rawMapped)
+        if (level <= LyricsQuality.LEVEL_INVALID) continue
+        val mapped =
+            LyricsContentQualityGuard
+                .stripAsrSoundCueLines(rawMapped)
+                .copy(simpMusicLyrics = SimpMusicLyrics(id = candidate.id, vote = candidate.vote))
         if (level > bestLevel || (level == bestLevel && candidate.vote > bestVote)) {
             bestLevel = level
             bestVote = candidate.vote

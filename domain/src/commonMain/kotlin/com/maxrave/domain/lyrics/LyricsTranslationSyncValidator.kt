@@ -4,6 +4,8 @@ import com.maxrave.domain.data.model.metadata.Lyrics
 import kotlin.math.abs
 
 object LyricsTranslationSyncValidator {
+    private const val MIN_COVERAGE_RATIO = 0.85f
+
     fun isOutOfSync(
         originalLyrics: Lyrics,
         translatedLyrics: Lyrics,
@@ -12,44 +14,42 @@ object LyricsTranslationSyncValidator {
         val translatedLines = translatedLyrics.lines ?: return false
         if (originalLines.isEmpty() || translatedLines.isEmpty()) return false
 
-        var timeSyncErrorCount = 0
-        val totalLines = originalLines.size
+        val translatableOriginal =
+            originalLines.filter { line ->
+                val clean = LyricsHeaderSanitizer.stripRichSyncTags(line.words)
+                clean.any { it.isLetterOrDigit() }
+            }
+        val nonBlankTranslated = translatedLines.filter { it.words.isNotBlank() }
+        if (translatableOriginal.isEmpty()) return false
+        if (nonBlankTranslated.isEmpty()) return true
 
-        if (originalLines.size == translatedLines.size) {
-            originalLines.forEachIndexed { index, originalLine ->
-                val originalTime = originalLine.startTimeMs.toLongOrNull() ?: 0L
-                val translatedTime = translatedLines[index].startTimeMs.toLongOrNull() ?: 0L
-                if (abs(originalTime - translatedTime) > 1000L) {
-                    timeSyncErrorCount++
+        // Reject translations that merged multiple verses into fewer timestamps (leaving blank gaps).
+        if (nonBlankTranslated.size.toFloat() / translatableOriginal.size.toFloat() < MIN_COVERAGE_RATIO) {
+            return true
+        }
+
+        val usedIndices = mutableSetOf<Int>()
+        var matchedCount = 0
+        translatableOriginal.forEach { originalLine ->
+            val originalTime = originalLine.startTimeMs.toLongOrNull() ?: 0L
+            var bestIndex = -1
+            var bestDiff = Long.MAX_VALUE
+            nonBlankTranslated.forEachIndexed { index, line ->
+                if (index !in usedIndices) {
+                    val diff = abs((line.startTimeMs.toLongOrNull() ?: 0L) - originalTime)
+                    if (diff < bestDiff) {
+                        bestDiff = diff
+                        bestIndex = index
+                    }
                 }
             }
-        } else {
-            val usedIndices = mutableSetOf<Int>()
-            originalLines.forEach { originalLine ->
-                val originalTime = originalLine.startTimeMs.toLongOrNull() ?: 0L
-                var bestIndex = -1
-                var bestDiff = Long.MAX_VALUE
-                translatedLines.forEachIndexed { index, line ->
-                    if (index !in usedIndices) {
-                        val diff = abs((line.startTimeMs.toLongOrNull() ?: 0L) - originalTime)
-                        if (diff < bestDiff) {
-                            bestDiff = diff
-                            bestIndex = index
-                        }
-                    }
-                }
-                if (bestIndex >= 0) {
-                    usedIndices.add(bestIndex)
-                    if (bestDiff > 1000L) {
-                        timeSyncErrorCount++
-                    }
-                } else {
-                    timeSyncErrorCount++
-                }
+            if (bestIndex >= 0 && bestDiff <= 1000L) {
+                usedIndices.add(bestIndex)
+                matchedCount++
             }
         }
 
-        val syncErrorRatio = if (totalLines > 0) timeSyncErrorCount.toFloat() / totalLines else 0f
-        return syncErrorRatio > 0.25f || (totalLines > 0 && timeSyncErrorCount > totalLines / 2)
+        val coverage = matchedCount.toFloat() / translatableOriginal.size.toFloat()
+        return coverage < MIN_COVERAGE_RATIO
     }
 }
