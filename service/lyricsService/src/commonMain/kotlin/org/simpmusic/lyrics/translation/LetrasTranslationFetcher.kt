@@ -3,6 +3,7 @@ package org.simpmusic.lyrics.translation
 import com.maxrave.domain.data.model.metadata.Line
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.extension.decodeHtmlEntities
+import com.maxrave.domain.lyrics.LyricsHeaderSanitizer
 import com.maxrave.domain.lyrics.LyricsTranslationResult
 import com.maxrave.logger.Logger
 import com.mohamedrejeb.ksoup.html.parser.KsoupHtmlHandler
@@ -280,10 +281,16 @@ internal class LetrasTranslationFetcher {
             return null
         }
 
+        val cleanedLines =
+            parsed.lines
+                .map { LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(it) }
+                .filter { it.isNotEmpty() }
+        if (cleanedLines.isEmpty()) return null
+
         return Lyrics(
             error = false,
             lines =
-                parsed.lines.map { words ->
+                cleanedLines.map { words ->
                     Line(
                         startTimeMs = "0",
                         endTimeMs = "0",

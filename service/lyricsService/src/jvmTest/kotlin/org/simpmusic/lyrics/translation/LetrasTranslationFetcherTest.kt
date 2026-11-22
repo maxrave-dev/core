@@ -255,8 +255,8 @@ class LetrasTranslationFetcherTest {
                   <body>
                     <h1>Aham (part. EF)</h1>
                     <div class="lyric-original">
-                      <p>Eles se perguntam quando que eu vou parar<br/>Foda que na minha conta n&atilde;o para mais de pingar</p>
-                      <p>Pode tentar copiar, mas &eacute; dif&iacute;cil igualar</p>
+                      <p>Eles se perguntam quando que eu vou parar,<br/>Foda que na minha conta n&atilde;o para mais de pingar.</p>
+                      <p>Pode tentar copiar, mas &eacute; dif&iacute;cil igualar;<br/>Espere por mim...<br/>Quem?</p>
                     </div>
                   </body>
                 </html>
@@ -283,6 +283,8 @@ class LetrasTranslationFetcherTest {
                     "Eles se perguntam quando que eu vou parar",
                     "Foda que na minha conta não para mais de pingar",
                     "Pode tentar copiar, mas é difícil igualar",
+                    "Espere por mim...",
+                    "Quem?",
                 ),
                 result.lines!!.map { it.words },
             )
