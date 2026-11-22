@@ -88,6 +88,11 @@ interface LyricsCanvasRepository {
         targetLanguage: String,
     ): Flow<Resource<Lyrics>>
 
+    fun getFreeTranslatedLyrics(
+        lyrics: Lyrics,
+        targetLanguage: String,
+    ): Flow<Resource<com.maxrave.domain.lyrics.LyricsTranslationResult>>
+
     fun getSimpMusicLyrics(videoId: String): Flow<Resource<Lyrics>>
 
     fun getSimpMusicTranslatedLyrics(

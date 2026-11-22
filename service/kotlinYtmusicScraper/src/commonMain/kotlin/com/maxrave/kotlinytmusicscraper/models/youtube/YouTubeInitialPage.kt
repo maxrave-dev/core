@@ -30,6 +30,10 @@ data class YouTubeInitialPage(
                 val name: Name?,
                 @SerialName("vssId")
                 val vssId: String?,
+                @SerialName("languageCode")
+                val languageCode: String? = null,
+                @SerialName("kind")
+                val kind: String? = null,
             ) {
                 @Serializable
                 data class Name(

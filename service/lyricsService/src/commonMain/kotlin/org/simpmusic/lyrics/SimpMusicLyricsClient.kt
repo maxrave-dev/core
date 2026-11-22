@@ -77,6 +77,14 @@ class SimpMusicLyricsClient(
             lyricsService.findTranslatedLyrics(videoId, language).bodyOrThrow<TranslatedLyricsResponse>()
         }
 
+    suspend fun translateLyricsFree(
+        lyrics: com.maxrave.domain.data.model.metadata.Lyrics,
+        targetLanguage: String,
+    ): Result<com.maxrave.domain.lyrics.LyricsTranslationResult> =
+        suspendRunCatching {
+            lyricsService.translateLyricsFree(lyrics, targetLanguage)
+        }
+
     suspend fun insertLyrics(lyricsBody: LyricsBody): Result<LyricsResponse> =
         suspendRunCatching {
             val contentHash =

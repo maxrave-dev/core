@@ -25,10 +25,13 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import com.maxrave.domain.data.model.metadata.Lyrics
+import com.maxrave.domain.lyrics.LyricsTranslationResult
 import org.simpmusic.lyrics.am.AMTokenManager
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.request.VoteBody
+import org.simpmusic.lyrics.translation.FreeLyricsTranslator
 
 class SimpMusicLyrics {
     private var httpClient = createClient()
@@ -42,6 +45,7 @@ class SimpMusicLyrics {
     private val baseUrl = "https://api-lyrics.simpmusic.org/v1/"
 
     private val amTokenManager = AMTokenManager()
+    private val freeLyricsTranslator = FreeLyricsTranslator()
 
     private fun createClient() =
         HttpClient(getEngine()) {
@@ -351,4 +355,9 @@ class SimpMusicLyrics {
      * edge to treat the request as something it is not.
      */
     suspend fun fetchAMHlsPlaylist(url: String): HttpResponse = httpClient.get(url)
+
+    suspend fun translateLyricsFree(
+        lyrics: Lyrics,
+        targetLanguage: String,
+    ): LyricsTranslationResult = freeLyricsTranslator.translate(httpClient, lyrics, targetLanguage)
 }

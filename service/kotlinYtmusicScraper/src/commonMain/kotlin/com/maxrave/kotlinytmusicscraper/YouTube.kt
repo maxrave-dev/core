@@ -2379,12 +2379,18 @@ class YouTube {
     ): Result<Pair<Transcript, Transcript?>> =
         try {
             val ytWeb = ytMusic.player(WEB, videoId, null, null).body<YouTubeInitialPage>()
-            val baseUrl =
+            val tracks =
                 ytWeb.captions
                     ?.playerCaptionsTracklistRenderer
                     ?.captionTracks
-                    ?.firstOrNull()
-                    ?.baseUrl
+                    .orEmpty()
+                    .filter { !it.baseUrl.isNullOrBlank() }
+            val baseTrack =
+                tracks.firstOrNull { it.kind != "asr" }
+                    ?: tracks.firstOrNull()
+                    ?: return Result.failure(NoSuchElementException("No captions found for $videoId"))
+            val baseUrl =
+                baseTrack.baseUrl
                     ?.replace("&fmt=srv3", "")
                     ?.takeIf { it.isNotBlank() }
                     ?: return Result.failure(NoSuchElementException("No captions found for $videoId"))
@@ -2396,10 +2402,39 @@ class YouTube {
             val translateCaption =
                 if (preferLang.isNotBlank()) {
                     try {
-                        ytMusic
-                            .getYouTubeCaption("$baseUrl&tlang=$preferLang")
-                            .body<Transcript>()
-                            .tryDecodeText()
+                        val normalizedPrefer = preferLang.lowercase().replace('_', '-')
+                        val preferBase = normalizedPrefer.substringBefore('-')
+                        val baseTrackLang = baseTrack.languageCode?.lowercase()?.replace('_', '-')
+                        val baseMatchesPrefer =
+                            baseTrackLang != null &&
+                                (baseTrackLang == normalizedPrefer || baseTrackLang.substringBefore('-') == preferBase)
+
+                        if (baseMatchesPrefer) {
+                            null
+                        } else {
+                            val humanMatches =
+                                tracks.filter { track ->
+                                    track.kind != "asr" &&
+                                        track.baseUrl != baseTrack.baseUrl &&
+                                        track.languageCode?.lowercase()?.replace('_', '-')?.let { code ->
+                                            code == normalizedPrefer || code.substringBefore('-') == preferBase
+                                        } == true
+                                }
+                            val preferredNative =
+                                humanMatches.firstOrNull {
+                                    val code = it.languageCode?.lowercase()?.replace('_', '-')
+                                    code == normalizedPrefer || (preferBase == "pt" && code == "pt-br")
+                                } ?: humanMatches.firstOrNull()
+
+                            val translatedUrl =
+                                preferredNative?.baseUrl?.replace("&fmt=srv3", "")?.takeIf { it.isNotBlank() }
+                                    ?: "$baseUrl&tlang=$preferLang"
+
+                            ytMusic
+                                .getYouTubeCaption(translatedUrl)
+                                .body<Transcript>()
+                                .tryDecodeText()
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {

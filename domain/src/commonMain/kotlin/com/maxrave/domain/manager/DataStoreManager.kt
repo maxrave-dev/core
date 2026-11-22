@@ -143,6 +143,23 @@ interface DataStoreManager {
 
     suspend fun setTranslationLanguage(language: String)
 
+    /**
+     * Whether lyrics translation should run automatically when a song starts.
+     * Defaults to FALSE (on-demand via the translate button) to avoid unnecessary network,
+     * CPU, and database work during normal playback.
+     */
+    val autoTranslateLyrics: Flow<String>
+
+    suspend fun setAutoTranslateLyrics(enable: Boolean)
+
+    /**
+     * Selected lyrics translation provider mode: [LYRICS_TRANSLATION_MODE_FREE] (default, built-in
+     * neural translator without API key) or [LYRICS_TRANSLATION_MODE_AI].
+     */
+    val lyricsTranslationMode: Flow<String>
+
+    suspend fun setLyricsTranslationMode(mode: String)
+
     val maxSongCacheSize: Flow<Int>
 
     suspend fun setMaxSongCacheSize(size: Int)
@@ -707,6 +724,10 @@ interface DataStoreManager {
         const val AI_PROVIDER_GEMINI = "gemini"
         const val AI_PROVIDER_OPENAI = "openai"
         const val AI_PROVIDER_CUSTOM_OPENAI = "custom_openai"
+
+        // Lyrics Translation Mode
+        const val LYRICS_TRANSLATION_MODE_FREE = "free"
+        const val LYRICS_TRANSLATION_MODE_AI = "ai"
 
         const val LOCAL_PLAYLIST_FILTER_OLDER_FIRST = "older_first"
         const val LOCAL_PLAYLIST_FILTER_NEWER_FIRST = "newer_first"

@@ -1379,6 +1379,32 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val autoTranslateLyrics: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[AUTO_TRANSLATE_LYRICS] ?: FALSE
+        }
+
+    override suspend fun setAutoTranslateLyrics(enable: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[AUTO_TRANSLATE_LYRICS] = if (enable) TRUE else FALSE
+            }
+        }
+    }
+
+    override val lyricsTranslationMode: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[LYRICS_TRANSLATION_MODE] ?: DataStoreManager.LYRICS_TRANSLATION_MODE_FREE
+        }
+
+    override suspend fun setLyricsTranslationMode(mode: String) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[LYRICS_TRANSLATION_MODE] = mode
+            }
+        }
+    }
+
     override val customModelId =
         settingsDataStore.data.map { preferences ->
             preferences[CUSTOM_MODEL_ID] ?: ""
@@ -2005,6 +2031,8 @@ internal class DataStoreManagerImpl(
         val CUSTOM_OPENAI_HEADERS = stringPreferencesKey("custom_openai_headers")
 
         val USE_AI_TRANSLATION = stringPreferencesKey("use_ai_translation")
+        val AUTO_TRANSLATE_LYRICS = stringPreferencesKey("auto_translate_lyrics")
+        val LYRICS_TRANSLATION_MODE = stringPreferencesKey("lyrics_translation_mode")
 
         val LOCAL_PLAYLIST_FILTER = stringPreferencesKey("local_playlist_filter")
         val YOUTUBE_SUBTITLE_LANGUAGE = stringPreferencesKey("youtube_subtitle_language")

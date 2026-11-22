@@ -712,6 +712,34 @@ internal class LyricsCanvasRepositoryImpl(
             }
         }.flowOn(Dispatchers.IO)
 
+    override fun getFreeTranslatedLyrics(
+        lyrics: Lyrics,
+        targetLanguage: String,
+    ): Flow<Resource<com.maxrave.domain.lyrics.LyricsTranslationResult>> =
+        flow {
+            try {
+                val input =
+                    if (lyrics.syncType == "RICH_SYNCED") {
+                        lyrics.toSyncedLyrics()
+                    } else {
+                        lyrics
+                    }
+                simpMusicLyrics
+                    .translateLyricsFree(input, targetLanguage)
+                    .onSuccess { result ->
+                        emit(Resource.Success(result))
+                    }.onFailure { throwable ->
+                        Logger.e("Free Translation", "Error: ${throwable.message}")
+                        emit(Resource.Error(throwable.message ?: "Translation failed"))
+                    }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Logger.e("Free Translation", "Error: ${t.message}")
+                emit(Resource.Error(t.message ?: "Translation failed"))
+            }
+        }.flowOn(Dispatchers.IO)
+
     // SimpMusic Lyrics
     private val simpMusicLyricsTag = "SimpMusicLyricsRepository"
 
