@@ -85,6 +85,16 @@ class SimpMusicLyricsClient(
             lyricsService.translateLyricsFree(lyrics, targetLanguage)
         }
 
+    suspend fun fetchLetrasTranslation(
+        songTitle: String,
+        artistName: String,
+        lyrics: com.maxrave.domain.data.model.metadata.Lyrics,
+        targetLanguage: String,
+    ): Result<com.maxrave.domain.lyrics.LyricsTranslationResult.Translated?> =
+        suspendRunCatching {
+            lyricsService.fetchLetrasTranslation(songTitle, artistName, lyrics, targetLanguage)
+        }
+
     suspend fun fetchVagalumeTranslation(
         songTitle: String,
         artistName: String,

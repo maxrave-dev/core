@@ -61,6 +61,7 @@ kotlin {
                 implementation(libs.kotlinx.serialization.json)
                 implementation(libs.kotaml)
                 implementation(libs.kotlin.reflect)
+                implementation(libs.ksoup.html)
             }
         }
 

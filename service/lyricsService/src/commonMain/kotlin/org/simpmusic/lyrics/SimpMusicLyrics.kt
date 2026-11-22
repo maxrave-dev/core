@@ -32,6 +32,7 @@ import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.request.VoteBody
 import org.simpmusic.lyrics.translation.FreeLyricsTranslator
+import org.simpmusic.lyrics.translation.LetrasTranslationFetcher
 import org.simpmusic.lyrics.translation.VagalumeTranslationFetcher
 
 class SimpMusicLyrics {
@@ -47,6 +48,7 @@ class SimpMusicLyrics {
 
     private val amTokenManager = AMTokenManager()
     private val freeLyricsTranslator = FreeLyricsTranslator()
+    private val letrasTranslationFetcher = LetrasTranslationFetcher()
     private val vagalumeTranslationFetcher = VagalumeTranslationFetcher()
 
     private fun createClient() =
@@ -362,6 +364,20 @@ class SimpMusicLyrics {
         lyrics: Lyrics,
         targetLanguage: String,
     ): LyricsTranslationResult = freeLyricsTranslator.translate(httpClient, lyrics, targetLanguage)
+
+    suspend fun fetchLetrasTranslation(
+        songTitle: String,
+        artistName: String,
+        lyrics: Lyrics,
+        targetLanguage: String,
+    ): LyricsTranslationResult.Translated? =
+        letrasTranslationFetcher.fetchTranslation(
+            httpClient = httpClient,
+            songTitle = songTitle,
+            artistName = artistName,
+            originalLyrics = lyrics,
+            targetLanguage = targetLanguage,
+        )
 
     suspend fun fetchVagalumeTranslation(
         songTitle: String,
