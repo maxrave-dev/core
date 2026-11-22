@@ -45,3 +45,11 @@ fun String.isRadioQueueId(): Boolean = removePrefix("VL").startsWith("RD")
 fun String.isEndlessQueueId(): Boolean = isRadioQueueId() && !removePrefix("VL").startsWith("RDCLAK")
 
 fun String.isRadioMix(): Boolean = RADIO_MIX_ID_PREFIXES.any { startsWith(it) }
+/**
+ * The queue id of the local Replay Mix: the songs played most in the last week, then the last
+ * month, built on the device. It is never a YouTube id and must never be sent to YouTube.
+ *
+ * It starts with `RD` so [isEndlessQueueId] calls it what it is, a radio: the players extend it with
+ * the radio of its last track once the list runs out, whether or not Endless queue is on.
+ */
+const val REPLAY_MIX_PLAYLIST_ID = "RDSIMPMUSICREPLAY"

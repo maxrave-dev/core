@@ -73,6 +73,7 @@ import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.FilterState
 import com.maxrave.domain.utils.MusicVideoType
+import com.maxrave.domain.utils.REPLAY_MIX_PLAYLIST_ID
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.connectArtists
 import com.maxrave.domain.utils.isEndlessQueueId
@@ -800,6 +801,10 @@ internal class MediaServiceHandlerImpl(
             }
     }
 
+    /** The queue id the watch-time reports carry: none for the local Replay Mix, a made-up id. */
+    private val reportedPlaylistId: String?
+        get() = queueData.value.data.playlistId?.takeUnless { it == REPLAY_MIX_PLAYLIST_ID }
+
     private fun initPlayback(
         playback: String?,
         atr: String?,
@@ -811,7 +816,7 @@ internal class MediaServiceHandlerImpl(
             if (playback != null && atr != null && watchTime != null && cpn != null) {
                 watchTimeList = arrayListOf()
                 streamRepository
-                    .initPlayback(playback, atr, watchTime, cpn, queueData.value.data.playlistId)
+                    .initPlayback(playback, atr, watchTime, cpn, reportedPlaylistId)
                     .collect {
                         if (it.first == 204) {
                             Logger.d("Check initPlayback", "Success")
@@ -846,7 +851,7 @@ internal class MediaServiceHandlerImpl(
                                                     watchTimeUrl,
                                                     watchTimeList,
                                                     cpn,
-                                                    queueData.value.data.playlistId,
+                                                    reportedPlaylistId,
                                                 ).collect { response ->
                                                     if (response == 204) {
                                                         Logger.d("Check updateWatchTime", "Success")
@@ -860,7 +865,7 @@ internal class MediaServiceHandlerImpl(
                                                 .updateWatchTimeFull(
                                                     watchTimeUrl,
                                                     cpn,
-                                                    queueData.value.data.playlistId,
+                                                    reportedPlaylistId,
                                                 ).collect { response ->
                                                     if (response == 204) {
                                                         Logger.d("Check updateWatchTimeFull", "Success")
@@ -1677,7 +1682,9 @@ internal class MediaServiceHandlerImpl(
                         }
                 }
             }
-        } else if (runBlocking { dataStoreManager.endlessQueue.first() } == TRUE) {
+        } else if (playlistId == REPLAY_MIX_PLAYLIST_ID || runBlocking { dataStoreManager.endlessQueue.first() } == TRUE) {
+            // Replay Mix is a radio: once its list runs out it goes on with the radio of its last
+            // track, whether or not Endless queue is on.
             Logger.w(TAG, "loadMore: Endless Queue")
             val lastTrack =
                 queueData.value.data.listTracks
