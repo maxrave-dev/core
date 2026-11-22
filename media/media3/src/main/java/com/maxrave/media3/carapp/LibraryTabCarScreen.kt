@@ -235,7 +235,7 @@ internal class LibraryTabCarScreen(
                 .Builder()
                 .addAction(searchFab())
                 .addAction(nowPlayingFab())
-                .setSingleList(ItemList.Builder().setNoItemsMessage("Nothing to show").build())
+                .setSingleList(ItemList.Builder().setNoItemsMessage(carContext.getString(R.string.car_nothing_to_show)).build())
                 .build()
         }
         val builder =
@@ -294,7 +294,7 @@ internal class LibraryTabCarScreen(
                 .addAction(nowPlayingFab())
         val children = tabChildren[activeTabId] ?: return listBuilder.setLoading(true).build()
         val nowPlayingId = handler.nowPlaying.value?.mediaId
-        val itemListBuilder = ItemList.Builder().setNoItemsMessage("Nothing to show")
+        val itemListBuilder = ItemList.Builder().setNoItemsMessage(carContext.getString(R.string.car_nothing_to_show))
         children.take(carContext.listContentLimit()).forEach { item ->
             val browsable = item.mediaMetadata.isBrowsable == true
             // Browse media ids are paths ("song/{videoId}"); nowPlaying uses the bare videoId

@@ -16,6 +16,7 @@ import androidx.media3.session.MediaBrowser
 import com.google.common.util.concurrent.ListenableFuture
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
+import com.maxrave.media3.R
 import com.maxrave.media3.utils.CoilBitmapLoader
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -117,7 +118,7 @@ internal class MediaListCarScreen(
         val itemListBuilder =
             ItemList
                 .Builder()
-                .setNoItemsMessage("Nothing to show")
+                .setNoItemsMessage(carContext.getString(R.string.car_nothing_to_show))
         loaded.take(carContext.listContentLimit()).forEach { item ->
             val browsable = item.mediaMetadata.isBrowsable == true
             // Browse media ids are paths ("song/{videoId}"); nowPlaying uses the bare videoId

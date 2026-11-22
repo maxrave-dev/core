@@ -15,6 +15,7 @@ import androidx.media3.session.MediaBrowser
 import com.google.common.util.concurrent.ListenableFuture
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
+import com.maxrave.media3.R
 import com.maxrave.media3.utils.CoilBitmapLoader
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -77,14 +78,14 @@ internal class SearchCarScreen(
                         }
                     },
                 ).setHeaderAction(Action.BACK)
-                .setSearchHint("Search songs")
+                .setSearchHint(carContext.getString(R.string.car_search_songs))
                 .setShowKeyboardByDefault(results == null && !searching)
         if (searching) {
             return builder.setLoading(true).build()
         }
         results?.let { items ->
             val nowPlayingId = handler.nowPlaying.value?.mediaId
-            val itemListBuilder = ItemList.Builder().setNoItemsMessage("No results")
+            val itemListBuilder = ItemList.Builder().setNoItemsMessage(carContext.getString(R.string.car_no_results))
             items.take(carContext.listContentLimit()).forEach { item ->
                 val isPlaying = item.mediaId.substringAfterLast('/') == nowPlayingId
                 itemListBuilder.addItem(

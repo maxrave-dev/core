@@ -11,6 +11,7 @@ import androidx.car.app.model.Template
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
+import com.maxrave.media3.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -62,7 +63,7 @@ internal class QueueCarScreen(
         val itemListBuilder =
             ItemList
                 .Builder()
-                .setNoItemsMessage("Queue is empty")
+                .setNoItemsMessage(carContext.getString(R.string.car_queue_empty))
         visibleTracks.forEachIndexed { offset, track ->
             val index = start + offset
             val isPlaying = index == currentIndex && track.videoId == nowPlayingId
@@ -99,7 +100,7 @@ internal class QueueCarScreen(
                 Header
                     .Builder()
                     .setStartHeaderAction(Action.BACK)
-                    .setTitle(queue?.playlistName?.takeIf { it.isNotBlank() } ?: "Queue")
+                    .setTitle(queue?.playlistName?.takeIf { it.isNotBlank() } ?: carContext.getString(R.string.car_queue))
                     .build(),
             ).setSingleList(itemListBuilder.build())
             .build()

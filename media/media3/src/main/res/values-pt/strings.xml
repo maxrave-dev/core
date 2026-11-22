@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="liked">Gostei</string>
+    <string name="like">Gostei</string>
+    <string name="radio">Rádio</string>
+    <string name="repeat_one">Repetir uma</string>
+    <string name="repeat_all">Repetir tudo</string>
+    <string name="repeat_off">Repetição desativada</string>
+    <string name="shuffle">Aleatório</string>
+    <string name="notification_channel_name" translatable="false">Notificação de reprodução do Muzix</string>
+    <string name="home">Início</string>
+    <string name="search">Buscar</string>
+    <string name="library">Biblioteca</string>
+    <string name="available_online">Disponível online</string>
+    <string name="songs">Músicas</string>
+    <string name="favorites">Favoritas</string>
+    <string name="playlists">Playlists</string>
+    <string name="track">faixa(s)</string>
+    <string name="download">Baixar</string>
+    <string name="downloaded">Baixadas</string>
+    <string name="view_count">%1$s visualizações</string>
+    <string name="song">Música</string>
+    <plurals name="n_song">
+        <item quantity="one">%d música</item>
+        <item quantity="other">%d músicas</item>
+    </plurals>
+    <string name="car_queue">Fila</string>
+    <string name="car_queue_empty">A fila está vazia</string>
+    <string name="car_nothing_to_show">Nada para mostrar</string>
+    <string name="car_search_songs">Buscar músicas</string>
+    <string name="car_no_results">Nenhum resultado</string>
+</resources>

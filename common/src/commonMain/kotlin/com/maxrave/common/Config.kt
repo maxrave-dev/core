@@ -205,7 +205,7 @@ object SUPPORTED_LANGUAGE {
             "tr-TR",
             "fi-FI",
             "pl-PL",
-            "pt-PT",
+            "pt-BR",
             "fr-FR",
             "es-ES",
             "zh-CN",
@@ -227,15 +227,38 @@ object SUPPORTED_LANGUAGE {
             "hr-HR",
         )
 
+    private fun normalizeCode(code: String?): String? {
+        val primary =
+            code
+                ?.substringBefore(',')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: return null
+        val normalized = primary.replace('_', '-')
+        if (normalized.equals("he-IL", ignoreCase = true) || normalized.equals("he", ignoreCase = true)) {
+            return "iw-IL"
+        }
+        if (normalized.equals("in-ID", ignoreCase = true) || normalized.equals("in", ignoreCase = true)) {
+            return "id-ID"
+        }
+        codes.firstOrNull { it.equals(normalized, ignoreCase = true) }?.let { return it }
+        val lower = normalized.lowercase()
+        val lang = lower.substringBefore('-')
+        if (lang == "zh") {
+            return if ("hant" in lower || "-tw" in lower || "-hk" in lower || "-mo" in lower) {
+                "zh-Hant-TW"
+            } else {
+                "zh-CN"
+            }
+        }
+        return codes.firstOrNull { it.substringBefore('-').equals(lang, ignoreCase = true) }
+    }
+
+    fun resolveCode(code: String?): String? = normalizeCode(code)
+
     fun getLanguageFromCode(code: String?): String {
-        val index =
-            codes.indexOf(
-                if (code == "he-IL") {
-                    "iw-IL"
-                } else {
-                    code
-                },
-            )
+        val resolved = normalizeCode(code)
+        val index = if (resolved != null) codes.indexOf(resolved) else -1
         Logger.d("Config", "getLanguageFromCode: $code")
         Logger.w("Config", "getLanguageFromCode: ${items.getOrNull(index)}")
         if (index == -1) {

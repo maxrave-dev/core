@@ -58,7 +58,7 @@ internal class NowPlayingCarScreen(
             .setHeader(
                 Header
                     .Builder()
-                    .setTitle(queueTitle ?: "Queue")
+                    .setTitle(queueTitle ?: carContext.getString(R.string.car_queue))
                     .addEndHeaderAction(
                         Action
                             .Builder()
