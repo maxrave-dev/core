@@ -1,5 +1,6 @@
 package org.simpmusic.lyrics
 
+import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.lyrics.LyricsMetadataMatcher
 import com.maxrave.ktorext.curl.CurlLogger
 import com.maxrave.ktorext.crypto.Hmac
@@ -237,6 +238,17 @@ class SimpMusicLyricsClient(
         (outcome as? LrclibSearchResult.Found)?.lyrics
     }
 
+    suspend fun searchLetrasLyrics(
+        q_track: String,
+        q_artist: String,
+    ): Result<Lyrics?> =
+        suspendRunCatching {
+            lyricsService.fetchLetrasOriginalLyrics(
+                songTitle = q_track,
+                artistName = q_artist,
+            )
+        }
+
     suspend fun searchLrclibLyricsDetailed(
         q_track: String,
         q_artist: String,
@@ -245,6 +257,7 @@ class SimpMusicLyricsClient(
         suspendRunCatching {
             val validDuration = duration?.takeIf { it > 0 }
             val candidates = LyricsQueryNormalizer.buildQueryCandidates(q_track, q_artist)
+            var overflowSyncedFallbackRecord: LrclibObject? = null
             var plainFallbackRecord: LrclibObject? = null
             var confirmedInstrumental = false
 
@@ -264,7 +277,14 @@ class SimpMusicLyricsClient(
                         }
                         if (metaOk && !exact.instrumental) {
                             if (exact.hasWordSync || !exact.syncedLyrics.isNullOrBlank()) {
-                                parseLrclibLyrics(exact)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
+                                if (lrclibSyncedOverflowMs(exact, validDuration) == 0L) {
+                                    parseLrclibLyrics(exact)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
+                                } else if (overflowSyncedFallbackRecord == null) {
+                                    // Timestamps extend past track duration (e.g., music-video cut
+                                    // LRC uploaded to a shorter audio release); keep as fallback
+                                    // and continue to /api/search for a properly timed record.
+                                    overflowSyncedFallbackRecord = exact
+                                }
                             }
                             if (!exact.plainLyrics.isNullOrBlank() && plainFallbackRecord == null) {
                                 plainFallbackRecord = exact
@@ -290,22 +310,30 @@ class SimpMusicLyricsClient(
                                 expectedArtist = q_artist,
                             )
                         if (best != null) {
-                            parseLrclibLyrics(best)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
+                            val bestHasSync = best.hasWordSync || !best.syncedLyrics.isNullOrBlank()
+                            if (!bestHasSync || lrclibSyncedOverflowMs(best, validDuration) == 0L) {
+                                parseLrclibLyrics(best)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
+                            } else if (overflowSyncedFallbackRecord == null ||
+                                lrclibSyncedOverflowMs(best, validDuration) <
+                                lrclibSyncedOverflowMs(overflowSyncedFallbackRecord, validDuration)
+                            ) {
+                                overflowSyncedFallbackRecord = best
+                            }
                         } else if (hasMatchingInstrumentalRecord(rs, validDuration, q_track, q_artist)) {
                             confirmedInstrumental = true
                         }
                     }
                     else ->
-                        if (plainFallbackRecord == null && !confirmedInstrumental) {
+                        if (overflowSyncedFallbackRecord == null && plainFallbackRecord == null && !confirmedInstrumental) {
                             throw SimpMusicLyricsApiException(response.status.value, "LRCLIB failed: ${response.status.value}")
                         }
                 }
             }
 
-            if (confirmedInstrumental && plainFallbackRecord == null) {
+            if (confirmedInstrumental && overflowSyncedFallbackRecord == null && plainFallbackRecord == null) {
                 return@suspendRunCatching LrclibSearchResult.ConfirmedInstrumental
             }
-            plainFallbackRecord
+            (overflowSyncedFallbackRecord ?: plainFallbackRecord)
                 ?.let { parseLrclibLyrics(it) }
                 ?.let { LrclibSearchResult.Found(it) }
                 ?: LrclibSearchResult.NotFound
@@ -517,6 +545,51 @@ internal fun hasMatchingInstrumentalRecord(
     }
 }
 
+private val LRCLIB_LINE_TS_REGEX = Regex("""^\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.*)$""")
+private const val LRCLIB_SUNG_OVERFLOW_TOLERANCE_MS = 300L
+private const val LRCLIB_ANY_OVERFLOW_TOLERANCE_MS = 1_500L
+
+/**
+ * Returns `0L` when the LRCLIB record's synced timestamps fit cleanly inside [durationSeconds],
+ * or a positive overflow magnitude in milliseconds when lines extend past the track's end
+ * (e.g. a longer music-video LRC mistakenly uploaded against a shorter audio duration).
+ */
+internal fun lrclibSyncedOverflowMs(
+    record: LrclibObject,
+    durationSeconds: Int?,
+): Long {
+    val validDuration = durationSeconds?.takeIf { it > 0 } ?: return 0L
+    val synced = record.syncedLyrics
+    if (synced.isNullOrBlank()) return 0L
+
+    val durationMs = validDuration * 1_000L
+    var maxSungStartMs = 0L
+    var maxAnyStartMs = 0L
+
+    for (rawLine in synced.lineSequence()) {
+        val match = LRCLIB_LINE_TS_REGEX.matchEntire(rawLine.trim()) ?: continue
+        val minutes = match.groupValues[1].toLongOrNull() ?: continue
+        val seconds = match.groupValues[2].toLongOrNull() ?: continue
+        val fracRaw = match.groupValues[3]
+        val millis =
+            when (fracRaw.length) {
+                0 -> 0L
+                1 -> (fracRaw.toLongOrNull() ?: 0L) * 100L
+                2 -> (fracRaw.toLongOrNull() ?: 0L) * 10L
+                else -> fracRaw.take(3).toLongOrNull() ?: 0L
+            }
+        val tsMs = minutes * 60_000L + seconds * 1_000L + millis
+        if (tsMs > maxAnyStartMs) maxAnyStartMs = tsMs
+        if (match.groupValues[4].isNotBlank() && tsMs > maxSungStartMs) {
+            maxSungStartMs = tsMs
+        }
+    }
+
+    val sungOverflow = (maxSungStartMs - (durationMs + LRCLIB_SUNG_OVERFLOW_TOLERANCE_MS)).coerceAtLeast(0L)
+    val anyOverflow = (maxAnyStartMs - (durationMs + LRCLIB_ANY_OVERFLOW_TOLERANCE_MS)).coerceAtLeast(0L)
+    return maxOf(sungOverflow, anyOverflow)
+}
+
 internal fun selectLrclibLyricsRecord(
     records: List<LrclibObject>,
     duration: Int?,
@@ -536,7 +609,17 @@ internal fun selectLrclibLyricsRecord(
         } else {
             usable
         }
-    return candidates.firstOrNull { it.hasWordSync }
-        ?: candidates.firstOrNull { !it.syncedLyrics.isNullOrBlank() }
-        ?: candidates.firstOrNull { !it.plainLyrics.isNullOrBlank() }
+    if (candidates.isEmpty()) return null
+
+    val syncedCandidates = candidates.filter { it.hasWordSync || !it.syncedLyrics.isNullOrBlank() }
+    if (syncedCandidates.isNotEmpty()) {
+        return syncedCandidates.minWith(
+            compareBy<LrclibObject>(
+                { lrclibSyncedOverflowMs(it, validDuration) > 0L },
+                { !it.hasWordSync },
+                { lrclibSyncedOverflowMs(it, validDuration) },
+            ),
+        )
+    }
+    return candidates.firstOrNull { !it.plainLyrics.isNullOrBlank() }
 }

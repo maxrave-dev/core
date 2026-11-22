@@ -1405,6 +1405,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val wordByWordLyrics: Flow<String> =
+        settingsDataStore.data.map { preferences ->
+            preferences[WORD_BY_WORD_LYRICS] ?: TRUE
+        }
+
+    override suspend fun setWordByWordLyrics(enable: Boolean) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[WORD_BY_WORD_LYRICS] = if (enable) TRUE else FALSE
+            }
+        }
+    }
+
     override val customModelId =
         settingsDataStore.data.map { preferences ->
             preferences[CUSTOM_MODEL_ID] ?: ""
@@ -2033,6 +2046,7 @@ internal class DataStoreManagerImpl(
         val USE_AI_TRANSLATION = stringPreferencesKey("use_ai_translation")
         val AUTO_TRANSLATE_LYRICS = stringPreferencesKey("auto_translate_lyrics")
         val LYRICS_TRANSLATION_MODE = stringPreferencesKey("lyrics_translation_mode")
+        val WORD_BY_WORD_LYRICS = stringPreferencesKey("word_by_word_lyrics")
 
         val LOCAL_PLAYLIST_FILTER = stringPreferencesKey("local_playlist_filter")
         val YOUTUBE_SUBTITLE_LANGUAGE = stringPreferencesKey("youtube_subtitle_language")

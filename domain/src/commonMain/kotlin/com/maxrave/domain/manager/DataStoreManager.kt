@@ -160,6 +160,14 @@ interface DataStoreManager {
 
     suspend fun setLyricsTranslationMode(mode: String)
 
+    /**
+     * Whether word-by-word (RICH_SYNCED) highlight animation is enabled when supported by the lyrics.
+     * Defaults to TRUE; when FALSE, all synced lyrics highlight the entire line at once.
+     */
+    val wordByWordLyrics: Flow<String>
+
+    suspend fun setWordByWordLyrics(enable: Boolean)
+
     val maxSongCacheSize: Flow<Int>
 
     suspend fun setMaxSongCacheSize(size: Int)

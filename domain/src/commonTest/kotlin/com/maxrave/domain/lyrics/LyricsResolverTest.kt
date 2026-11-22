@@ -316,4 +316,105 @@ class LyricsResolverTest {
             val exhausted = events.single() as LyricsResolutionEvent.Exhausted
             assertTrue(exhausted.confirmedInstrumental)
         }
+
+    @Test
+    fun fallsBackToLetrasStaticLyricsOnlyWhenSyncedProvidersFindNothing() =
+        runBlocking {
+            val queried = mutableListOf<LyricsSource>()
+            val resolver =
+                LyricsResolver(
+                    readCache = { null },
+                    fetchSource = { source, _ ->
+                        queried.add(source)
+                        if (source == LyricsSource.LETRAS) {
+                            ProviderFetchOutcome.Success(unsynced("Static Letras verse"))
+                        } else {
+                            ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                    },
+                    providerTimeoutMs = 500L,
+                    hedgeDelayMs = 20L,
+                )
+
+            val events = withTimeout(2_000L) { resolver.resolve(request()).toList() }
+            val found = events.single() as LyricsResolutionEvent.Found
+            assertEquals(LyricsSource.LETRAS, found.resolution.source)
+            assertEquals("UNSYNCED", found.resolution.lyrics.syncType)
+            assertTrue(LyricsSource.LETRAS in queried)
+        }
+
+    @Test
+    fun neverQueriesLetrasWhenConfirmedInstrumental() =
+        runBlocking {
+            val queried = mutableListOf<LyricsSource>()
+            val resolver =
+                LyricsResolver(
+                    readCache = { null },
+                    fetchSource = { source, _ ->
+                        queried.add(source)
+                        if (source == LyricsSource.LRCLIB) {
+                            ProviderFetchOutcome.ConfirmedInstrumental
+                        } else {
+                            ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                    },
+                    providerTimeoutMs = 500L,
+                    hedgeDelayMs = 20L,
+                )
+
+            val events = withTimeout(2_000L) { resolver.resolve(request()).toList() }
+            val exhausted = events.single() as LyricsResolutionEvent.Exhausted
+            assertTrue(exhausted.confirmedInstrumental)
+            assertFalse(LyricsSource.LETRAS in queried)
+        }
+
+    @Test
+    fun upgradesOverflowingCachedSyncedLyricsWithDurationFittingResult() =
+        runBlocking {
+            val overflowingCache =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            Line(startTimeMs = "18770", endTimeMs = "20830", syllables = null, words = "Eles se perguntam quando que eu vou parar"),
+                            Line(startTimeMs = "142160", endTimeMs = "145820", syllables = null, words = "I searched to find a love within"),
+                        ),
+                )
+            val cleanSynced =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            Line(startTimeMs = "10380", endTimeMs = "13090", syllables = null, words = "Eles se perguntam quando que eu vou parar"),
+                            Line(startTimeMs = "136650", endTimeMs = "139650", syllables = null, words = "I searched to find a love within"),
+                        ),
+                )
+            val resolver =
+                LyricsResolver(
+                    readCache = { overflowingCache },
+                    fetchSource = { source, _ ->
+                        if (source == LyricsSource.LRCLIB) {
+                            ProviderFetchOutcome.Success(cleanSynced)
+                        } else {
+                            ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                    },
+                    providerTimeoutMs = 500L,
+                    hedgeDelayMs = 20L,
+                )
+
+            val events =
+                withTimeout(2_000L) {
+                    resolver
+                        .resolve(
+                            request(allowUpgradeScan = false).copy(durationSeconds = 141),
+                        ).toList()
+                }
+            assertEquals(2, events.size)
+            val second = events[1] as LyricsResolutionEvent.Found
+            assertEquals(LyricsSource.LRCLIB, second.resolution.source)
+            assertEquals("10380", second.resolution.lyrics.lines?.first()?.startTimeMs)
+        }
 }

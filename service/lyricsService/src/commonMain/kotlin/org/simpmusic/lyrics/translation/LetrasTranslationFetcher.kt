@@ -1,5 +1,6 @@
 package org.simpmusic.lyrics.translation
 
+import com.maxrave.domain.data.model.metadata.Line
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.extension.decodeHtmlEntities
 import com.maxrave.domain.lyrics.LyricsTranslationResult
@@ -25,10 +26,10 @@ private val BROWSER_USER_AGENT =
 
 private val NOISE_TITLE_PAREN_REGEX =
     Regex(
-        """\s*[\(\[](?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?|hd|4k|remastered(?:\s+\d{4})?|explicit|clean|radio\s*edit|single\s*version|album\s*version|feat\.?[^\)\]]*|ft\.?[^\)\]]*)[\)\]]""",
+        """\s*[\(\[](?:official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer)|lyrics?|hd|4k|remastered(?:\s+\d{4})?|explicit|clean|radio\s*edit|single\s*version|album\s*version|feat\.?[^\)\]]*|ft\.?[^\)\]]*|part\.?[^\)\]]*|participa[çc][ãa]o[^\)\]]*)[\)\]]""",
         RegexOption.IGNORE_CASE,
     )
-private val FEAT_TAIL_REGEX = Regex("""\s+(?:feat\.?|ft\.?|featuring)\s+.*$""", RegexOption.IGNORE_CASE)
+private val FEAT_TAIL_REGEX = Regex("""\s+(?:feat\.?|ft\.?|featuring|part\.?)\s+.*$""", RegexOption.IGNORE_CASE)
 private val MULTI_SPACE_REGEX = Regex("""\s+""")
 private val LETRAS_URL_HOST_REGEX = Regex("""^https?://(?:www\.)?letras\.mus\.br""", RegexOption.IGNORE_CASE)
 
@@ -51,6 +52,12 @@ internal data class LetrasParsedTranslationPage(
     val canonicalHref: String?,
     val headingTitle: String,
     val pairs: List<BilingualLinePair>,
+)
+
+internal data class LetrasParsedOriginalPage(
+    val canonicalHref: String?,
+    val headingTitle: String,
+    val lines: List<String>,
 )
 
 /**
@@ -162,6 +169,130 @@ internal class LetrasTranslationFetcher {
         }
 
         return null
+    }
+
+    suspend fun fetchOriginalLyrics(
+        httpClient: HttpClient,
+        songTitle: String,
+        artistName: String,
+    ): Lyrics? =
+        fetchOriginalLyrics(
+            transport = ktorLetrasTransport(httpClient),
+            songTitle = songTitle,
+            artistName = artistName,
+        )
+
+    suspend fun fetchOriginalLyrics(
+        transport: LetrasTransport,
+        songTitle: String,
+        artistName: String,
+    ): Lyrics? {
+        if (songTitle.isBlank() || artistName.isBlank()) return null
+
+        val artistSlugs = buildLetrasArtistSlugs(artistName)
+        val titleVariants = buildLetrasTitleVariants(songTitle)
+        if (artistSlugs.isEmpty() || titleVariants.isEmpty()) return null
+
+        val expectedTitleKeys = buildExpectedTitleKeys(titleVariants)
+        val triedPaths = HashSet<String>(6)
+
+        // 1. Direct `/<artist>/<title>/` lookup (1 HTTP request on hit).
+        for (artistSlug in artistSlugs) {
+            val directSlugs = titleVariants.map(::toLetrasSlug).filter { it.isNotEmpty() }.distinct()
+            for (titleSlug in directSlugs) {
+                val path = "/$artistSlug/$titleSlug/"
+                if (!triedPaths.add(path)) continue
+                when (val result = transport.get("$LETRAS_BASE_URL$path")) {
+                    is LetrasPageFetchResult.Ok -> {
+                        val matched =
+                            tryBuildLetrasOriginalLyrics(
+                                result = result,
+                                artistSlug = artistSlug,
+                                expectedTitleKeys = expectedTitleKeys,
+                            )
+                        if (matched != null) return matched
+                    }
+
+                    LetrasPageFetchResult.NotFound -> Unit
+                    LetrasPageFetchResult.BlockedOrUnavailable -> return null
+                }
+            }
+        }
+
+        // 2. Artist catalog fallback (resolves numeric IDs and `(part. ...)` slug aliases).
+        for (artistSlug in artistSlugs.take(2)) {
+            val catalogPath = "/$artistSlug/"
+            when (val catalogResult = transport.get("$LETRAS_BASE_URL$catalogPath")) {
+                is LetrasPageFetchResult.Ok -> {
+                    val normalizedCatalogPath = normalizeLetrasPath(catalogResult.finalPath)
+                    if (normalizedCatalogPath != catalogPath) continue
+
+                    val candidatePaths =
+                        parseLetrasCatalogSongPaths(
+                            html = catalogResult.html,
+                            artistSlug = artistSlug,
+                            expectedTitleKeys = expectedTitleKeys,
+                        )
+                    for (songPath in candidatePaths) {
+                        if (!triedPaths.add(songPath)) continue
+                        when (val songResult = transport.get("$LETRAS_BASE_URL$songPath")) {
+                            is LetrasPageFetchResult.Ok -> {
+                                val matched =
+                                    tryBuildLetrasOriginalLyrics(
+                                        result = songResult,
+                                        artistSlug = artistSlug,
+                                        expectedTitleKeys = expectedTitleKeys,
+                                    )
+                                if (matched != null) return matched
+                            }
+
+                            LetrasPageFetchResult.NotFound -> Unit
+                            LetrasPageFetchResult.BlockedOrUnavailable -> return null
+                        }
+                    }
+                }
+
+                LetrasPageFetchResult.NotFound -> Unit
+                LetrasPageFetchResult.BlockedOrUnavailable -> return null
+            }
+        }
+
+        return null
+    }
+
+    private fun tryBuildLetrasOriginalLyrics(
+        result: LetrasPageFetchResult.Ok,
+        artistSlug: String,
+        expectedTitleKeys: Set<String>,
+    ): Lyrics? {
+        val finalPath = normalizeLetrasPath(result.finalPath) ?: return null
+        if (!isValidLetrasOriginalPath(finalPath, artistSlug)) return null
+
+        val parsed = parseLetrasOriginalLyricsPage(result.html)
+        if (parsed.lines.isEmpty()) return null
+
+        val canonicalPath = parsed.canonicalHref?.let(::normalizeLetrasPath)
+        if (canonicalPath != null && !isValidLetrasOriginalPath(canonicalPath, artistSlug)) {
+            return null
+        }
+
+        if (parsed.headingTitle.isNotBlank() && !letrasTitleMatches(expectedTitleKeys, parsed.headingTitle)) {
+            return null
+        }
+
+        return Lyrics(
+            error = false,
+            lines =
+                parsed.lines.map { words ->
+                    Line(
+                        startTimeMs = "0",
+                        endTimeMs = "0",
+                        syllables = null,
+                        words = words,
+                    )
+                },
+            syncType = "UNSYNCED",
+        )
     }
 
     private fun tryAlignLetrasTranslationPage(
@@ -483,7 +614,163 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
     )
 }
 
+internal fun isValidLetrasOriginalPath(
+    path: String,
+    expectedArtistSlug: String,
+): Boolean {
+    val segments = path.trim('/').split('/').filter { it.isNotEmpty() }
+    return segments.size == 2 &&
+        segments[0].equals(expectedArtistSlug, ignoreCase = true) &&
+        segments[1].isNotEmpty() &&
+        !segments[1].equals("traducao.html", ignoreCase = true)
+}
+
+internal fun parseLetrasOriginalLyricsPage(html: String): LetrasParsedOriginalPage {
+    var canonicalHref: String? = null
+    val h1Buf = StringBuilder()
+    var inFirstH1 = false
+    var seenFirstH1 = false
+
+    var divDepth = 0
+    var lyricContainerDivDepth = -1
+    var inParagraph = false
+    var skipDepth = 0
+
+    val lineBuf = StringBuilder()
+    val lines = ArrayList<String>()
+
+    fun flushLine() {
+        val cleaned = cleanParsedText(lineBuf)
+        lineBuf.setLength(0)
+        if (cleaned.isNotEmpty()) {
+            lines.add(cleaned)
+        }
+    }
+
+    val parser =
+        KsoupHtmlParser(
+            handler =
+                object : KsoupHtmlHandler {
+                    override fun onOpenTag(
+                        name: String,
+                        attributes: Map<String, String>,
+                        isImplied: Boolean,
+                    ) {
+                        val tag = name.lowercase()
+                        if (tag == "script" || tag == "style" || tag == "noscript") {
+                            skipDepth++
+                            return
+                        }
+                        if (skipDepth > 0) return
+
+                        when (tag) {
+                            "link" -> {
+                                if (canonicalHref == null &&
+                                    attributes["rel"]?.trim()?.equals("canonical", ignoreCase = true) == true
+                                ) {
+                                    canonicalHref = attributes["href"]?.trim()
+                                }
+                            }
+
+                            "h1" -> {
+                                if (!seenFirstH1) {
+                                    inFirstH1 = true
+                                }
+                            }
+
+                            "div" -> {
+                                divDepth++
+                                if (lyricContainerDivDepth == -1) {
+                                    val classes = splitClassList(attributes["class"])
+                                    if ("lyric-original" in classes || "lyric-tra" in classes || "cnt-letra" in classes) {
+                                        lyricContainerDivDepth = divDepth
+                                    }
+                                }
+                            }
+
+                            "p" -> {
+                                if (lyricContainerDivDepth > 0) {
+                                    inParagraph = true
+                                    lineBuf.setLength(0)
+                                }
+                            }
+
+                            "br" -> {
+                                if (inFirstH1) h1Buf.append(' ')
+                                if (inParagraph) flushLine()
+                            }
+                        }
+                    }
+
+                    override fun onText(text: String) {
+                        if (skipDepth > 0) return
+                        if (inFirstH1) {
+                            h1Buf.append(text)
+                        }
+                        if (inParagraph) {
+                            lineBuf.append(text)
+                        }
+                    }
+
+                    override fun onCloseTag(
+                        name: String,
+                        isImplied: Boolean,
+                    ) {
+                        val tag = name.lowercase()
+                        if (tag == "script" || tag == "style" || tag == "noscript") {
+                            if (skipDepth > 0) skipDepth--
+                            return
+                        }
+                        if (skipDepth > 0) return
+
+                        when (tag) {
+                            "h1" -> {
+                                if (inFirstH1) {
+                                    inFirstH1 = false
+                                    seenFirstH1 = true
+                                }
+                            }
+
+                            "p" -> {
+                                if (inParagraph) {
+                                    flushLine()
+                                    inParagraph = false
+                                }
+                            }
+
+                            "div" -> {
+                                if (divDepth == lyricContainerDivDepth) {
+                                    if (inParagraph) {
+                                        flushLine()
+                                        inParagraph = false
+                                    }
+                                    lyricContainerDivDepth = -1
+                                }
+                                if (divDepth > 0) divDepth--
+                            }
+                        }
+                    }
+                },
+        )
+    parser.write(html)
+    parser.end()
+
+    return LetrasParsedOriginalPage(
+        canonicalHref = canonicalHref,
+        headingTitle = cleanParsedText(h1Buf),
+        lines = lines,
+    )
+}
+
 internal fun parseLetrasCatalogLinks(
+    html: String,
+    artistSlug: String,
+    expectedTitleKeys: Set<String>,
+): List<String> =
+    parseLetrasCatalogSongPaths(html, artistSlug, expectedTitleKeys)
+        .map { songPath -> "${songPath.trimEnd('/')}/traducao.html" }
+
+internal fun parseLetrasCatalogSongPaths(
     html: String,
     artistSlug: String,
     expectedTitleKeys: Set<String>,
@@ -544,9 +831,9 @@ internal fun parseLetrasCatalogLinks(
                         if (candidateTitle.isEmpty()) return
 
                         if (letrasTitleMatches(expectedTitleKeys, candidateTitle)) {
-                            val tradPath = "/${segments[0]}/$songSlug/traducao.html"
-                            if (seen.add(tradPath)) {
-                                results.add(tradPath)
+                            val songPath = "/${segments[0]}/$songSlug/"
+                            if (seen.add(songPath)) {
+                                results.add(songPath)
                             }
                         }
                     }

@@ -365,6 +365,16 @@ class SimpMusicLyrics {
         targetLanguage: String,
     ): LyricsTranslationResult = freeLyricsTranslator.translate(httpClient, lyrics, targetLanguage)
 
+    suspend fun fetchLetrasOriginalLyrics(
+        songTitle: String,
+        artistName: String,
+    ): Lyrics? =
+        letrasTranslationFetcher.fetchOriginalLyrics(
+            httpClient = httpClient,
+            songTitle = songTitle,
+            artistName = artistName,
+        )
+
     suspend fun fetchLetrasTranslation(
         songTitle: String,
         artistName: String,

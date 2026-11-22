@@ -236,6 +236,59 @@ class LetrasTranslationFetcherTest {
         }
     }
 
+    @Test
+    fun fetchesStaticOriginalLyricsIncludingBrazilianPartCatalogMatch() {
+        runBlocking {
+            val catalogHtml =
+                """
+                <html><body>
+                  <a href="/massaru/aham-part-ef/" title="Aham (part. EF)">Aham (part. EF)</a>
+                </body></html>
+                """.trimIndent()
+            val originalHtml =
+                """
+                <!doctype html>
+                <html>
+                  <head>
+                    <link rel="canonical" href="https://www.letras.mus.br/massaru/aham-part-ef/" />
+                  </head>
+                  <body>
+                    <h1>Aham (part. EF)</h1>
+                    <div class="lyric-original">
+                      <p>Eles se perguntam quando que eu vou parar<br/>Foda que na minha conta n&atilde;o para mais de pingar</p>
+                      <p>Pode tentar copiar, mas &eacute; dif&iacute;cil igualar</p>
+                    </div>
+                  </body>
+                </html>
+                """.trimIndent()
+            val transport =
+                LetrasTransport { url ->
+                    when (url) {
+                        "https://www.letras.mus.br/massaru/" ->
+                            LetrasPageFetchResult.Ok(finalPath = "/massaru/", html = catalogHtml)
+
+                        "https://www.letras.mus.br/massaru/aham-part-ef/" ->
+                            LetrasPageFetchResult.Ok(finalPath = "/massaru/aham-part-ef/", html = originalHtml)
+
+                        else -> LetrasPageFetchResult.NotFound
+                    }
+                }
+
+            val fetcher = LetrasTranslationFetcher()
+            val result = fetcher.fetchOriginalLyrics(transport, "Aham", "Massaru")
+            assertNotNull(result)
+            assertEquals("UNSYNCED", result.syncType)
+            assertEquals(
+                listOf(
+                    "Eles se perguntam quando que eu vou parar",
+                    "Foda que na minha conta não para mais de pingar",
+                    "Pode tentar copiar, mas é difícil igualar",
+                ),
+                result.lines!!.map { it.words },
+            )
+        }
+    }
+
     private fun line(
         startMs: String,
         words: String,

@@ -8,6 +8,7 @@ enum class LyricsSource {
     SPOTIFY,
     LRCLIB,
     BETTER_LYRICS,
+    LETRAS,
     OFFLINE,
 }
 
@@ -66,6 +67,9 @@ object LyricsQuality {
     const val LEVEL_LINE_SYNCED = 2
     const val LEVEL_RICH_SYNCED = 3
 
+    private const val SUNG_LINE_OVERFLOW_TOLERANCE_MS = 300L
+    private const val ANY_LINE_OVERFLOW_TOLERANCE_MS = 1_500L
+
     private val RICH_TAG_REGEX = Regex("""<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>""")
 
     fun level(lyrics: Lyrics?): Int {
@@ -89,6 +93,33 @@ object LyricsQuality {
             }
             else -> LEVEL_UNSYNCED
         }
+    }
+
+    /**
+     * Returns `true` when synced lyrics carry timestamps extending past the track's known duration
+     * (for example, an LRC timed for a longer music-video cut attached to a shorter audio release).
+     */
+    fun hasSyncedTimestampOverflow(
+        lyrics: Lyrics?,
+        durationSeconds: Int?,
+    ): Boolean {
+        val validDurationSec = durationSeconds?.takeIf { it > 0 } ?: return false
+        val lines = lyrics?.lines ?: return false
+        if (lyrics.syncType != "LINE_SYNCED" && lyrics.syncType != "RICH_SYNCED") return false
+
+        val durationMs = validDurationSec * 1_000L
+        var maxSungStartMs = 0L
+        var maxAnyStartMs = 0L
+        for (line in lines) {
+            val startMs = line.startTimeMs.toLongOrNull() ?: continue
+            if (startMs > maxAnyStartMs) maxAnyStartMs = startMs
+            val plain = RICH_TAG_REGEX.replace(line.words, "").trim()
+            if (plain.isNotEmpty() && startMs > maxSungStartMs) {
+                maxSungStartMs = startMs
+            }
+        }
+        return maxSungStartMs > durationMs + SUNG_LINE_OVERFLOW_TOLERANCE_MS ||
+            maxAnyStartMs > durationMs + ANY_LINE_OVERFLOW_TOLERANCE_MS
     }
 
     fun isStrictUpgrade(

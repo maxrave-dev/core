@@ -1139,6 +1139,21 @@ internal class LyricsCanvasRepositoryImpl(
                 )
             }
 
+            LyricsSource.LETRAS -> {
+                simpMusicLyrics.searchLetrasLyrics(request.title, request.artist).fold(
+                    onSuccess = { lyrics ->
+                        if (lyrics != null && LyricsQuality.level(lyrics) > LyricsQuality.LEVEL_INVALID) {
+                            ProviderFetchOutcome.Success(lyrics)
+                        } else {
+                            ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                    },
+                    onFailure = { error ->
+                        ProviderFetchOutcome.TransientFailure(error.message)
+                    },
+                )
+            }
+
             LyricsSource.SPOTIFY -> {
                 val queryCandidates =
                     LyricsQueryNormalizer
@@ -1555,6 +1570,7 @@ internal fun pickBestSimpMusicLyrics(
 ): Lyrics? {
     var bestLyrics: Lyrics? = null
     var bestLevel = LyricsQuality.LEVEL_INVALID
+    var bestOverflow = true
     var bestVote = Int.MIN_VALUE
 
     for (candidate in candidates) {
@@ -1581,8 +1597,14 @@ internal fun pickBestSimpMusicLyrics(
             LyricsContentQualityGuard
                 .stripAsrSoundCueLines(rawMapped)
                 .copy(simpMusicLyrics = SimpMusicLyrics(id = candidate.id, vote = candidate.vote))
-        if (level > bestLevel || (level == bestLevel && candidate.vote > bestVote)) {
+        val overflow = LyricsQuality.hasSyncedTimestampOverflow(mapped, validExpectedDur)
+        val isBetter =
+            level > bestLevel ||
+                (level == bestLevel && bestOverflow && !overflow) ||
+                (level == bestLevel && overflow == bestOverflow && candidate.vote > bestVote)
+        if (isBetter) {
             bestLevel = level
+            bestOverflow = overflow
             bestVote = candidate.vote
             bestLyrics = mapped
         }

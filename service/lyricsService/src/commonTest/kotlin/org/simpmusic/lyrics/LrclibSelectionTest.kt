@@ -119,6 +119,45 @@ class LrclibSelectionTest {
         )
     }
 
+    @Test
+    fun prefersProperlyTimedRecordOverOverflowingRecordOfSameDuration() {
+        val shiftedOverflow =
+            record(
+                id = 8428733,
+                duration = 141f,
+                syncedLyrics =
+                    """
+                    [00:18.77] Eles se perguntam quando que eu vou parar
+                    [02:16.05] E cê não vai falir
+                    [02:21.51] I guess you wonder where I've been
+                    [02:22.16] I searched to find a love within
+                    [02:25.82] 
+                    """.trimIndent(),
+            ).copy(trackName = "Aham", artistName = "Massaru")
+        val properlyTimed =
+            record(
+                id = 10020903,
+                duration = 141f,
+                syncedLyrics =
+                    """
+                    [00:10.38] Eles se perguntam quando que eu vou parar
+                    [02:10.03] E cê não vai falir
+                    [02:11.68] I guess you wonder where I've been
+                    [02:16.65] I searched to find a love within
+                    [02:19.65] 
+                    """.trimIndent(),
+            ).copy(trackName = "Aham", artistName = "Massaru")
+
+        val picked =
+            selectLrclibLyricsRecord(
+                records = listOf(shiftedOverflow, properlyTimed),
+                duration = 141,
+                expectedTrack = "Aham",
+                expectedArtist = "Massaru",
+            )
+        assertEquals(properlyTimed, picked)
+    }
+
     private fun record(
         id: Int,
         duration: Float,
