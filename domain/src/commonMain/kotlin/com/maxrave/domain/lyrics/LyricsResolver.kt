@@ -36,12 +36,23 @@ class LyricsResolver(
             var simpMusicNotFoundObserved = false
             var anyTransientFailure = false
 
+            val titleInstrumental = LyricsInstrumentalDetector.isExplicitlyInstrumentalTitle(request.title)
             if (request.preferCache) {
                 val cached = readCache(request.videoId)
                 val cachedLevel = LyricsQuality.level(cached)
                 if (cached != null && cachedLevel > LyricsQuality.LEVEL_INVALID) {
                     val signature = LyricsQuality.contentSignature(cached)
                     val isUserProtected = signature in request.userProtectedSignatures
+                    if (!isUserProtected && titleInstrumental) {
+                        send(
+                            LyricsResolutionEvent.Exhausted(
+                                videoId = request.videoId,
+                                definitiveNotFound = true,
+                                confirmedInstrumental = true,
+                            ),
+                        )
+                        return@channelFlow
+                    }
                     cachedSignature = signature
                     currentBestLyrics = cached
                     currentBestLevel = cachedLevel
@@ -61,6 +72,16 @@ class LyricsResolver(
                         return@channelFlow
                     }
                 }
+            }
+            if (titleInstrumental) {
+                send(
+                    LyricsResolutionEvent.Exhausted(
+                        videoId = request.videoId,
+                        definitiveNotFound = true,
+                        confirmedInstrumental = true,
+                    ),
+                )
+                return@channelFlow
             }
 
             val sources = orderedSources(request.preferredSource, request.allowSpotify)
@@ -124,6 +145,19 @@ class LyricsResolver(
                 handled++
 
                 when (outcome) {
+                    is ProviderFetchOutcome.ConfirmedInstrumental -> {
+                        hedgeJob?.cancel()
+                        primaryJob.cancel()
+                        launchedOtherJobs.forEach { it.cancel() }
+                        send(
+                            LyricsResolutionEvent.Exhausted(
+                                videoId = request.videoId,
+                                definitiveNotFound = true,
+                                confirmedInstrumental = true,
+                            ),
+                        )
+                        return@channelFlow
+                    }
                     is ProviderFetchOutcome.DefinitiveNotFound -> {
                         if (source == LyricsSource.SIMPMUSIC) {
                             simpMusicNotFoundObserved = true

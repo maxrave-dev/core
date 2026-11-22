@@ -41,6 +41,7 @@ sealed interface LyricsResolutionEvent {
     data class Exhausted(
         val videoId: String,
         val definitiveNotFound: Boolean,
+        val confirmedInstrumental: Boolean = false,
     ) : LyricsResolutionEvent
 }
 
@@ -51,6 +52,8 @@ sealed interface ProviderFetchOutcome {
     ) : ProviderFetchOutcome
 
     data object DefinitiveNotFound : ProviderFetchOutcome
+
+    data object ConfirmedInstrumental : ProviderFetchOutcome
 
     data class TransientFailure(
         val reason: String? = null,
@@ -68,6 +71,9 @@ object LyricsQuality {
     fun level(lyrics: Lyrics?): Int {
         val lines = lyrics?.lines ?: return LEVEL_INVALID
         if (lyrics.error || lines.isEmpty() || lines.all { it.words.isBlank() }) {
+            return LEVEL_INVALID
+        }
+        if (!LyricsContentQualityGuard.isAcceptableContent(lyrics)) {
             return LEVEL_INVALID
         }
         return when (lyrics.syncType) {

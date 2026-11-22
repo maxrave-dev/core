@@ -2387,8 +2387,7 @@ class YouTube {
                     .filter { !it.baseUrl.isNullOrBlank() }
             val baseTrack =
                 tracks.firstOrNull { it.kind != "asr" }
-                    ?: tracks.firstOrNull()
-                    ?: return Result.failure(NoSuchElementException("No captions found for $videoId"))
+                    ?: return Result.failure(NoSuchElementException("No human captions found for $videoId"))
             val baseUrl =
                 baseTrack.baseUrl
                     ?.replace("&fmt=srv3", "")

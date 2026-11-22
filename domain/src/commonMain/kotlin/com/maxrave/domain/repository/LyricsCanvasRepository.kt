@@ -17,6 +17,8 @@ interface LyricsCanvasRepository {
 
     suspend fun insertLyrics(lyricsEntity: LyricsEntity)
 
+    suspend fun removeLyrics(videoId: String)
+
     suspend fun insertTranslatedLyrics(translatedLyrics: TranslatedLyricsEntity)
 
     fun getSavedTranslatedLyrics(

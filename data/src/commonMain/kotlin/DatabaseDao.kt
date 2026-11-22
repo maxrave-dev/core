@@ -750,6 +750,9 @@ interface DatabaseDao {
     @Query("SELECT * FROM lyrics WHERE videoId = :videoId")
     suspend fun getLyrics(videoId: String): LyricsEntity?
 
+    @Query("DELETE FROM lyrics WHERE videoId = :videoId")
+    suspend fun removeLyrics(videoId: String)
+
     @RawQuery
     suspend fun raw(supportSQLiteQuery: RoomRawQuery): Int
 

@@ -521,6 +521,8 @@ internal class LocalDataSource(
 
     suspend fun insertLyrics(lyrics: LyricsEntity) = databaseDao.insertLyrics(lyrics)
 
+    suspend fun removeLyrics(videoId: String) = databaseDao.removeLyrics(videoId)
+
     suspend fun getPreparingSongs(
         limit: Int,
         offset: Int,

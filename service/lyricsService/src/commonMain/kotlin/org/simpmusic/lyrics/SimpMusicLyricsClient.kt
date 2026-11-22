@@ -1,5 +1,7 @@
 package org.simpmusic.lyrics
 
+import com.maxrave.domain.lyrics.LyricsMetadataMatcher
+import com.maxrave.ktorext.curl.CurlLogger
 import com.maxrave.ktorext.crypto.Hmac
 import com.maxrave.ktorext.crypto.HmacUri
 import com.maxrave.logger.Logger
@@ -27,6 +29,16 @@ import kotlin.math.abs
 
 private const val TAG = "SimpMusicLyricsClient"
 private const val MAX_DEDUPE_CACHE_ENTRIES = 256
+
+sealed interface LrclibSearchResult {
+    data class Found(
+        val lyrics: org.simpmusic.lyrics.domain.Lyrics,
+    ) : LrclibSearchResult
+
+    data object ConfirmedInstrumental : LrclibSearchResult
+
+    data object NotFound : LrclibSearchResult
+}
 
 /** An error the SimpMusic Lyrics API answered with; [code] 404 means nobody has added that song yet. */
 class SimpMusicLyricsApiException(
@@ -221,55 +233,83 @@ class SimpMusicLyricsClient(
         q_track: String,
         q_artist: String,
         duration: Int?,
-    ) = suspendRunCatching {
-        val validDuration = duration?.takeIf { it > 0 }
-        val candidates = LyricsQueryNormalizer.buildQueryCandidates(q_track, q_artist)
-        var plainFallbackRecord: LrclibObject? = null
-
-        for ((track, artist) in candidates) {
-            if (validDuration != null && track.isNotBlank() && artist.isNotBlank()) {
-                val exactResponse =
-                    lyricsService.getLrclibLyricsExact(
-                        trackName = track,
-                        artistName = artist,
-                        durationSeconds = validDuration,
-                    )
-                if (exactResponse.status.value in 200..299) {
-                    val exact = exactResponse.body<LrclibObject>()
-                    if (!exact.instrumental) {
-                        if (exact.hasWordSync || !exact.syncedLyrics.isNullOrBlank()) {
-                            return@suspendRunCatching parseLrclibLyrics(exact)
-                        }
-                        if (!exact.plainLyrics.isNullOrBlank() && plainFallbackRecord == null) {
-                            plainFallbackRecord = exact
-                        }
-                    }
-                }
-            }
-
-            val response =
-                lyricsService.searchLrclibLyrics(
-                    q_track = track,
-                    q_artist = artist,
-                )
-            when (response.status.value) {
-                404, 204 -> Unit
-                in 200..299 -> {
-                    val rs = response.body<List<LrclibObject>>()
-                    val best = selectLrclibLyricsRecord(rs, duration)
-                    if (best != null) {
-                        return@suspendRunCatching parseLrclibLyrics(best)
-                    }
-                }
-                else ->
-                    if (plainFallbackRecord == null) {
-                        throw SimpMusicLyricsApiException(response.status.value, "LRCLIB failed: ${response.status.value}")
-                    }
-            }
-        }
-
-        plainFallbackRecord?.let { parseLrclibLyrics(it) }
+    ) = searchLrclibLyricsDetailed(q_track, q_artist, duration).map { outcome ->
+        (outcome as? LrclibSearchResult.Found)?.lyrics
     }
+
+    suspend fun searchLrclibLyricsDetailed(
+        q_track: String,
+        q_artist: String,
+        duration: Int?,
+    ): Result<LrclibSearchResult> =
+        suspendRunCatching {
+            val validDuration = duration?.takeIf { it > 0 }
+            val candidates = LyricsQueryNormalizer.buildQueryCandidates(q_track, q_artist)
+            var plainFallbackRecord: LrclibObject? = null
+            var confirmedInstrumental = false
+
+            for ((track, artist) in candidates) {
+                if (validDuration != null && track.isNotBlank() && artist.isNotBlank()) {
+                    val exactResponse =
+                        lyricsService.getLrclibLyricsExact(
+                            trackName = track,
+                            artistName = artist,
+                            durationSeconds = validDuration,
+                        )
+                    if (exactResponse.status.value in 200..299) {
+                        val exact = exactResponse.body<LrclibObject>()
+                        val metaOk = lrclibMetadataMatches(exact, q_track, q_artist)
+                        if (metaOk && exact.instrumental) {
+                            return@suspendRunCatching LrclibSearchResult.ConfirmedInstrumental
+                        }
+                        if (metaOk && !exact.instrumental) {
+                            if (exact.hasWordSync || !exact.syncedLyrics.isNullOrBlank()) {
+                                parseLrclibLyrics(exact)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
+                            }
+                            if (!exact.plainLyrics.isNullOrBlank() && plainFallbackRecord == null) {
+                                plainFallbackRecord = exact
+                            }
+                        }
+                    }
+                }
+
+                val response =
+                    lyricsService.searchLrclibLyrics(
+                        q_track = track,
+                        q_artist = artist,
+                    )
+                when (response.status.value) {
+                    404, 204 -> Unit
+                    in 200..299 -> {
+                        val rs = response.body<List<LrclibObject>>()
+                        val best =
+                            selectLrclibLyricsRecord(
+                                records = rs,
+                                duration = duration,
+                                expectedTrack = q_track,
+                                expectedArtist = q_artist,
+                            )
+                        if (best != null) {
+                            parseLrclibLyrics(best)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
+                        } else if (hasMatchingInstrumentalRecord(rs, validDuration, q_track, q_artist)) {
+                            confirmedInstrumental = true
+                        }
+                    }
+                    else ->
+                        if (plainFallbackRecord == null && !confirmedInstrumental) {
+                            throw SimpMusicLyricsApiException(response.status.value, "LRCLIB failed: ${response.status.value}")
+                        }
+                }
+            }
+
+            if (confirmedInstrumental && plainFallbackRecord == null) {
+                return@suspendRunCatching LrclibSearchResult.ConfirmedInstrumental
+            }
+            plainFallbackRecord
+                ?.let { parseLrclibLyrics(it) }
+                ?.let { LrclibSearchResult.Found(it) }
+                ?: LrclibSearchResult.NotFound
+        }
 
     suspend fun searchBetterLyrics(
         q_track: String,
@@ -448,15 +488,47 @@ class SimpMusicLyricsClient(
     }
 }
 
+internal fun lrclibMetadataMatches(
+    record: LrclibObject,
+    expectedTrack: String?,
+    expectedArtist: String?,
+): Boolean {
+    if (!expectedTrack.isNullOrBlank()) {
+        val candTitle = record.trackName?.takeIf { it.isNotBlank() } ?: record.name
+        if (!LyricsMetadataMatcher.titlesMatch(expectedTrack, candTitle)) return false
+    }
+    if (!expectedArtist.isNullOrBlank() && !record.artistName.isNullOrBlank()) {
+        if (!LyricsMetadataMatcher.artistsMatch(expectedArtist, record.artistName, expectedTrack)) return false
+    }
+    return true
+}
+
+internal fun hasMatchingInstrumentalRecord(
+    records: List<LrclibObject>,
+    duration: Int?,
+    expectedTrack: String?,
+    expectedArtist: String?,
+): Boolean {
+    val validDuration = duration?.takeIf { it > 0 }
+    return records.any { candidate ->
+        candidate.instrumental &&
+            lrclibMetadataMatches(candidate, expectedTrack, expectedArtist) &&
+            (validDuration == null || abs(candidate.duration.toInt() - validDuration) <= 10)
+    }
+}
+
 internal fun selectLrclibLyricsRecord(
     records: List<LrclibObject>,
     duration: Int?,
+    expectedTrack: String? = null,
+    expectedArtist: String? = null,
 ): LrclibObject? {
     val validDuration = duration?.takeIf { it > 0 }
     val usable =
         records.filter { candidate ->
             !candidate.instrumental &&
-                (!candidate.syncedLyrics.isNullOrBlank() || !candidate.plainLyrics.isNullOrBlank())
+                (!candidate.syncedLyrics.isNullOrBlank() || !candidate.plainLyrics.isNullOrBlank()) &&
+                lrclibMetadataMatches(candidate, expectedTrack, expectedArtist)
         }
     val candidates =
         if (validDuration != null) {

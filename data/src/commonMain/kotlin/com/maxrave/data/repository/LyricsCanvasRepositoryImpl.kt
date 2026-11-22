@@ -15,7 +15,9 @@ import com.maxrave.domain.data.model.canvas.CanvasResult
 import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.metadata.SimpMusicLyrics
 import com.maxrave.domain.extension.now
+import com.maxrave.domain.lyrics.LyricsContentQualityGuard
 import com.maxrave.domain.lyrics.LyricsLookupRequest
+import com.maxrave.domain.lyrics.LyricsMetadataMatcher
 import com.maxrave.domain.lyrics.LyricsQuality
 import com.maxrave.domain.lyrics.LyricsResolutionEvent
 import com.maxrave.domain.lyrics.LyricsResolver
@@ -46,6 +48,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.simpmusic.aiservice.AiClient
+import org.simpmusic.lyrics.LrclibSearchResult
 import org.simpmusic.lyrics.LyricsQueryNormalizer
 import org.simpmusic.lyrics.SimpMusicLyricsApiException
 import org.simpmusic.lyrics.SimpMusicLyricsClient
@@ -81,10 +84,13 @@ internal class LyricsCanvasRepositoryImpl(
     private val lyricsResolver =
         LyricsResolver(
             readCache = { videoId ->
-                localDataSource
-                    .getSavedLyrics(videoId)
-                    ?.toLyrics()
-                    ?.takeIf { LyricsQuality.level(it) > LyricsQuality.LEVEL_INVALID }
+                val saved = localDataSource.getSavedLyrics(videoId)?.toLyrics()
+                if (saved != null && LyricsQuality.level(saved) <= LyricsQuality.LEVEL_INVALID) {
+                    localDataSource.removeLyrics(videoId)
+                    null
+                } else {
+                    saved
+                }
             },
             fetchSource = { source, request -> fetchLyricsOutcome(source, request) },
         )
@@ -97,6 +103,11 @@ internal class LyricsCanvasRepositoryImpl(
     override suspend fun insertLyrics(lyricsEntity: LyricsEntity) =
         withContext(Dispatchers.IO) {
             localDataSource.insertLyrics(lyricsEntity)
+        }
+
+    override suspend fun removeLyrics(videoId: String) =
+        withContext(Dispatchers.IO) {
+            localDataSource.removeLyrics(videoId)
         }
 
     override suspend fun insertTranslatedLyrics(translatedLyrics: TranslatedLyricsEntity) =
@@ -1027,7 +1038,13 @@ internal class LyricsCanvasRepositoryImpl(
             LyricsSource.SIMPMUSIC ->
                 simpMusicLyrics.getLyrics(request.videoId).fold(
                     onSuccess = { lyrics ->
-                        val appLyrics = pickBestSimpMusicLyrics(lyrics)
+                        val appLyrics =
+                            pickBestSimpMusicLyrics(
+                                candidates = lyrics,
+                                expectedTitle = request.title,
+                                expectedArtist = request.artist,
+                                expectedDurationSeconds = request.durationSeconds,
+                            )
                         if (appLyrics != null) {
                             ProviderFetchOutcome.Success(appLyrics)
                         } else {
@@ -1045,13 +1062,19 @@ internal class LyricsCanvasRepositoryImpl(
                 )
 
             LyricsSource.LRCLIB -> {
-                simpMusicLyrics.searchLrclibLyrics(request.title, request.artist, request.durationSeconds).fold(
-                    onSuccess = { parsed ->
-                        val mapped = parsed?.toLyrics()?.takeIf { !it.lines.isNullOrEmpty() }
-                        if (mapped != null) {
-                            ProviderFetchOutcome.Success(mapped)
-                        } else {
-                            ProviderFetchOutcome.DefinitiveNotFound
+                simpMusicLyrics.searchLrclibLyricsDetailed(request.title, request.artist, request.durationSeconds).fold(
+                    onSuccess = { outcome ->
+                        when (outcome) {
+                            is LrclibSearchResult.ConfirmedInstrumental -> ProviderFetchOutcome.ConfirmedInstrumental
+                            is LrclibSearchResult.NotFound -> ProviderFetchOutcome.DefinitiveNotFound
+                            is LrclibSearchResult.Found -> {
+                                val mapped = outcome.lyrics.toLyrics()
+                                if (LyricsQuality.level(mapped) > LyricsQuality.LEVEL_INVALID) {
+                                    ProviderFetchOutcome.Success(mapped)
+                                } else {
+                                    ProviderFetchOutcome.DefinitiveNotFound
+                                }
+                            }
                         }
                     },
                     onFailure = { error ->
@@ -1074,7 +1097,7 @@ internal class LyricsCanvasRepositoryImpl(
                         onSuccess = { ttml ->
                             if (ttml.isNullOrBlank()) return ProviderFetchOutcome.DefinitiveNotFound
                             val lyrics = parseTtmlLyrics(ttml).toLyrics()
-                            if (!lyrics.lines.isNullOrEmpty()) {
+                            if (LyricsQuality.level(lyrics) > LyricsQuality.LEVEL_INVALID) {
                                 ProviderFetchOutcome.Success(lyrics)
                             } else {
                                 ProviderFetchOutcome.DefinitiveNotFound
@@ -1094,10 +1117,17 @@ internal class LyricsCanvasRepositoryImpl(
                 val preferLang = dataStoreManager.youtubeSubtitleLanguage.first()
                 youTube.getYouTubeCaption(request.videoId, preferLang).fold(
                     onSuccess = { pair ->
-                        val base = pair.first.toLyrics()
-                        if (base.lines.isNullOrEmpty()) return ProviderFetchOutcome.DefinitiveNotFound
-                        val translated = pair.second?.toLyrics()?.takeIf { !it.lines.isNullOrEmpty() }
-                        ProviderFetchOutcome.Success(base, translated)
+                        val rawBase = pair.first.toLyrics()
+                        if (LyricsQuality.level(rawBase) <= LyricsQuality.LEVEL_INVALID) {
+                            return ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                        val cleanedBase = LyricsContentQualityGuard.stripAsrSoundCueLines(rawBase)
+                        val translated =
+                            pair.second
+                                ?.toLyrics()
+                                ?.takeIf { LyricsQuality.level(it) > LyricsQuality.LEVEL_INVALID }
+                                ?.let { LyricsContentQualityGuard.stripAsrSoundCueLines(it) }
+                        ProviderFetchOutcome.Success(cleanedBase, translated)
                     },
                     onFailure = { error ->
                         if (error is NoSuchElementException) {
@@ -1123,10 +1153,13 @@ internal class LyricsCanvasRepositoryImpl(
                             dataStoreManager = dataStoreManager,
                             query = candidateQuery,
                             duration = request.durationSeconds,
+                            expectedTitle = request.title,
+                            expectedArtist = request.artist,
                         )
                     when (outcome) {
                         is ProviderFetchOutcome.Success -> return outcome
                         is ProviderFetchOutcome.TransientFailure -> return outcome
+                        ProviderFetchOutcome.ConfirmedInstrumental -> return outcome
                         ProviderFetchOutcome.DefinitiveNotFound -> lastOutcome = outcome
                     }
                 }
@@ -1138,6 +1171,8 @@ internal class LyricsCanvasRepositoryImpl(
         dataStoreManager: DataStoreManager,
         query: String,
         duration: Int?,
+        expectedTitle: String,
+        expectedArtist: String,
     ): ProviderFetchOutcome {
         val q = query.trim()
         if (q.isEmpty()) return ProviderFetchOutcome.DefinitiveNotFound
@@ -1198,7 +1233,14 @@ internal class LyricsCanvasRepositoryImpl(
             .fold(
                 onSuccess = { searchResponse ->
                     val items = searchResponse.data?.searchV2?.tracksV2?.items
-                    val track = pickSpotifyTrack(items, duration)
+                    val track =
+                        pickSpotifyTrack(
+                            items = items,
+                            durationSeconds = duration,
+                            expectedTitle = expectedTitle,
+                            expectedArtist = expectedArtist,
+                            requireMetadataMatch = true,
+                        )
                     val trackId = track?.item?.data?.id
                     if (trackId.isNullOrEmpty()) return@fold ProviderFetchOutcome.DefinitiveNotFound
                     spotify
@@ -1206,7 +1248,7 @@ internal class LyricsCanvasRepositoryImpl(
                         .fold(
                             onSuccess = { response ->
                                 val lyrics = response.toLyrics()
-                                if (!lyrics.lines.isNullOrEmpty()) {
+                                if (LyricsQuality.level(lyrics) > LyricsQuality.LEVEL_INVALID) {
                                     ProviderFetchOutcome.Success(lyrics)
                                 } else {
                                     ProviderFetchOutcome.DefinitiveNotFound
@@ -1453,35 +1495,86 @@ private fun AMEditorialVideo.preferredRendition(): AMMotionVideo? =
         .firstOrNull { it.video != null }
 
 private const val SPOTIFY_DURATION_TOLERANCE_SECONDS = 2
+private const val SPOTIFY_LYRICS_DURATION_TOLERANCE_SECONDS = 5
+private const val SIMPMUSIC_DURATION_TOLERANCE_SECONDS = 15
 
 internal fun pickSpotifyTrack(
     items: List<SpotifySearchResponse.Data.Search.TracksV2.Items>?,
     durationSeconds: Int?,
+    expectedTitle: String? = null,
+    expectedArtist: String? = null,
+    requireMetadataMatch: Boolean = false,
 ): SpotifySearchResponse.Data.Search.TracksV2.Items? {
     if (items.isNullOrEmpty()) return null
-    val validDuration = durationSeconds?.takeIf { it > 0 } ?: return items.firstOrNull()
-    return items.find { item ->
-        val trackDurationSec =
-            item.item
-                ?.data
-                ?.duration
-                ?.totalMilliseconds
-                ?.div(1000)
-                ?: return@find false
-        abs(trackDurationSec - validDuration) <= SPOTIFY_DURATION_TOLERANCE_SECONDS
-    } ?: items.firstOrNull()
+    val validDuration = durationSeconds?.takeIf { it > 0 }
+    if (!requireMetadataMatch) {
+        if (validDuration == null) return items.firstOrNull()
+        return items.find { item ->
+            val trackDurationSec =
+                item.item
+                    ?.data
+                    ?.duration
+                    ?.totalMilliseconds
+                    ?.div(1000)
+                    ?: return@find false
+            abs(trackDurationSec - validDuration) <= SPOTIFY_DURATION_TOLERANCE_SECONDS
+        } ?: items.firstOrNull()
+    }
+
+    return items.firstOrNull { item ->
+        val data = item.item?.data ?: return@firstOrNull false
+        if (!expectedTitle.isNullOrBlank()) {
+            val candTitle = data.name
+            if (candTitle.isNullOrBlank() || !LyricsMetadataMatcher.titlesMatch(expectedTitle, candTitle)) {
+                return@firstOrNull false
+            }
+        }
+        if (!expectedArtist.isNullOrBlank()) {
+            val artistNames = data.artists?.items.orEmpty().mapNotNull { it.profile?.name }
+            if (artistNames.isEmpty() ||
+                artistNames.none { LyricsMetadataMatcher.artistsMatch(expectedArtist, it, expectedTitle) }
+            ) {
+                return@firstOrNull false
+            }
+        }
+        if (validDuration != null) {
+            val trackDurationSec = data.duration?.totalMilliseconds?.div(1000) ?: return@firstOrNull false
+            if (abs(trackDurationSec - validDuration) > SPOTIFY_LYRICS_DURATION_TOLERANCE_SECONDS) {
+                return@firstOrNull false
+            }
+        }
+        true
+    }
 }
 
-internal fun pickBestSimpMusicLyrics(candidates: List<LyricsResponse>): Lyrics? {
+internal fun pickBestSimpMusicLyrics(
+    candidates: List<LyricsResponse>,
+    expectedTitle: String? = null,
+    expectedArtist: String? = null,
+    expectedDurationSeconds: Int? = null,
+): Lyrics? {
     var bestLyrics: Lyrics? = null
     var bestLevel = LyricsQuality.LEVEL_INVALID
     var bestVote = Int.MIN_VALUE
 
     for (candidate in candidates) {
+        if (candidate.vote < 0) continue
+        if (!expectedTitle.isNullOrBlank() && candidate.songTitle.isNotBlank()) {
+            if (!LyricsMetadataMatcher.titlesMatch(expectedTitle, candidate.songTitle)) continue
+        }
+        if (!expectedArtist.isNullOrBlank() && candidate.artistName.isNotBlank()) {
+            if (!LyricsMetadataMatcher.artistsMatch(expectedArtist, candidate.artistName, expectedTitle)) continue
+        }
+        val validExpectedDur = expectedDurationSeconds?.takeIf { it > 0 }
+        if (validExpectedDur != null && candidate.durationSeconds > 0) {
+            if (abs(candidate.durationSeconds - validExpectedDur) > SIMPMUSIC_DURATION_TOLERANCE_SECONDS) continue
+        }
+
         val mapped =
             candidate
                 .toLyrics()
                 ?.takeIf { !it.lines.isNullOrEmpty() }
+                ?.let { LyricsContentQualityGuard.stripAsrSoundCueLines(it) }
                 ?.copy(simpMusicLyrics = SimpMusicLyrics(id = candidate.id, vote = candidate.vote))
                 ?: continue
         val level = LyricsQuality.level(mapped)

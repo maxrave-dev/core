@@ -267,4 +267,53 @@ class LyricsResolverTest {
             assertTrue(e1.definitiveNotFound)
             assertFalse(e2.definitiveNotFound)
         }
+
+    @Test
+    fun confirmedInstrumentalCancelsProvidersAndEmitsConfirmedInstrumental() =
+        runBlocking {
+            val resolver =
+                LyricsResolver(
+                    readCache = { null },
+                    fetchSource = { source, _ ->
+                        when (source) {
+                            LyricsSource.LRCLIB -> {
+                                delay(10L)
+                                ProviderFetchOutcome.ConfirmedInstrumental
+                            }
+                            LyricsSource.SPOTIFY -> {
+                                delay(200L)
+                                ProviderFetchOutcome.Success(lineSynced("Wrong artist lyrics"))
+                            }
+                            else -> ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                    },
+                    providerTimeoutMs = 500L,
+                    hedgeDelayMs = 20L,
+                )
+
+            val events = withTimeout(2_000L) { resolver.resolve(request(allowSpotify = true)).toList() }
+            val exhausted = events.single() as LyricsResolutionEvent.Exhausted
+            assertTrue(exhausted.definitiveNotFound)
+            assertTrue(exhausted.confirmedInstrumental)
+        }
+
+    @Test
+    fun instrumentalTitleSkipsNetworkUnlessUserProtected() =
+        runBlocking {
+            var queries = 0
+            val resolver =
+                LyricsResolver(
+                    readCache = { null },
+                    fetchSource = { _, _ ->
+                        queries++
+                        ProviderFetchOutcome.Success(lineSynced("Should not be fetched"))
+                    },
+                )
+
+            val req = request().copy(title = "Bloom (Instrumental)")
+            val events = withTimeout(1_000L) { resolver.resolve(req).toList() }
+            assertEquals(0, queries)
+            val exhausted = events.single() as LyricsResolutionEvent.Exhausted
+            assertTrue(exhausted.confirmedInstrumental)
+        }
 }

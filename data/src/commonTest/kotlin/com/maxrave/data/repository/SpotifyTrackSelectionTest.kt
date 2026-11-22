@@ -29,15 +29,70 @@ class SpotifyTrackSelectionTest {
         assertNull(pickSpotifyTrack(emptyList(), 180))
     }
 
+    @Test
+    fun strictLyricsMatchRejectsWrongArtistTitleAndDurationWithoutFallback() {
+        val wrongArtistSameTitle =
+            track(
+                id = "paper-kites",
+                durationMs = 137_000,
+                title = "Bloom",
+                artist = "The Paper Kites",
+            )
+        val rightArtist =
+            track(
+                id = "jpn-bloom",
+                durationMs = 137_000,
+                title = "Bloom",
+                artist = "j^p^n",
+            )
+
+        assertNull(
+            pickSpotifyTrack(
+                items = listOf(wrongArtistSameTitle),
+                durationSeconds = 137,
+                expectedTitle = "Bloom",
+                expectedArtist = "j^p^n",
+                requireMetadataMatch = true,
+            ),
+        )
+        assertEquals(
+            "jpn-bloom",
+            pickSpotifyTrack(
+                items = listOf(wrongArtistSameTitle, rightArtist),
+                durationSeconds = 137,
+                expectedTitle = "Bloom",
+                expectedArtist = "j^p^n",
+                requireMetadataMatch = true,
+            )?.item?.data?.id,
+        )
+    }
+
     private fun track(
         id: String,
         durationMs: Int,
+        title: String? = null,
+        artist: String? = null,
     ) = SpotifySearchResponse.Data.Search.TracksV2.Items(
         item =
             SpotifySearchResponse.Data.Search.TracksV2.Items.Item(
                 data =
                     SpotifySearchResponse.Data.Search.TracksV2.Items.Item.DataX(
                         id = id,
+                        name = title,
+                        artists =
+                            artist?.let {
+                                SpotifySearchResponse.Data.Search.TracksV2.Items.Item.DataX.Artists(
+                                    items =
+                                        listOf(
+                                            SpotifySearchResponse.Data.Search.TracksV2.Items.Item.DataX.Artists.ItemX(
+                                                profile =
+                                                    SpotifySearchResponse.Data.Search.TracksV2.Items.Item.DataX.Artists.ItemX.Profile(
+                                                        name = it,
+                                                    ),
+                                            ),
+                                        ),
+                                )
+                            },
                         duration =
                             SpotifySearchResponse.Data.Search.TracksV2.Items.Item.DataX.Duration(
                                 totalMilliseconds = durationMs,

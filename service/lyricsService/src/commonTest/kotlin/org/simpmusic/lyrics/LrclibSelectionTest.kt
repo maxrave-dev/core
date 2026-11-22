@@ -92,6 +92,33 @@ class LrclibSelectionTest {
         assertNull(selectLrclibLyricsRecord(listOf(instrumental, blankBoth), 137))
     }
 
+    @Test
+    fun rejectsWrongArtistAndConfirmsMatchingInstrumentalForSameTitle() {
+        val jpnInstrumental =
+            record(id = 1251726, duration = 137f, instrumental = true, plainLyrics = null, syncedLyrics = null)
+                .copy(trackName = "Bloom", artistName = "j^p^n")
+        val paperKitesWrongArtist =
+            record(id = 9999, duration = 137f, instrumental = false, syncedLyrics = "[00:01.00]In the morning when I wake")
+                .copy(trackName = "Bloom", artistName = "The Paper Kites")
+
+        val picked =
+            selectLrclibLyricsRecord(
+                records = listOf(jpnInstrumental, paperKitesWrongArtist),
+                duration = 137,
+                expectedTrack = "Bloom",
+                expectedArtist = "j^p^n",
+            )
+        assertNull(picked)
+        kotlin.test.assertTrue(
+            hasMatchingInstrumentalRecord(
+                records = listOf(jpnInstrumental, paperKitesWrongArtist),
+                duration = 137,
+                expectedTrack = "Bloom",
+                expectedArtist = "j^p^n",
+            ),
+        )
+    }
+
     private fun record(
         id: Int,
         duration: Float,

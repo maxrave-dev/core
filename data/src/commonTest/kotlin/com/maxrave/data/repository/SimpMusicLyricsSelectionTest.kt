@@ -63,6 +63,29 @@ class SimpMusicLyricsSelectionTest {
         assertNull(pickBestSimpMusicLyrics(listOf(unusable)))
     }
 
+    @Test
+    fun rejectsNegativeVotesWrongArtistAndCorruptedAsrSubmissions() {
+        val downvoted = candidate(id = "down", vote = -2, syncedLyrics = "[00:05.00]Good\n[00:10.00]Lyrics")
+        val wrongArtist =
+            candidate(id = "wrong-art", vote = 10, syncedLyrics = "[00:05.00]In the morning\n[00:10.00]When I wake")
+                .copy(songTitle = "Bloom", artistName = "The Paper Kites", durationSeconds = 137)
+        val asrJunk =
+            candidate(
+                id = "asr",
+                vote = 5,
+                syncedLyrics = "[00:01.00]belza que\n[00:03.00][Muzică]\n[00:06.00]soha\n[00:09.00][Muzică]",
+            )
+
+        assertNull(
+            pickBestSimpMusicLyrics(
+                candidates = listOf(downvoted, wrongArtist, asrJunk),
+                expectedTitle = "Bloom",
+                expectedArtist = "j^p^n",
+                expectedDurationSeconds = 137,
+            ),
+        )
+    }
+
     private fun candidate(
         id: String,
         vote: Int,
