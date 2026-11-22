@@ -45,6 +45,8 @@ internal class CommonRepositoryImpl(
     private val aiClient: AiClient,
 ) : CommonRepository {
     @OptIn(ExperimentalTime::class)
+    override suspend fun getAiModels(): Result<List<String>> = aiClient.listModels()
+
     override fun init(
         cookiePath: String,
         dataStoreManager: DataStoreManager,
@@ -215,13 +217,7 @@ internal class CommonRepositoryImpl(
             val aiClientProviderJob =
                 launch {
                     dataStoreManager.aiProvider.collectLatest { provider ->
-                        aiClient.host =
-                            when (provider) {
-                                DataStoreManager.AI_PROVIDER_GEMINI -> AIHost.GEMINI
-                                DataStoreManager.AI_PROVIDER_OPENAI -> AIHost.OPENAI
-                                DataStoreManager.AI_PROVIDER_CUSTOM_OPENAI -> AIHost.CUSTOM_OPENAI
-                                else -> AIHost.GEMINI // Default to Gemini if not set
-                            }
+                        aiClient.host = AIHost.fromSetting(provider)
                     }
                 }
             val aiClientApiKeyJob =

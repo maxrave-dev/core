@@ -6,6 +6,8 @@ import com.maxrave.domain.data.model.home.chart.Chart
 import com.maxrave.domain.data.model.mood.Mood
 import com.maxrave.domain.data.model.mood.genre.GenreObject
 import com.maxrave.domain.data.model.mood.moodmoments.MoodsMomentObject
+import com.maxrave.domain.data.model.radiobuilder.RadioBuilder
+import com.maxrave.domain.data.model.radiobuilder.RadioSeed
 import com.maxrave.domain.utils.Resource
 import kotlinx.coroutines.flow.Flow
 
@@ -57,4 +59,19 @@ interface HomeRepository {
         params: String?,
         songString: String,
     ): Flow<Resource<BrowsePage>>
+
+    /** YouTube Music's radio builder: the seeds to pick from and the tuning page, in the app's language. */
+    fun getRadioBuilder(): Flow<Resource<RadioBuilder>>
+
+    /**
+     * The `RDAT…` radio id for the picked seeds, tuned by [selectedChipIds] listed in the order
+     * [RadioBuilder.sections] and their groups come in. Null without seeds. Played like any radio.
+     */
+    fun radioId(
+        seedTokens: List<String>,
+        selectedChipIds: List<String>,
+    ): String?
+
+    /** Genre seeds for the radio builder, from the radios of [videoIds]; empty when none answer. */
+    suspend fun radioGenres(videoIds: List<String>): List<RadioSeed>
 }

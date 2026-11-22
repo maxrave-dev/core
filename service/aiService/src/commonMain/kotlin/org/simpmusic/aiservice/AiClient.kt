@@ -73,6 +73,18 @@ class AiClient {
             result
         }
 
+    /** The provider's model IDs for the picker in Settings; a failure means the ID is typed by hand. */
+    suspend fun listModels(): Result<List<String>> {
+        val service = aiService ?: return Result.failure(IllegalStateException("AI service is not initialized. Please set host and apiKey."))
+        return try {
+            Result.success(service.listModels())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     /**
      * A reading of the listener's taste.
      *

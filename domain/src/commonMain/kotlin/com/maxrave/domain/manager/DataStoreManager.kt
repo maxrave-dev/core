@@ -700,6 +700,23 @@ interface DataStoreManager {
         const val AI_PROVIDER_OPENAI = "openai"
         const val AI_PROVIDER_CUSTOM_OPENAI = "custom_openai"
 
+        /**
+         * OpenAI-compatible providers the AI client has a preset base URL for, as stored setting →
+         * provider name. None has a default model, so Settings asks for a model ID.
+         */
+        val AI_PROVIDER_PRESETS: Map<String, String> =
+            linkedMapOf(
+                "openrouter" to "OpenRouter",
+                "groq" to "Groq",
+                "deepseek" to "DeepSeek",
+                "mistral" to "Mistral AI",
+                "xai" to "xAI (Grok)",
+                "together" to "Together AI",
+                "fireworks" to "Fireworks AI",
+                "cerebras" to "Cerebras",
+                "anthropic" to "Anthropic",
+            )
+
         const val LOCAL_PLAYLIST_FILTER_OLDER_FIRST = "older_first"
         const val LOCAL_PLAYLIST_FILTER_NEWER_FIRST = "newer_first"
         const val LOCAL_PLAYLIST_FILTER_TITLE = "title"

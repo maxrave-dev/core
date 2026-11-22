@@ -2,6 +2,8 @@ package com.maxrave.kotlinytmusicscraper
 
 import com.eygraber.uri.toKmpUri
 import com.maxrave.common.ITAG
+import com.maxrave.domain.data.model.radiobuilder.RadioBuilder
+import com.maxrave.domain.data.model.radiobuilder.RadioSeed
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
@@ -79,6 +81,7 @@ import com.maxrave.kotlinytmusicscraper.pages.NextPage
 import com.maxrave.kotlinytmusicscraper.pages.NextResult
 import com.maxrave.kotlinytmusicscraper.pages.PlaylistContinuationPage
 import com.maxrave.kotlinytmusicscraper.pages.PlaylistPage
+import com.maxrave.kotlinytmusicscraper.pages.RadioBuilderParser
 import com.maxrave.kotlinytmusicscraper.pages.RelatedPage
 import com.maxrave.kotlinytmusicscraper.pages.SearchPage
 import com.maxrave.kotlinytmusicscraper.pages.SearchResult
@@ -103,6 +106,9 @@ import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -1293,6 +1299,75 @@ class YouTube {
     ): Result<CommentItem?> =
         runCatching {
             CommentsPageParser.parseCreated(ytMusic.createCommentReply(createReplyParams, text).body<CommentsResponse>())
+        }
+
+    /**
+     * YouTube Music's radio builder page. The tuning page and the region's artists come from
+     * ANDROID_MUSIC signed out, since that client refuses the web cookie with HTTP 400. Signed in, the
+     * artists are the account's own instead, read off the taste builder (`FEmusic_tastebuilder` on
+     * WEB_REMIX); the region's list stays only when that comes back empty.
+     */
+    suspend fun radioBuilder(): Result<RadioBuilder> =
+        runCatching {
+            val page =
+                RadioBuilderParser.parse(
+                    Json.parseToJsonElement(ytMusic.radioBuilder(YouTubeClient.ANDROID_MUSIC, setLogin = false).bodyAsText()),
+                ) ?: error("No radio builder in the response")
+            // The signed-out seeds are the region's popular artists; a signed-in user gets their own
+            // from the taste builder, which takes the web cookie.
+            val tasteLists =
+                if (ytMusic.cookie.isNullOrEmpty()) {
+                    emptyList()
+                } else {
+                    runCatching {
+                        RadioBuilderParser.parseTasteArtists(
+                            Json.parseToJsonElement(
+                                ytMusic.browse(WEB_REMIX, browseId = "FEmusic_tastebuilder", setLogin = true).bodyAsText(),
+                            ),
+                        )
+                    }.onFailure { Logger.w(TAG, "Radio builder taste builder failed: ${it.message}") }
+                        .getOrDefault(emptyList())
+                }
+            // The taste builder pads the account's own lists with lists headed by the very region list
+            // the signed-out page gives (all 100 of them on the owner's account, from the 22nd list
+            // on). Those lists go whole; the account's own go whole too, the related artists they
+            // reveal included, minus any region artist among them.
+            val regional = page.seeds.mapTo(HashSet()) { it.token.removeSuffix("z") }
+            val ownLists = tasteLists.filterNot { it.first().token.removeSuffix("z") in regional }
+            val ownArtists =
+                ownLists
+                    .flatten()
+                    .filterNot { it.token.removeSuffix("z") in regional }
+                    .distinctBy { it.token }
+            Logger.i(
+                TAG,
+                "Radio builder: ${page.seeds.size} signed-out seeds, ${tasteLists.size} taste builder lists, " +
+                    "${ownLists.size} of them the account's own with ${ownArtists.size} artists",
+            )
+            page.copy(seeds = ownArtists.ifEmpty { page.seeds })
+        }
+
+    /**
+     * Genres for the radio builder, read off the chips above the radios of [videoIds] (one `/next` each,
+     * at once), in the order they first appear. A song whose radio fails just adds none.
+     */
+    suspend fun radioGenres(videoIds: List<String>): List<RadioSeed> =
+        coroutineScope {
+            videoIds
+                .map { videoId ->
+                    async {
+                        runCatching {
+                            RadioBuilderParser.parseGenreChips(
+                                Json.parseToJsonElement(
+                                    ytMusic.next(WEB_REMIX, videoId, "RDAMVM$videoId", null, null, null).bodyAsText(),
+                                ),
+                            )
+                        }.onFailure { Logger.w(TAG, "Radio genres for a song failed: ${it.message}") }
+                            .getOrDefault(emptyList())
+                    }
+                }.awaitAll()
+                .flatten()
+                .distinctBy { it.token }
         }
 
     /** Like, dislike, or undo either: [action] is the token the comment's toolbar carries for it. */

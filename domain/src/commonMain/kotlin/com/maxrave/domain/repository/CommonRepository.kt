@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.Flow
 interface CommonRepository {
     fun init(cookiePath: String, dataStoreManager: DataStoreManager, isDevBuild: Boolean = false)
 
+    /** The configured AI provider's model IDs, from its `GET /models`. Fails when it has none to list. */
+    suspend fun getAiModels(): Result<List<String>>
+
     // Database
     fun closeDatabase()
 

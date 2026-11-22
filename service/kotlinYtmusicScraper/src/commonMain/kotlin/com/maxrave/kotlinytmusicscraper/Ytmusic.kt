@@ -796,6 +796,24 @@ class Ytmusic {
         }
     }
 
+    /**
+     * YouTube Music's radio builder page. ANDROID_MUSIC gets the multi-seed form with its tuning page
+     * but refuses the web cookie (HTTP 400); WEB_REMIX takes the cookie but answers with the older
+     * one-artist dialog. Unlike [browse], whether the cookie goes along is the caller's choice.
+     */
+    suspend fun radioBuilder(
+        client: YouTubeClient,
+        setLogin: Boolean,
+    ) = httpClient.post("browse") {
+        ytClient(client, setLogin, isUsingReferer = false)
+        setBody(
+            BrowseBody(
+                context = client.toContext(locale, visitorData),
+                browseId = "FEmusic_radio_builder",
+            ),
+        )
+    }
+
     suspend fun nextCustom(
         client: YouTubeClient,
         videoId: String,

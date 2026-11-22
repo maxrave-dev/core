@@ -14,10 +14,13 @@ import com.maxrave.domain.data.model.mood.MoodItem
 import com.maxrave.domain.data.model.mood.MoodSection
 import com.maxrave.domain.data.model.mood.genre.GenreObject
 import com.maxrave.domain.data.model.mood.moodmoments.MoodsMomentObject
+import com.maxrave.domain.data.model.radiobuilder.RadioBuilder
+import com.maxrave.domain.data.model.radiobuilder.RadioSeed
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.HomeRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.YouTube
+import com.maxrave.kotlinytmusicscraper.pages.RadioBuilderParser
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -29,6 +32,7 @@ import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
 
 /**
  * One resolved category cover plus when it was fetched.
@@ -438,4 +442,23 @@ internal class HomeRepositoryImpl(
                     emit(Resource.Error<BrowsePage>(e.message.toString()))
                 }
         }.flowOn(Dispatchers.IO)
+
+    override fun getRadioBuilder(): Flow<Resource<RadioBuilder>> =
+        flow {
+            youTube
+                .radioBuilder()
+                .onSuccess { emit(Resource.Success(it)) }
+                .onFailure { e ->
+                    Logger.w("RadioBuilder", "Radio builder failed: ${e.message}")
+                    emit(Resource.Error<RadioBuilder>(e.message.toString()))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun radioId(
+        seedTokens: List<String>,
+        selectedChipIds: List<String>,
+    ): String? = RadioBuilderParser.radioId(seedTokens, selectedChipIds)
+
+    override suspend fun radioGenres(videoIds: List<String>): List<RadioSeed> =
+        withContext(Dispatchers.IO) { youTube.radioGenres(videoIds) }
 }

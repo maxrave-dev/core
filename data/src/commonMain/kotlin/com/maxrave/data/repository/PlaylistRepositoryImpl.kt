@@ -137,73 +137,79 @@ internal class PlaylistRepositoryImpl(
         originalTrack: SongEntity?,
         artist: ArtistEntity?,
     ): Flow<Resource<Pair<PlaylistBrowse, String?>>> =
-        if (radioId.isRadioMix()) {
-            getRDATRadioData(radioId, viewString)
-        } else {
-            flow {
-                runCatching {
-                    youTube
-                        .next(endpoint = WatchEndpoint(playlistId = radioId))
-                        .onSuccess { next ->
-                            Logger.w("Radio", "Title: ${next.title}")
-                            val data: ArrayList<SongItem> = arrayListOf()
-                            data.addAll(next.items)
-                            var continuation = next.continuation
-                            Logger.w("Radio", "data: ${data.size}")
-                            var count = 0
-                            while (continuation != null && count < 3) {
-                                youTube
-                                    .next(
-                                        endpoint = WatchEndpoint(playlistId = radioId),
-                                        continuation = continuation,
-                                    ).onSuccess { nextContinue ->
-                                        data.addAll(nextContinue.items)
-                                        continuation = nextContinue.continuation
-                                        if (data.size >= 50) {
-                                            count = 3
-                                        }
-                                        Logger.w("Radio", "data: ${data.size}")
-                                        count++
-                                    }.onFailure {
+        flow {
+            // A radio builder radio of genres alone (`RDATG…E`) has no browse page: its VL id
+            // answers with no tracks, while /next plays it. Such an id falls through to /next.
+            if (radioId.isRadioMix()) {
+                val browsed = getRDATRadioData(radioId, viewString).firstOrNull()
+                if (browsed is Resource.Success && !browsed.data?.first?.tracks.isNullOrEmpty()) {
+                    emit(browsed)
+                    return@flow
+                }
+            }
+            runCatching {
+                youTube
+                    .next(endpoint = WatchEndpoint(playlistId = radioId))
+                    .onSuccess { next ->
+                        Logger.w("Radio", "Title: ${next.title}")
+                        val data: ArrayList<SongItem> = arrayListOf()
+                        data.addAll(next.items)
+                        var continuation = next.continuation
+                        Logger.w("Radio", "data: ${data.size}")
+                        var count = 0
+                        while (continuation != null && count < 3) {
+                            youTube
+                                .next(
+                                    endpoint = WatchEndpoint(playlistId = radioId),
+                                    continuation = continuation,
+                                ).onSuccess { nextContinue ->
+                                    data.addAll(nextContinue.items)
+                                    continuation = nextContinue.continuation
+                                    if (data.size >= 50) {
                                         count = 3
                                     }
-                            }
-                            val listTrackResult = data.toListTrack()
-                            if (originalTrack != null) {
-                                listTrackResult.add(0, originalTrack.toTrack())
-                            }
-                            Logger.w("Repository", "data: ${data.size}")
-                            val playlistBrowse =
-                                PlaylistBrowse(
-                                    author = Author(id = "", name = "YouTube Music"),
-                                    description =
-                                    defaultDescription,
-                                    duration = "",
-                                    durationSeconds = 0,
-                                    id = radioId,
-                                    privacy = "PRIVATE",
-                                    thumbnails =
-                                        listOf(
-                                            Thumbnail(
-                                                544,
-                                                originalTrack?.thumbnails ?: artist?.thumbnails ?: "",
-                                                544,
-                                            ),
-                                        ),
-                                    title = "${originalTrack?.title ?: artist?.name} $radioString",
-                                    trackCount = listTrackResult.size,
-                                    tracks = listTrackResult,
-                                    year = now().year.toString(),
-                                )
-                            Logger.w("Repository", "playlistBrowse: $playlistBrowse")
-                            emit(Resource.Success<Pair<PlaylistBrowse, String?>>(Pair(playlistBrowse, continuation)))
-                        }.onFailure { exception ->
-                            exception.printStackTrace()
-                            emit(Resource.Error<Pair<PlaylistBrowse, String?>>(exception.message.toString()))
+                                    Logger.w("Radio", "data: ${data.size}")
+                                    count++
+                                }.onFailure {
+                                    count = 3
+                                }
                         }
-                }
-            }.flowOn(Dispatchers.IO)
-        }
+                        val listTrackResult = data.toListTrack()
+                        if (originalTrack != null) {
+                            listTrackResult.add(0, originalTrack.toTrack())
+                        }
+                        Logger.w("Repository", "data: ${data.size}")
+                        val playlistBrowse =
+                            PlaylistBrowse(
+                                author = Author(id = "", name = "YouTube Music"),
+                                description =
+                                defaultDescription,
+                                duration = "",
+                                durationSeconds = 0,
+                                id = radioId,
+                                privacy = "PRIVATE",
+                                thumbnails =
+                                    listOf(
+                                        Thumbnail(
+                                            544,
+                                            originalTrack?.thumbnails ?: artist?.thumbnails
+                                                ?: listTrackResult.firstOrNull()?.thumbnails?.lastOrNull()?.url ?: "",
+                                            544,
+                                        ),
+                                    ),
+                                title = listOfNotNull(originalTrack?.title ?: artist?.name, radioString).joinToString(" "),
+                                trackCount = listTrackResult.size,
+                                tracks = listTrackResult,
+                                year = now().year.toString(),
+                            )
+                        Logger.w("Repository", "playlistBrowse: $playlistBrowse")
+                        emit(Resource.Success<Pair<PlaylistBrowse, String?>>(Pair(playlistBrowse, continuation)))
+                    }.onFailure { exception ->
+                        exception.printStackTrace()
+                        emit(Resource.Error<Pair<PlaylistBrowse, String?>>(exception.message.toString()))
+                    }
+            }
+        }.flowOn(Dispatchers.IO)
 
     override fun getRDATRadioData(
         radioId: String,
