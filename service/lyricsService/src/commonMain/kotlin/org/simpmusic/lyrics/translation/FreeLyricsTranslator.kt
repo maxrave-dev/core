@@ -658,6 +658,27 @@ internal fun expandSegmentsToLines(
     return out
 }
 
+private val SPLIT_SENTENCE_END_CHARS = setOf('?', '!', '.', '…')
+private val SPLIT_STRONG_PUNCT_CHARS = setOf('?', '!', '.', '…', ';', ':')
+private val SPLIT_CLAUSE_STARTERS =
+    setOf(
+        "e", "mas", "porém", "porem", "porque", "quando", "onde", "enquanto",
+        "se", "então", "entao", "pois", "aqui", "lá", "la", "eu", "você", "voce",
+        "ele", "ela", "nós", "nos", "eles", "elas",
+        "and", "but", "when", "where", "if", "because", "here", "there", "y", "pero",
+    )
+private val SPLIT_DANGLING_WORDS =
+    setOf(
+        "de", "do", "da", "dos", "das", "em", "no", "na", "nos", "nas",
+        "para", "pra", "pro", "por", "pelo", "pela", "pelos", "pelas",
+        "com", "sem", "sob", "sobre", "entre", "até", "ate", "ao", "aos", "à", "às",
+        "a", "o", "os", "as", "um", "uma", "uns", "umas",
+        "meu", "minha", "meus", "minhas", "teu", "tua", "seu", "sua", "seus", "suas",
+        "nosso", "nossa", "nossos", "nossas", "te", "me", "se", "lhe", "lhes",
+        "não", "nao", "que", "ou", "nem",
+        "of", "to", "in", "on", "at", "for", "with", "the", "an", "my", "your", "his", "her", "our", "their",
+    )
+
 internal fun splitTranslatedProportionally(
     translated: String,
     originalParts: List<String>,
@@ -680,22 +701,50 @@ internal fun splitTranslatedProportionally(
     for (p in 0 until partCount - 1) {
         cumulativeOriginal += originalParts[p].length.coerceAtLeast(1)
         val targetWordRatio = cumulativeOriginal / totalChars
-        val idealWordsEnd =
-            (words.size * targetWordRatio)
-                .toInt()
-                .coerceIn(wordCursor + 1, words.size - (partCount - 1 - p))
-        // Pick the split point in [wordCursor+1..min/max] closest to proportional char budget.
-        var bestEnd = idealWordsEnd
-        var bestDiff = Int.MAX_VALUE
         val minEnd = wordCursor + 1
         val maxEnd = words.size - (partCount - 1 - p)
+        val idealWordsEnd = (words.size * targetWordRatio).toInt().coerceIn(minEnd, maxEnd)
+
+        val origEndChar = originalParts[p].trim().lastOrNull()
         val targetTranslatedChars = (translated.length * (originalParts[p].length.coerceAtLeast(1) / totalChars)).toInt()
+
+        var bestEnd = idealWordsEnd
+        var bestScore = Float.MAX_VALUE
         var runningChars = 0
         for (end in minEnd..maxEnd) {
-            runningChars += words[end - 1].length + 1
-            val diff = abs(runningChars - targetTranslatedChars)
-            if (diff < bestDiff) {
-                bestDiff = diff
+            val leftWord = words[end - 1]
+            val rightWord = words[end]
+            runningChars += leftWord.length + 1
+
+            var score = abs(runningChars - targetTranslatedChars).toFloat()
+            val leftLastChar = leftWord.lastOrNull()
+
+            // Strongly honor sentence boundaries (e.g. "Você está cansada de mim? | Gostaria de estar?").
+            if (origEndChar != null && origEndChar in SPLIT_SENTENCE_END_CHARS && leftLastChar == origEndChar) {
+                score -= 40f
+                if (rightWord.firstOrNull()?.isUpperCase() == true) {
+                    score -= 6f
+                }
+            } else if (leftLastChar != null && leftLastChar in SPLIT_STRONG_PUNCT_CHARS) {
+                score -= 24f
+                if (rightWord.firstOrNull()?.isUpperCase() == true) {
+                    score -= 4f
+                }
+            } else if (leftLastChar == ',') {
+                score -= 14f
+            } else {
+                val cleanLeft = leftWord.trimEnd(',', ';', ':', '.', '?', '!', '"', '\'', ')').lowercase()
+                if (cleanLeft in SPLIT_DANGLING_WORDS) {
+                    score += 18f
+                }
+                val cleanRight = rightWord.trimStart('(', '"', '\'').trimEnd(',', ';', ':', '.', '?', '!').lowercase()
+                if (cleanRight in SPLIT_CLAUSE_STARTERS && cleanLeft !in SPLIT_DANGLING_WORDS) {
+                    score -= 4f
+                }
+            }
+
+            if (score < bestScore) {
+                bestScore = score
                 bestEnd = end
             }
         }

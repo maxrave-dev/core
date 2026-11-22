@@ -56,6 +56,14 @@ class FreeLyricsTranslatorTest {
         assertEquals(2, parts.size)
         assertEquals("E por um segundo aí tínhamos vencido", parts.joinToString(" "))
         assertTrue(parts[0].isNotBlank() && parts[1].isNotBlank())
+
+        // Sentence boundaries ("?") and dangling prepositions ("de") must never split mid-question.
+        val loversRock =
+            splitTranslatedProportionally(
+                translated = "Você está cansada de mim? Gostaria de estar?",
+                originalParts = listOf("Are you sick of me?", "Would you like to be?"),
+            )
+        assertEquals(listOf("Você está cansada de mim?", "Gostaria de estar?"), loversRock)
     }
 
     @Test
