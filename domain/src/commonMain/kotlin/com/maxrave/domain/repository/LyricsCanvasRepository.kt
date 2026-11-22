@@ -93,6 +93,13 @@ interface LyricsCanvasRepository {
         targetLanguage: String,
     ): Flow<Resource<com.maxrave.domain.lyrics.LyricsTranslationResult>>
 
+    fun getVagalumeTranslatedLyrics(
+        songTitle: String,
+        artistName: String,
+        lyrics: Lyrics,
+        targetLanguage: String,
+    ): Flow<Resource<com.maxrave.domain.lyrics.LyricsTranslationResult.Translated?>>
+
     fun getSimpMusicLyrics(videoId: String): Flow<Resource<Lyrics>>
 
     fun getSimpMusicTranslatedLyrics(

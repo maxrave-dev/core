@@ -6,8 +6,6 @@ import com.maxrave.domain.lyrics.LyricsTranslationResult
 import com.maxrave.domain.lyrics.LyricsTranslationSyncValidator
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import kotlin.io.encoding.Base64
-import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -30,63 +28,53 @@ class FreeLyricsTranslatorTest {
     }
 
     @Test
-    fun groupsStanzasAcrossEnjambmentAndBreaksOnLongPausesAndInstrumentals() {
+    fun groupsStanzasAndDetectsGenuineEnjambmentWithoutMergingIndependentLines() {
         val lines =
             listOf(
-                line("1000", "You were standing with your girlfriends in the street"),
-                line("4000", "Falling back on forever"),
+                line("1000", "Meet cute so soon too good to be true love"),
+                line("4000", "But we make up any sign from above"),
                 line("6500", "And for a second there we'd"),
                 line("7800", "won"),
                 line("9000", "♫"),
                 line("15000", "Miss Atomic Bomb"),
-                line("22000", "Making out we've got the radio on"),
             )
 
         val stanzas = groupIntoStanzas(lines)
-        assertEquals(3, stanzas.size)
-        assertEquals(4, stanzas[0].lines.size)
-        assertEquals(listOf(0, 1, 2, 3), stanzas[0].lines.map { it.originalIndex })
-        assertEquals(1, stanzas[1].lines.size)
-        assertEquals(5, stanzas[1].lines.first().originalIndex)
-        // Gap 15000 -> 22000 (7000ms > 3500ms) starts a new stanza
-        assertEquals(1, stanzas[2].lines.size)
-        assertEquals(6, stanzas[2].lines.first().originalIndex)
+        assertEquals(2, stanzas.size)
+        val firstSegments = buildLogicalSegments(stanzas[0].lines.map { preNormalizeForTranslation(it.cleanedText, "pt") })
+        // Line 0 and Line 1 stay separate; Line 2 ("we'd") + Line 3 ("won") merge as enjambment!
+        assertEquals(3, firstSegments.size)
+        assertEquals("romantic meet-cute so soon too good to be true love", firstSegments[0].mergedText)
+        assertEquals("But we make up any sign from heaven", firstSegments[1].mergedText)
+        assertEquals("And for a second there we'd won", firstSegments[2].mergedText)
+        assertEquals(2, firstSegments[2].lineCount)
     }
 
     @Test
-    fun buildsAndExtractsEscapedHtmlStanzaAndReorderedSplitSpans() {
-        val html = buildStanzaHtml(listOf("Rock & Roll <3", "We'd \"won\""))
-        assertEquals(
-            """<span id="0">Rock &amp; Roll &lt;3</span> <span id="1">We&#39;d &quot;won&quot;</span>""",
-            html,
-        )
-
-        // Simulate Microsoft NMT reordering a split span with duplicate id="0"
-        val translatedHtml =
-            """<span id="0">E por um segundo</span> <span id="1">ganhamos</span> <span id="0">lá</span>"""
-        val extracted = extractStanzaHtmlLines(translatedHtml, expectedCount = 2)
-        assertEquals(listOf("E por um segundo lá", "ganhamos"), extracted)
-
-        // Missing id returns null so per-stanza plain fallback triggers
-        assertNull(extractStanzaHtmlLines("""<span id="0">Only first</span>""", expectedCount = 2))
+    fun expandsEnjambmentTranslationProportionallyBackAcrossOriginalLines() {
+        val parts = splitTranslatedProportionally("E por um segundo aí tínhamos vencido", listOf("And for a second there we'd", "won"))
+        assertEquals(2, parts.size)
+        assertEquals("E por um segundo aí tínhamos vencido", parts.joinToString(" "))
+        assertTrue(parts[0].isNotBlank() && parts[1].isNotBlank())
     }
 
     @Test
-    fun deduplicatesRepeatedChorusesAndReusesCachedJwt() =
+    fun deduplicatesRepeatedChorusesAndUsesZeroAuthEdgeEndpoint() {
         runBlocking {
-            val transport = FakeTransport(token = fakeJwt(expSeconds = 2_000L))
-            transport.edgeHtmlHandler = { texts, target ->
+            val transport = FakeTransport()
+            transport.edgeHandler = { texts, target ->
                 assertEquals("pt-BR", target)
-                // Two identical choruses separated by instrumental line must be sent ONLY ONCE!
+                // Identical stanzas separated by instrumental line must be sent only once!
                 assertEquals(1, texts.size)
+                assertEquals("You were in the street\nAnd for a second we'd won", texts[0])
                 200 to
                     """[
                     {"detectedLanguage":{"language":"en","score":1.0},
-                     "translations":[{"text":"<span id=\"0\">Você estava na rua</span> <span id=\"1\">E por um segundo ganhamos</span>","to":"pt-BR"}]}
+                     "translations":[{"text":"Você estava na rua\nE por um segundo ganhamos","to":"pt"}]}
                 ]"""
             }
 
-            val translator = FreeLyricsTranslator(nowSecondsProvider = { 1_000L })
+            val translator = FreeLyricsTranslator()
             val lyrics =
                 Lyrics(
                     error = false,
@@ -94,43 +82,45 @@ class FreeLyricsTranslatorTest {
                     lines =
                         listOf(
                             line("1000", "You were in the street"),
-                            line("3000", "And for a second we won"),
+                            line("3000", "And for a second we'd"),
+                            line("4000", "won"),
                             line("5000", "♫"),
                             line("12000", "You were in the street"),
-                            line("14000", "And for a second we won"),
+                            line("14000", "And for a second we'd"),
+                            line("15000", "won"),
                         ),
                 )
 
-            val firstResult = translator.translateWithTransport(transport, lyrics, "pt")
-            val translated = assertIs<LyricsTranslationResult.Translated>(firstResult)
+            val result = translator.translateWithTransport(transport, lyrics, "pt")
+            val translated = assertIs<LyricsTranslationResult.Translated>(result)
+            assertEquals("microsoft", translated.sourceEngine)
             val outLines = translated.lyrics.lines!!
-            assertEquals(5, outLines.size)
+            assertEquals(7, outLines.size)
             assertEquals("Você estava na rua", outLines[0].words)
-            assertEquals("E por um segundo ganhamos", outLines[1].words)
-            assertEquals("", outLines[2].words)
-            assertEquals("Você estava na rua", outLines[3].words)
-            assertEquals("E por um segundo ganhamos", outLines[4].words)
+            assertFalse(outLines[1].words.isBlank())
+            assertFalse(outLines[2].words.isBlank())
+            assertEquals("", outLines[3].words)
+            assertEquals(outLines[0].words, outLines[4].words)
+            assertEquals(outLines[1].words, outLines[5].words)
+            assertEquals(outLines[2].words, outLines[6].words)
             assertFalse(LyricsTranslationSyncValidator.isOutOfSync(lyrics, translated.lyrics))
-
-            // Second call before JWT expiry reuses cached token (tokenFetchCount remains 1).
-            translator.translateWithTransport(transport, lyrics, "pt")
-            assertEquals(1, transport.tokenFetchCount)
-            assertEquals(2, transport.edgeHtmlCalls)
+            assertEquals(1, transport.edgeCalls)
         }
+    }
 
     @Test
     fun returnsAlreadyInTargetLanguageWhenLyricsAreAlreadyPortuguese() {
         runBlocking {
-            val transport = FakeTransport(token = fakeJwt(expSeconds = 2_000L))
-            transport.edgeHtmlHandler = { _, _ ->
+            val transport = FakeTransport()
+            transport.edgeHandler = { _, _ ->
                 200 to
                     """[
                     {"detectedLanguage":{"language":"pt","score":1.0},
-                     "translations":[{"text":"<span id=\"0\">Evidências do meu amor</span>","to":"pt-BR"}]}
+                     "translations":[{"text":"Evidências do meu amor","to":"pt"}]}
                 ]"""
             }
 
-            val translator = FreeLyricsTranslator(nowSecondsProvider = { 1_000L })
+            val translator = FreeLyricsTranslator()
             val lyrics =
                 Lyrics(
                     error = false,
@@ -144,63 +134,61 @@ class FreeLyricsTranslatorTest {
     }
 
     @Test
-    fun refreshesExpiredTokenOn401AndSelfHealsDroppedHtmlSpanWithPlainFallback() =
+    fun selfHealsLineCountMismatchWithinEdgeWithoutFailing() {
         runBlocking {
-            var edgeCallCount = 0
-            val transport = FakeTransport(token = fakeJwt(expSeconds = 2_000L))
-            transport.edgeHtmlHandler = { _, _ ->
-                edgeCallCount++
-                if (edgeCallCount == 1) {
-                    401 to "Unauthorized"
-                } else {
-                    // Drop id="1" to trigger per-stanza plain fallback!
+            var edgeCall = 0
+            val transport = FakeTransport()
+            transport.edgeHandler = { texts, _ ->
+                edgeCall++
+                if (edgeCall == 1) {
+                    // Return only 1 line instead of 2 to trigger clean segment-array retry.
                     200 to
                         """[
                         {"detectedLanguage":{"language":"en","score":1.0},
-                         "translations":[{"text":"<span id=\"0\">Primeira linha</span>","to":"pt-BR"}]}
+                         "translations":[{"text":"Primeira linha junta Segunda linha","to":"pt"}]}
+                    ]"""
+                } else {
+                    assertEquals(listOf("First line.", "Second line"), texts)
+                    200 to
+                        """[
+                        {"translations":[{"text":"Primeira linha","to":"pt"}]},
+                        {"translations":[{"text":"Segunda linha","to":"pt"}]}
                     ]"""
                 }
             }
-            transport.edgePlainHandler = { texts, _ ->
-                assertEquals(listOf("First line", "Second line"), texts)
-                200 to
-                    """[
-                    {"translations":[{"text":"Primeira linha","to":"pt-BR"}]},
-                    {"translations":[{"text":"Segunda linha","to":"pt-BR"}]}
-                ]"""
-            }
 
-            val translator = FreeLyricsTranslator(nowSecondsProvider = { 1_000L })
+            val translator = FreeLyricsTranslator()
             val lyrics =
                 Lyrics(
                     error = false,
                     syncType = "LINE_SYNCED",
-                    lines = listOf(line("1000", "First line"), line("2500", "Second line")),
+                    lines = listOf(line("1000", "First line."), line("2500", "Second line")),
                 )
 
             val result = translator.translateWithTransport(transport, lyrics, "pt")
             val translated = assertIs<LyricsTranslationResult.Translated>(result)
-            assertEquals(2, transport.tokenFetchCount)
-            assertEquals(1, transport.edgePlainCalls)
-            assertEquals(listOf("Primeira linha", "Segunda linha"), translated.lyrics.lines!!.map { it.words })
+            assertEquals("microsoft", translated.sourceEngine)
+            assertEquals(2, transport.edgeCalls)
+            assertEquals("Primeira linha", translated.lyrics.lines!![0].words)
+            assertEquals("Segunda linha", translated.lyrics.lines!![1].words)
         }
+    }
 
     @Test
-    fun fallsBackToGoogleGtxAndThenClients5WhenEdgeFails() =
+    fun fallsBackToGoogleClients5WithStanzaHtmlContextWhenEdgeFails() {
         runBlocking {
-            val transport = FakeTransport(token = fakeJwt(expSeconds = 2_000L))
-            transport.edgeHtmlHandler = { _, _ -> 429 to "Too Many Requests" }
-            transport.googleGtxHandler = { _, _ ->
-                // Simulate mismatched line count in gtx -> triggers clients5 fallback
-                200 to """[[["Somente uma linha","First\nSecond",null,null,1]],null,"en"]"""
-            }
+            val transport = FakeTransport()
+            transport.edgeHandler = { _, _ -> 503 to "Service Unavailable" }
             transport.googleClients5Handler = { texts, target ->
                 assertEquals("pt", target)
-                assertEquals(listOf("Hello world", "Good night"), texts)
-                200 to """[["Olá mundo","en"],["Boa noite","en"]]"""
+                // First attempt sends HTML spans per stanza.
+                assertEquals(1, texts.size)
+                assertTrue(texts[0].contains("<span id=\"0\">Hello world</span>"))
+                assertTrue(texts[0].contains("<span id=\"1\">Good night</span>"))
+                200 to """[["<span id=\"0\">Olá mundo</span><br><span id=\"1\">Boa noite</span>","en"]]"""
             }
 
-            val translator = FreeLyricsTranslator(nowSecondsProvider = { 1_000L })
+            val translator = FreeLyricsTranslator()
             val lyrics =
                 Lyrics(
                     error = false,
@@ -210,24 +198,75 @@ class FreeLyricsTranslatorTest {
 
             val result = translator.translateWithTransport(transport, lyrics, "pt")
             val translated = assertIs<LyricsTranslationResult.Translated>(result)
+            assertEquals("google", translated.sourceEngine)
             assertEquals(listOf("Olá mundo", "Boa noite"), translated.lyrics.lines!!.map { it.words })
             assertEquals("en", translated.detectedSourceLanguage)
         }
-
-    @Test
-    fun parsesGoogleSingleResponseCleanly() {
-        val body = """[[["Linha um\n","Line one\n",null,null,1],["Linha dois","Line two",null,null,1]],null,"en"]"""
-        val parsed = parseGoogleSingleResponse(json, body)
-        assertEquals(listOf("Linha um", "Linha dois"), parsed?.lines)
-        assertEquals("en", parsed?.detectedLanguage)
     }
 
     @Test
-    fun stripsRichSyncMarkersBeforeTranslating() {
+    fun vagalumeParserAndAlignerProducesHumanPtBrTranslationAndRejectsLowCoverage() {
+        val sampleHtml =
+            """
+            <div id=lyricsPair class=songPair>
+              <div class="orig pair songTitle line0"><p>Miss Atomic Bomb</div>
+              <div class="orig break line1"><p><br></div>
+              <div class="orig pair line2"><p>You were standing with your girlfriends in the street</div>
+              <div class="orig pair line3"><p>And for a second there we'd won</div>
+              <div class="orig pair line4"><p>Yeah we were innocent and young</div>
+              <div class="trad pair songTitle line0"><p>Senhorita Bomba Atômica</div>
+              <div class="trad break line1"><p><br></div>
+              <div class="trad pair line2"><p>Você estava com suas amigas na rua</div>
+              <div class="trad pair line3"><p>E por um segundo, ganhamos</div>
+              <div class="trad pair line4"><p>Sim, éramos inocentes e jovens</div>
+            </div>
+            """.trimIndent()
+
+        val pairs = parseVagalumePairs(sampleHtml)
+        assertEquals(3, pairs.size)
+        assertEquals("And for a second there we'd won", pairs[1].original)
+        assertEquals("E por um segundo, ganhamos", pairs[1].translated)
+
+        val lrc =
+            Lyrics(
+                error = false,
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        line("1000", "You were standing with your girlfriends in the street"),
+                        line("4000", "And for a second there we'd won"),
+                        line("7000", "Yeah we were innocent and young"),
+                    ),
+            )
+        val aligned = alignHumanPairsToLyrics(lrc, pairs)
         assertEquals(
-            "Hello world",
-            stripRichSyncMarkers("<00:01.20>Hello <00:01.80>world"),
+            listOf(
+                "Você estava com suas amigas na rua",
+                "E por um segundo, ganhamos",
+                "Sim, éramos inocentes e jovens",
+            ),
+            aligned?.lines?.map { it.words },
         )
+
+        val unrelated =
+            Lyrics(
+                error = false,
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        line("1000", "Completely different lyrics"),
+                        line("2000", "Another unrelated line"),
+                        line("3000", "Third unrelated line"),
+                    ),
+            )
+        assertNull(alignHumanPairsToLyrics(unrelated, pairs))
+    }
+
+    @Test
+    fun stripsRichSyncMarkersAndNormalizesSlang() {
+        assertEquals("Hello world", stripRichSyncMarkers("<00:01.20>Hello <00:01.80>world"))
+        assertEquals("I am going to love you because you are running", preNormalizeForTranslation("I am gonna love you 'cause you are runnin'", "pt"))
+        assertEquals("gonna love runnin'", preNormalizeForTranslation("gonna love runnin'", "en"))
         assertFalse(isTranslatableLyricLine("♫ ♪ •••"))
         assertTrue(isTranslatableLyricLine("Ah"))
     }
@@ -242,42 +281,19 @@ class FreeLyricsTranslatorTest {
         words = words,
     )
 
-    @OptIn(ExperimentalEncodingApi::class)
-    private fun fakeJwt(expSeconds: Long): String {
-        val header = Base64.UrlSafe.encode("""{"alg":"HS256"}""".encodeToByteArray()).trimEnd('=')
-        val payload = Base64.UrlSafe.encode("""{"exp":$expSeconds}""".encodeToByteArray()).trimEnd('=')
-        return "$header.$payload.sig"
-    }
-
-    private class FakeTransport(
-        private val token: String,
-    ) : FreeTranslationTransport {
-        var tokenFetchCount = 0
-        var edgeHtmlCalls = 0
-        var edgePlainCalls = 0
-        var edgeHtmlHandler: (List<String>, String) -> Pair<Int, String> = { _, _ -> 500 to "" }
-        var edgePlainHandler: (List<String>, String) -> Pair<Int, String> = { _, _ -> 500 to "" }
+    private class FakeTransport : FreeTranslationTransport {
+        var edgeCalls = 0
+        var edgeHandler: (List<String>, String) -> Pair<Int, String> = { _, _ -> 500 to "" }
         var googleGtxHandler: (String, String) -> Pair<Int, String> = { _, _ -> 500 to "" }
         var googleClients5Handler: (List<String>, String) -> Pair<Int, String> = { _, _ -> 500 to "" }
 
-        override suspend fun fetchEdgeToken(): String {
-            tokenFetchCount++
-            return token
-        }
-
         override suspend fun translateEdge(
-            token: String,
             targetLanguage: String,
             texts: List<String>,
-            isHtml: Boolean,
-        ): Pair<Int, String> =
-            if (isHtml) {
-                edgeHtmlCalls++
-                edgeHtmlHandler(texts, targetLanguage)
-            } else {
-                edgePlainCalls++
-                edgePlainHandler(texts, targetLanguage)
-            }
+        ): Pair<Int, String> {
+            edgeCalls++
+            return edgeHandler(texts, targetLanguage)
+        }
 
         override suspend fun translateGoogleGtx(
             targetLanguage: String,

@@ -740,6 +740,36 @@ internal class LyricsCanvasRepositoryImpl(
             }
         }.flowOn(Dispatchers.IO)
 
+    override fun getVagalumeTranslatedLyrics(
+        songTitle: String,
+        artistName: String,
+        lyrics: Lyrics,
+        targetLanguage: String,
+    ): Flow<Resource<com.maxrave.domain.lyrics.LyricsTranslationResult.Translated?>> =
+        flow<Resource<com.maxrave.domain.lyrics.LyricsTranslationResult.Translated?>> {
+            try {
+                val input =
+                    if (lyrics.syncType == "RICH_SYNCED") {
+                        lyrics.toSyncedLyrics()
+                    } else {
+                        lyrics
+                    }
+                simpMusicLyrics
+                    .fetchVagalumeTranslation(songTitle, artistName, input, targetLanguage)
+                    .onSuccess { result ->
+                        emit(Resource.Success(result))
+                    }.onFailure { throwable ->
+                        Logger.d("Vagalume Translation", "Skipped: ${throwable.message}")
+                        emit(Resource.Success(null))
+                    }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Logger.d("Vagalume Translation", "Skipped: ${t.message}")
+                emit(Resource.Success(null))
+            }
+        }.flowOn(Dispatchers.IO)
+
     // SimpMusic Lyrics
     private val simpMusicLyricsTag = "SimpMusicLyricsRepository"
 

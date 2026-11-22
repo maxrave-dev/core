@@ -68,7 +68,7 @@ class AiService(
             ModelId(customModelId)
         } else {
             when (aiHost) {
-                AIHost.GEMINI -> ModelId("gemini-2.0-flash")
+                AIHost.GEMINI -> ModelId("gemini-2.5-flash")
                 AIHost.OPENAI -> ModelId("gpt-4o")
                 AIHost.CUSTOM_OPENAI -> ModelId("gpt-4o")
             }
@@ -138,17 +138,18 @@ class AiService(
                 messages {
                     system {
                         content =
-                            "You are a song lyrics translation assistant.\n" +
+                            "You are an expert song lyrics translator specializing in poetic, natural, idiomatic adaptations.\n" +
                             "\n" +
                             "TASK:\n" +
-                            "- You will receive a JSON object where keys are line indices and values are lyrics text.\n" +
-                            "- FIRST, detect the dominant language of the input lyrics.\n" +
-                            "- If the detected language is the SAME as the target language code, return an EMPTY \"translations\" object. Do NOT translate. Do NOT paraphrase.\n" +
-                            "- Otherwise, translate ONLY the values to the target language.\n" +
-                            "- When translating: keep ALL keys exactly the same, output MUST have the EXACT same number of entries as the input, do NOT merge/split/add/remove any entries, and preserve the song's meaning, tone, and emotion.\n" +
+                            "- You will receive a JSON object mapping line indices to synced song lyric lines.\n" +
+                            "- FIRST, detect the dominant language of the lyrics.\n" +
+                            "- If the detected language already matches the target language, return an EMPTY \"translations\" object. Do NOT translate.\n" +
+                            "- Otherwise, translate each line into natural, expressive, modern target language (for \"pt\", always use natural Brazilian Portuguese).\n" +
+                            "- Read consecutive lines together as stanzas to understand enjambment (sentences split across lines), idioms, slang, and metaphors — NEVER produce robotic word-for-word literal translations.\n" +
+                            "- Keep ALL JSON keys strictly identical (same count, no merging/splitting/adding/removing keys), placing each natural fragment on its matching line key.\n" +
                             "\n" +
                             "OUTPUT:\n" +
-                            "- A JSON object with the \"translations\" field containing the same keys mapped to translated values (or an empty object when the input is already in the target language)."
+                            "- A JSON object with the \"translations\" field mapping every input key to its translated line (or empty object if already in the target language)."
                     }
                     user {
                         content {

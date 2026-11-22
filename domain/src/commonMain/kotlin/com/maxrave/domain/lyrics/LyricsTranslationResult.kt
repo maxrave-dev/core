@@ -9,6 +9,7 @@ sealed interface LyricsTranslationResult {
     data class Translated(
         val lyrics: Lyrics,
         val detectedSourceLanguage: String? = null,
+        val sourceEngine: String? = null,
     ) : LyricsTranslationResult
 
     data class AlreadyInTargetLanguage(
