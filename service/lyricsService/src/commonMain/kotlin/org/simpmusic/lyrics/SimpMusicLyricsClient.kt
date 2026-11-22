@@ -1,6 +1,7 @@
 package org.simpmusic.lyrics
 
 import com.maxrave.domain.data.model.metadata.Lyrics
+import com.maxrave.domain.lyrics.LyricsIdentityGuard
 import com.maxrave.domain.lyrics.LyricsMetadataMatcher
 import com.maxrave.ktorext.curl.CurlLogger
 import com.maxrave.ktorext.crypto.Hmac
@@ -25,6 +26,8 @@ import org.simpmusic.lyrics.models.response.BetterLyricsResponse
 import org.simpmusic.lyrics.models.response.LrclibObject
 import org.simpmusic.lyrics.models.response.LyricsResponse
 import org.simpmusic.lyrics.models.response.TranslatedLyricsResponse
+import org.simpmusic.lyrics.parser.extractLrcEmbeddedMetadata
+import org.simpmusic.lyrics.parser.extractTtmlEmbeddedMetadata
 import org.simpmusic.lyrics.parser.parseLrclibLyrics
 import kotlin.math.abs
 
@@ -358,7 +361,23 @@ class SimpMusicLyricsClient(
                 in 200..299 -> {
                     val ttml = response.body<BetterLyricsResponse>().ttml
                     if (!ttml.isNullOrBlank()) {
-                        return@suspendRunCatching ttml
+                        val ttmlMeta = extractTtmlEmbeddedMetadata(ttml)
+                        val tagsContradict =
+                            LyricsIdentityGuard.embeddedTagsContradictTrack(
+                                embeddedTitle = ttmlMeta.title,
+                                embeddedArtist = ttmlMeta.artist,
+                                expectedTitle = q_track,
+                                expectedArtist = q_artist,
+                            )
+                        val durationOk =
+                            LyricsMetadataMatcher.durationsMatch(
+                                expectedSeconds = validDuration,
+                                candidateSeconds = ttmlMeta.durationSeconds,
+                                toleranceSeconds = 20,
+                            )
+                        if (!tagsContradict && durationOk) {
+                            return@suspendRunCatching ttml
+                        }
                     }
                 }
                 else -> throw SimpMusicLyricsApiException(response.status.value, "BetterLyrics failed: ${response.status.value}")
@@ -527,6 +546,16 @@ internal fun lrclibMetadataMatches(
     }
     if (!expectedArtist.isNullOrBlank() && !record.artistName.isNullOrBlank()) {
         if (!LyricsMetadataMatcher.artistsMatch(expectedArtist, record.artistName, expectedTrack)) return false
+    }
+    val embeddedMeta = extractLrcEmbeddedMetadata(record.syncedLyrics)
+    if (LyricsIdentityGuard.embeddedTagsContradictTrack(
+            embeddedTitle = embeddedMeta.title,
+            embeddedArtist = embeddedMeta.artist,
+            expectedTitle = expectedTrack,
+            expectedArtist = expectedArtist,
+        )
+    ) {
+        return false
     }
     return true
 }

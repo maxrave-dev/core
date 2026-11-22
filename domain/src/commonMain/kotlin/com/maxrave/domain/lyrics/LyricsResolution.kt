@@ -10,6 +10,13 @@ enum class LyricsSource {
     BETTER_LYRICS,
     LETRAS,
     OFFLINE,
+    ;
+
+    fun isCatalogVerified(): Boolean =
+        this == LRCLIB || this == SPOTIFY || this == LETRAS
+
+    fun isBlindMetadataSource(): Boolean =
+        this == BETTER_LYRICS
 }
 
 data class LyricsLookupRequest(
@@ -43,6 +50,7 @@ sealed interface LyricsResolutionEvent {
         val videoId: String,
         val definitiveNotFound: Boolean,
         val confirmedInstrumental: Boolean = false,
+        val cacheInvalidated: Boolean = false,
     ) : LyricsResolutionEvent
 }
 

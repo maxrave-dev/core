@@ -16,6 +16,7 @@ import com.maxrave.domain.data.model.metadata.Lyrics
 import com.maxrave.domain.data.model.metadata.SimpMusicLyrics
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.lyrics.LyricsContentQualityGuard
+import com.maxrave.domain.lyrics.LyricsIdentityGuard
 import com.maxrave.domain.lyrics.LyricsLookupRequest
 import com.maxrave.domain.lyrics.LyricsMetadataMatcher
 import com.maxrave.domain.lyrics.LyricsQuality
@@ -61,6 +62,7 @@ import org.simpmusic.lyrics.am.toImageUrl
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.response.LyricsResponse
+import org.simpmusic.lyrics.parser.extractLrcEmbeddedMetadata
 import org.simpmusic.lyrics.parser.parseTtmlLyrics
 import kotlin.math.abs
 import kotlin.time.Clock
@@ -1097,7 +1099,9 @@ internal class LyricsCanvasRepositoryImpl(
                         onSuccess = { ttml ->
                             if (ttml.isNullOrBlank()) return ProviderFetchOutcome.DefinitiveNotFound
                             val lyrics = parseTtmlLyrics(ttml).toLyrics()
-                            if (LyricsQuality.level(lyrics) > LyricsQuality.LEVEL_INVALID) {
+                            if (LyricsQuality.level(lyrics) > LyricsQuality.LEVEL_INVALID &&
+                                !LyricsIdentityGuard.contradictsTrack(lyrics, request.title, request.artist)
+                            ) {
                                 ProviderFetchOutcome.Success(lyrics)
                             } else {
                                 ProviderFetchOutcome.DefinitiveNotFound
@@ -1586,11 +1590,24 @@ internal fun pickBestSimpMusicLyrics(
             if (abs(candidate.durationSeconds - validExpectedDur) > SIMPMUSIC_DURATION_TOLERANCE_SECONDS) continue
         }
 
+        val embeddedMeta =
+            extractLrcEmbeddedMetadata(candidate.richSyncLyrics ?: candidate.syncedLyrics)
+        if (LyricsIdentityGuard.embeddedTagsContradictTrack(
+                embeddedTitle = embeddedMeta.title,
+                embeddedArtist = embeddedMeta.artist,
+                expectedTitle = expectedTitle,
+                expectedArtist = expectedArtist,
+            )
+        ) {
+            continue
+        }
+
         val rawMapped =
             candidate
                 .toLyrics()
                 ?.takeIf { !it.lines.isNullOrEmpty() }
                 ?: continue
+        if (LyricsIdentityGuard.contradictsTrack(rawMapped, expectedTitle, expectedArtist)) continue
         val level = LyricsQuality.level(rawMapped)
         if (level <= LyricsQuality.LEVEL_INVALID) continue
         val mapped =

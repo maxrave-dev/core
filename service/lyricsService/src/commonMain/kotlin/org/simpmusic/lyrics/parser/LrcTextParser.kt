@@ -489,3 +489,89 @@ fun parseUnsyncedLyrics(data: String): Lyrics {
             ),
     )
 }
+
+data class EmbeddedLyricsMetadata(
+    val title: String? = null,
+    val artist: String? = null,
+    val durationSeconds: Int? = null,
+)
+
+private val TTML_META_TITLE_REGEX = Regex("""<ttm:title\b[^>]*>(.*?)</ttm:title>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+private val TTML_META_AGENT_PERSON_REGEX =
+    Regex(
+        """<ttm:agent\b[^>]*type\s*=\s*["']person["'][^>]*>.*?<ttm:name\b[^>]*>(.*?)</ttm:name>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+    )
+private val TTML_BODY_DUR_REGEX = Regex("""<body\b[^>]*\bdur\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+
+fun extractLrcEmbeddedMetadata(data: String?): EmbeddedLyricsMetadata {
+    if (data.isNullOrBlank()) return EmbeddedLyricsMetadata()
+    var title: String? = null
+    var artist: String? = null
+    var durationSec: Int? = null
+
+    for (rawLine in data.lineSequence()) {
+        val trimmed = rawLine.trim()
+        if (trimmed.isEmpty()) continue
+        val match = LRC_ID_TAG_REGEX.matchEntire(trimmed) ?: continue
+        val key = match.groupValues[1].trim().lowercase()
+        val value = decodeHtmlEntities(match.groupValues[2]).trim()
+        if (value.isEmpty()) continue
+        when (key) {
+            "ti", "title" -> if (title == null) title = value
+            "ar", "artist" -> if (artist == null) artist = value
+            "length" -> {
+                if (durationSec == null) {
+                    val sec = parseTtmlDurationSeconds(value)
+                    if (sec != null && sec > 0) durationSec = sec
+                }
+            }
+        }
+        if (title != null && artist != null && durationSec != null) break
+    }
+    return EmbeddedLyricsMetadata(title = title, artist = artist, durationSeconds = durationSec)
+}
+
+fun extractTtmlEmbeddedMetadata(ttml: String?): EmbeddedLyricsMetadata {
+    if (ttml.isNullOrBlank()) return EmbeddedLyricsMetadata()
+    val rawTitle =
+        TTML_META_TITLE_REGEX
+            .find(ttml)
+            ?.groupValues
+            ?.get(1)
+            ?.let { decodeHtmlEntities(it.replace(Regex("<[^>]+>"), "").trim()) }
+            ?.takeIf { it.isNotEmpty() }
+    val rawArtist =
+        TTML_META_AGENT_PERSON_REGEX
+            .find(ttml)
+            ?.groupValues
+            ?.get(1)
+            ?.let { decodeHtmlEntities(it.replace(Regex("<[^>]+>"), "").trim()) }
+            ?.takeIf { it.isNotEmpty() }
+    val durationSec =
+        TTML_BODY_DUR_REGEX
+            .find(ttml)
+            ?.groupValues
+            ?.get(1)
+            ?.let(::parseTtmlDurationSeconds)
+    return EmbeddedLyricsMetadata(
+        title = rawTitle,
+        artist = rawArtist,
+        durationSeconds = durationSec,
+    )
+}
+
+private fun parseTtmlDurationSeconds(raw: String): Int? {
+    val cleaned = raw.trim()
+    if (cleaned.isEmpty()) return null
+    if (cleaned.endsWith("ms", ignoreCase = true)) {
+        val ms = cleaned.dropLast(2).trim().toDoubleOrNull() ?: return null
+        return (ms / 1000.0).toInt().takeIf { it > 0 }
+    }
+    if (cleaned.endsWith("s", ignoreCase = true) && ':' !in cleaned) {
+        val sec = cleaned.dropLast(1).trim().toDoubleOrNull() ?: return null
+        return sec.toInt().takeIf { it > 0 }
+    }
+    val ms = parseTtmlTime(cleaned)
+    return (ms / 1000L).toInt().takeIf { it > 0 }
+}

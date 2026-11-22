@@ -78,12 +78,25 @@ object LyricsQueryNormalizer {
         val trimmedArtist = rawArtist.trim()
         val cleanedTrack = cleanTrackTitle(trimmedTrack)
         val cleanedArtist = cleanArtistName(trimmedArtist)
-        val cleanedPair = cleanedTrack to cleanedArtist
-        val rawPair = trimmedTrack to trimmedArtist
-        return if (cleanedPair == rawPair) {
-            listOf(cleanedPair)
-        } else {
-            listOf(cleanedPair, rawPair)
+        val candidates = LinkedHashSet<Pair<String, String>>(3)
+        candidates.add(cleanedTrack to cleanedArtist)
+
+        val primaryArtist =
+            cleanArtistName(
+                cleanedArtist
+                    .split(',', '&', '•', '/')
+                    .firstOrNull()
+                    .orEmpty()
+                    .trim(),
+            )
+        if (primaryArtist.isNotEmpty() && primaryArtist != cleanedArtist) {
+            candidates.add(cleanedTrack to primaryArtist)
         }
+
+        val rawPair = trimmedTrack to trimmedArtist
+        if (rawPair !in candidates) {
+            candidates.add(rawPair)
+        }
+        return candidates.toList()
     }
 }
