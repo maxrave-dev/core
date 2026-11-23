@@ -114,6 +114,10 @@ interface SongRepository {
 
     fun getMostPlayedSongs(): Flow<List<SongEntity>>
 
+    fun observeHomeMostPlayedSongs(limit: Int, allowExplicit: Boolean): Flow<List<SongEntity>>
+
+    fun observeHomeLikedSongs(limit: Int, allowExplicit: Boolean): Flow<List<SongEntity>>
+
     suspend fun updateDownloadState(
         videoId: String,
         downloadState: Int,

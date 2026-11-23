@@ -394,6 +394,25 @@ interface DatabaseDao {
 
     // Your library cards: a count and the newest artwork per collection, as Flows so a like, a
     // follow or a finished download shows on the card straight away.
+    // The playlist and album parsers historically stored isAvailable=false even for playable tracks.
+    @Query(
+        """
+        SELECT * FROM song WHERE totalPlayTime > 1 AND videoId != ''
+            AND (:allowExplicit OR isExplicit = 0)
+        ORDER BY totalPlayTime DESC, videoId LIMIT :limit
+        """,
+    )
+    fun observeHomeMostPlayedSongs(limit: Int, allowExplicit: Boolean): Flow<List<SongEntity>>
+
+    @Query(
+        """
+        SELECT * FROM song WHERE liked = 1 AND videoId != ''
+            AND (:allowExplicit OR isExplicit = 0)
+        ORDER BY favoriteAt DESC, videoId LIMIT :limit
+        """,
+    )
+    fun observeHomeLikedSongs(limit: Int, allowExplicit: Boolean): Flow<List<SongEntity>>
+
     @Query("SELECT COUNT(*) FROM song WHERE liked = 1")
     fun countLikedSongs(): Flow<Int>
 
