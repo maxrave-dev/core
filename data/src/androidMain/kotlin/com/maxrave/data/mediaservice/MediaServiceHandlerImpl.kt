@@ -999,7 +999,7 @@ internal class MediaServiceHandlerImpl(
                 val positionPersistIntervalMs = 5_000L
                 // Named so the persist counter below cannot drift out of step with it, which is
                 // what a second hardcoded copy of the number did.
-                val tickIntervalMs = 50L
+                val tickIntervalMs = 250L
                 var sinceLastPositionSaveMs = 0L
                 while (true) {
                     delay(tickIntervalMs)
