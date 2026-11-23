@@ -67,8 +67,6 @@ dependencies {
     api(libs.media3.session)
     implementation(libs.media3.exoplayer.dash)
     implementation(libs.media3.exoplayer.hls)
-    implementation(libs.media3.exoplayer.rtsp)
-    implementation(libs.media3.exoplayer.smoothstreaming)
     implementation(libs.media3.exoplayer.workmanager)
     implementation(libs.media3.datasource.okhttp)
     implementation(libs.okhttp3.logging.interceptor)

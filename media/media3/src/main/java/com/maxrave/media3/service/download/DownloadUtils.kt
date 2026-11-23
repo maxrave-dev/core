@@ -15,7 +15,7 @@ import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
-import coil3.ImageLoader
+import coil3.imageLoader
 import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import com.maxrave.common.MERGING_DATA_TYPE
@@ -236,9 +236,10 @@ internal class DownloadUtils(
                 ImageRequest
                     .Builder(context)
                     .data(thumbnail)
+                    .size(64, 64)
                     .diskCachePolicy(CachePolicy.ENABLED)
                     .build()
-            val imageResult = ImageLoader(context).execute(request)
+            val imageResult = context.imageLoader.execute(request)
             if (imageResult.image?.height != imageResult.image?.width && imageResult.image != null) {
                 isVideo = true
             }
