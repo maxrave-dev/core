@@ -161,8 +161,7 @@ internal class LocalPlaylistRepositoryImpl(
         id: Long,
         filterState: FilterState,
     ): List<SongEntity> {
-        val playlist = localDataSource.getLocalPlaylist(id) ?: return emptyList()
-        Logger.d(TAG, "getFullPlaylistTracks: $playlist")
+        if (localDataSource.getLocalPlaylist(id) == null) return emptyList()
         // Older first and newer first are position ASC and DESC (their time only cuts the screen's
         // pages), so both read the custom order, newer first reversed; title pages by title.
         val pagedBy = if (filterState == FilterState.Title) FilterState.Title else FilterState.CustomOrder
