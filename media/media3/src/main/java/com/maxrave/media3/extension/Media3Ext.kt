@@ -243,3 +243,19 @@ internal fun Cache.isFullyCached(
     val total = ContentMetadata.getContentLength(getContentMetadata(key))
     return total > 0L && position < total && isCached(key, 0L, total)
 }
+
+@UnstableApi
+internal fun Cache.isDownloadFullyCached(key: String): Boolean {
+    if (!isFullyCached(key, 0L)) return false
+    val spans = getCachedSpans(key)
+    if (spans.isEmpty()) return false
+    var allValid = true
+    for (span in spans) {
+        val file = span.file
+        if (file == null || !file.exists() || file.length() < span.length) {
+            allValid = false
+            runCatching { removeSpan(span) }
+        }
+    }
+    return allValid
+}

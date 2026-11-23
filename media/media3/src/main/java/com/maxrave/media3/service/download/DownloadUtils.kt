@@ -29,6 +29,7 @@ import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.repository.StreamRepository
 import com.maxrave.domain.utils.isLive
 import com.maxrave.logger.Logger
+import com.maxrave.media3.extension.isDownloadFullyCached
 import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -366,26 +367,29 @@ internal class DownloadUtils(
             }
         }
 
-        // Pair Audio and Video
+        // The restored download index can contain completed requests whose media was not backed up
+        // or was only partially cached.
         val result = mutableMapOf<String, Pair<DownloadHandler.Download?, DownloadHandler.Download?>>()
-        val cursor = downloadManager.downloadIndex.getDownloads()
-        while (cursor.moveToNext()) {
-            val id = cursor.download.request.id
-            val isVideo = id.contains(MERGING_DATA_TYPE.VIDEO)
-            val songId =
-                if (id.contains(MERGING_DATA_TYPE.VIDEO)) {
-                    id.removePrefix(MERGING_DATA_TYPE.VIDEO)
-                } else {
-                    id
+        downloadManager.downloadIndex.getDownloads().use { cursor ->
+            while (cursor.moveToNext()) {
+                val download = cursor.download
+                val id = download.request.id
+                val cacheKey = download.request.customCacheKey ?: id
+                if (download.state == Download.STATE_COMPLETED && !downloadCache.isDownloadFullyCached(cacheKey)) {
+                    continue
                 }
-            result[songId] =
-                if (isVideo) {
-                    result[songId]?.copy(second = DownloadHandler.Download(cursor.download.state))
-                        ?: Pair(null, DownloadHandler.Download(cursor.download.state))
-                } else {
-                    result[songId]?.copy(first = DownloadHandler.Download(cursor.download.state))
-                        ?: Pair(DownloadHandler.Download(cursor.download.state), null)
-                }
+
+                val isVideo = id.contains(MERGING_DATA_TYPE.VIDEO)
+                val songId = id.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                val current = result[songId]
+                val state = DownloadHandler.Download(download.state)
+                result[songId] =
+                    if (isVideo) current?.copy(second = state) ?: Pair(null, state)
+                    else current?.copy(first = state) ?: Pair(state, null)
+            }
+        }
+        result.entries.removeAll { (_, pair) ->
+            pair.first == null && pair.second?.state == Download.STATE_COMPLETED
         }
         _downloads.value = result
         downloadManager.addListener(
