@@ -43,14 +43,47 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.lastOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.LocalDateTime
 
+private const val PLAYLIST_NAV_CACHE_LIMIT = 12
 internal class PlaylistRepositoryImpl(
     private val dataStoreManager: DataStoreManager,
     private val localDataSource: LocalDataSource,
     private val youTube: YouTube,
 ) : PlaylistRepository {
+    private val playlistCacheMutex = Mutex()
+    private val playlistDataCache = LinkedHashMap<String, Pair<PlaylistBrowse, String?>>()
+
+    private suspend fun getCachedPlaylist(id: String): Pair<PlaylistBrowse, String?>? =
+        playlistCacheMutex.withLock {
+            playlistDataCache.remove(id)?.also { playlistDataCache[id] = it }
+        }
+
+    private suspend fun putCachedPlaylist(
+        id: String,
+        value: Pair<PlaylistBrowse, String?>,
+    ) {
+        playlistCacheMutex.withLock {
+            playlistDataCache.remove(id)
+            playlistDataCache[id] = value
+            if (playlistDataCache.size > PLAYLIST_NAV_CACHE_LIMIT) {
+                val oldestKey = playlistDataCache.keys.firstOrNull()
+                if (oldestKey != null) playlistDataCache.remove(oldestKey)
+            }
+        }
+    }
+
+    private fun hasPlaylistChanged(
+        old: PlaylistBrowse,
+        fresh: PlaylistBrowse,
+    ): Boolean =
+        old.trackCount != fresh.trackCount ||
+            old.title != fresh.title ||
+            old.tracks.size != fresh.tracks.size ||
+            old.tracks.map { it.videoId } != fresh.tracks.map { it.videoId }
     override fun getAllPlaylists(limit: Int): Flow<List<PlaylistEntity>> =
         flow {
             emit(localDataSource.getAllPlaylists(limit))
@@ -456,6 +489,10 @@ internal class PlaylistRepositoryImpl(
                         playlistId
                     }
                 Logger.d("getPlaylistData", "playlist id: $id")
+                val cached = getCachedPlaylist(id)
+                if (cached != null) {
+                    emit(Resource.Success(cached))
+                }
                 youTube
                     .customQuery(browseId = id, setLogin = true)
                     .onSuccess { result ->
@@ -521,42 +558,51 @@ internal class PlaylistRepositoryImpl(
                         Logger.d("getPlaylistData", "Endpoint: $radioEndpoint $shuffleEndpoint")
                         try {
                             parsePlaylistData(header, data ?: emptyList(), playlistId, viewString)?.let { playlist ->
-                                emit(
-                                    Resource.Success<Pair<PlaylistBrowse, String?>>(
-                                        Pair(
-                                            playlist.copy(
-                                                tracks =
-                                                    playlist.tracks.toMutableList().apply {
-                                                        addAll(listContent)
-                                                    },
-                                                trackCount = (playlist.trackCount + listContent.size),
-                                                shuffleEndpoint = shuffleEndpoint?.toYouTubeWatchEndpoint(),
-                                                radioEndpoint = radioEndpoint?.toYouTubeWatchEndpoint(),
-                                            ),
-                                            continueParam,
+                                val freshPair =
+                                    Pair(
+                                        playlist.copy(
+                                            tracks =
+                                                playlist.tracks.toMutableList().apply {
+                                                    addAll(listContent)
+                                                },
+                                            trackCount = (playlist.trackCount + listContent.size),
+                                            shuffleEndpoint = shuffleEndpoint?.toYouTubeWatchEndpoint(),
+                                            radioEndpoint = radioEndpoint?.toYouTubeWatchEndpoint(),
                                         ),
-                                    ),
+                                        continueParam,
+                                    )
+                                putCachedPlaylist(id, freshPair)
+                                if (cached == null || hasPlaylistChanged(cached.first, freshPair.first)) {
+                                    emit(Resource.Success(freshPair))
+                                }
+                            } ?: if (cached == null) {
+                                emit(
+                                    Resource.Error<
+                                        Pair<PlaylistBrowse, String?>,
+                                    >("Error"),
                                 )
-                            } ?: emit(
-                                Resource.Error<
-                                    Pair<PlaylistBrowse, String?>,
-                                >("Error"),
-                            )
+                            } else {
+                                Unit
+                            }
                         } catch (e: Exception) {
                             e.printStackTrace()
+                            if (cached == null) {
+                                emit(
+                                    Resource.Error<
+                                        Pair<PlaylistBrowse, String?>,
+                                    >(e.message.toString()),
+                                )
+                            }
+                        }
+                    }.onFailure { e ->
+                        Logger.e("getPlaylistData", e.message ?: "Error")
+                        if (cached == null) {
                             emit(
                                 Resource.Error<
                                     Pair<PlaylistBrowse, String?>,
                                 >(e.message.toString()),
                             )
                         }
-                    }.onFailure { e ->
-                        Logger.e("getPlaylistData", e.message ?: "Error")
-                        emit(
-                            Resource.Error<
-                                Pair<PlaylistBrowse, String?>,
-                            >(e.message.toString()),
-                        )
                     }
             }
         }.flowOn(Dispatchers.IO)
