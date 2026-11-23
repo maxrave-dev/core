@@ -67,6 +67,13 @@ internal class AlbumRepositoryImpl(
         Dispatchers.Main,
     ) { localDataSource.updateAlbumInLibrary(inLibrary, albumId) }
 
+    override suspend fun updateAlbumTracks(
+        albumId: String,
+        tracks: List<String>?,
+    ) = withContext(Dispatchers.IO) {
+        localDataSource.updateAlbumTracks(tracks, albumId)
+    }
+
     override suspend fun updateAlbumDownloadState(
         albumId: String,
         downloadState: Int,

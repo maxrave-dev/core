@@ -374,6 +374,11 @@ internal class LocalDataSource(
         albumId: String,
     ) = databaseDao.updateAlbumInLibrary(inLibrary, albumId)
 
+    suspend fun updateAlbumTracks(
+        tracks: List<String>?,
+        albumId: String,
+    ) = databaseDao.updateAlbumTracks(tracks, albumId)
+
     suspend fun updateAlbumDownloadState(
         downloadState: Int,
         albumId: String,

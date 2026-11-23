@@ -6,6 +6,7 @@ import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.net.ConnectivityManager
 import android.os.Looper
 import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
@@ -141,31 +142,31 @@ internal class CrossfadeExoPlayerAdapter(
 
     init {
         adapterScope.launch {
-            dataStoreManager.crossfadeEnabled.collect { enabled ->
+            dataStoreManager.crossfadeEnabled.distinctUntilChanged().collect { enabled ->
                 crossfadeEnabled = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "Crossfade enabled: $crossfadeEnabled")
             }
         }
         adapterScope.launch {
-            dataStoreManager.crossfadeDuration.collect { duration ->
+            dataStoreManager.crossfadeDuration.distinctUntilChanged().collect { duration ->
                 crossfadeDurationMs = duration
                 Logger.d(TAG, "Crossfade duration: $crossfadeDurationMs ms")
             }
         }
         adapterScope.launch {
-            dataStoreManager.crossfadeDjMode.collect { enabled ->
+            dataStoreManager.crossfadeDjMode.distinctUntilChanged().collect { enabled ->
                 djCrossfadeEnabled = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "DJ crossfade mode: $djCrossfadeEnabled")
             }
         }
         adapterScope.launch {
-            dataStoreManager.watchVideoInsteadOfPlayingAudio.collect { enabled ->
+            dataStoreManager.watchVideoInsteadOfPlayingAudio.distinctUntilChanged().collect { enabled ->
                 watchVideoEnabled = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "Watch video enabled: $watchVideoEnabled")
             }
         }
         adapterScope.launch {
-            dataStoreManager.crossfadeSkipAlbum.collect { enabled ->
+            dataStoreManager.crossfadeSkipAlbum.distinctUntilChanged().collect { enabled ->
                 skipCrossfadeInAlbum = (enabled == DataStoreManager.TRUE)
                 Logger.d(TAG, "Skip crossfade inside album: $skipCrossfadeInAlbum")
             }
@@ -695,7 +696,10 @@ internal class CrossfadeExoPlayerAdapter(
      * Audio focus is NOT handled per-player: it is managed once at the adapter level
      * (see the Audio Focus section) so it survives every player swap (#2155).
      */
-    private fun createExoPlayerInstance(mediaId: String? = null): PlayerWithFilter {
+    private fun createExoPlayerInstance(
+        mediaId: String? = null,
+        isPrecache: Boolean = false,
+    ): PlayerWithFilter {
         val crossfadeFilter = CrossfadeFilterAudioProcessor()
         val sleepFade = SleepFadeAudioProcessor { internalSleepFadeFactor }
         val equalizer = EqualizerAudioProcessor { internalEqualizerCurve }
@@ -755,20 +759,22 @@ internal class CrossfadeExoPlayerAdapter(
                         ).build().let { waveformReader.playbackSink(it, mediaId) }
             }
 
+        val loadControl =
+            DefaultLoadControl
+                .Builder()
+                .setBufferDurationsMs(
+                    if (isPrecache) 15_000 else 30_000,
+                    if (isPrecache) 20_000 else 60_000,
+                    0,
+                    1_500,
+                ).build()
+
         val player =
             ExoPlayer
                 .Builder(context)
                 .setAudioAttributes(audioAttributes, false)
-                .setLoadControl(
-                    DefaultLoadControl
-                        .Builder()
-                        .setBufferDurationsMs(
-                            DefaultLoadControl.DEFAULT_MIN_BUFFER_MS * 4,
-                            DefaultLoadControl.DEFAULT_MAX_BUFFER_MS * 4,
-                            0,
-                            0,
-                        ).build(),
-                ).setWakeMode(C.WAKE_MODE_NETWORK)
+                .setLoadControl(loadControl)
+                .setWakeMode(C.WAKE_MODE_NETWORK)
                 .setHandleAudioBecomingNoisy(true)
                 .setSeekForwardIncrementMs(5000)
                 .setSeekBackIncrementMs(5000)
@@ -1007,6 +1013,11 @@ internal class CrossfadeExoPlayerAdapter(
                             listeners.forEach { it.onIsLoadingChanged(false) }
                         }
                         transitionToState(InternalState.PAUSED)
+                    }
+
+                    InternalState.PAUSED -> {
+                        internalPlayWhenReady = false
+                        currentPlayer?.pause()
                     }
 
                     else -> {
@@ -3983,25 +3994,35 @@ internal class CrossfadeExoPlayerAdapter(
         precacheJob =
             adapterScope.launch {
                 try {
-                    // Prioritize initial startup of the current track while it is still
-                    // preparing/buffering (up to 1.2s), then debounce rapid skip bursts briefly
-                    // (300ms) instead of stalling precache for 3 full seconds on every track.
+                    // Never compete with the active track during stream resolution or initial buffering:
+                    // wait until currentPlayer is READY and holds >= 8s ahead (or is paused/near end).
                     var waitedMs = 0L
-                    while (isActive &&
-                        waitedMs < 1_200L &&
-                        currentPlayer?.playbackState == Player.STATE_BUFFERING
-                    ) {
-                        delay(100)
-                        waitedMs += 100L
+                    while (isActive && waitedMs < 15_000L) {
+                        val active = currentPlayer ?: break
+                        val state = active.playbackState
+                        val dur = active.duration
+                        val bufferedAhead = active.bufferedPosition - active.currentPosition
+                        val currentReady =
+                            state == Player.STATE_READY &&
+                                (!internalPlayWhenReady || bufferedAhead >= 8_000L || (dur in 1L..10_000L))
+                        if (currentReady || state == Player.STATE_ENDED) break
+                        delay(150)
+                        waitedMs += 150L
                     }
                     delay(300)
+                    if (!isActive) return@launch
+
+                    val isMetered =
+                        (context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager)
+                            ?.isActiveNetworkMetered == true
+                    val targetLimit = if (isMetered) minOf(1, maxPrecacheCount) else maxPrecacheCount
+
                     // The tracks Next will actually play, in Next's own order: shuffle-aware, wrapping
                     // under Repeat All. Picking `index + i` in playlist order precached tracks a shuffled
                     // queue never reached, and nothing released them until the queue was edited (#2619).
-                    // Read before the job first suspends, so an edit landing meanwhile cannot shift them.
                     val targets = mutableListOf<GenericMediaItem>()
                     var from = localCurrentMediaItemIndex
-                    for (i in 1..maxPrecacheCount) {
+                    for (i in 1..targetLimit) {
                         val next = getNextMediaItemIndex(from)
                         if (next == from || next == localCurrentMediaItemIndex) break
                         playlist.getOrNull(next)?.let { targets += it }
@@ -4022,7 +4043,7 @@ internal class CrossfadeExoPlayerAdapter(
                         stale
                     }
 
-                    for (mediaItem in targets) {
+                    for ((idx, mediaItem) in targets.withIndex()) {
                         if (!isActive) break
 
                         // Checked here, not when the targets were picked: one track can be both targets
@@ -4033,20 +4054,36 @@ internal class CrossfadeExoPlayerAdapter(
                             continue
                         }
 
+                        var preparedPlayer: ExoPlayer? = null
                         try {
-                            val pwf = createExoPlayerInstance(mediaItem.mediaId)
+                            val pwf = createExoPlayerInstance(mediaItem.mediaId, isPrecache = true)
                             pwf.player.setMediaItem(mediaItem.toMedia3MediaItem())
                             val retryListener = precacheRetryListener(mediaItem.mediaId, pwf.player)
                             pwf.player.addListener(retryListener)
                             pwf.player.prepare()
+                            preparedPlayer = pwf.player
                             precachedPlayers[mediaItem.mediaId] =
                                 PrecachedPlayer(pwf.player, mediaItem, pwf.filter, retryListener)
-                            Logger.d(TAG, "Precached player for ${mediaItem.mediaId}")
+                            Logger.d(TAG, "Precached player for ${mediaItem.mediaId} (metered=$isMetered)")
                         } catch (e: Exception) {
                             Logger.e(TAG, "Precaching error for ${mediaItem.mediaId}: ${e.message}")
                         }
 
-                        delay(100)
+                        // Wait sequentially for this target to become ready before launching the next
+                        // precache so upcoming tracks do not saturate slow links concurrently.
+                        if (idx < targets.lastIndex && preparedPlayer != null) {
+                            var prepWaited = 0L
+                            while (isActive &&
+                                prepWaited < 4_000L &&
+                                preparedPlayer.playbackState == Player.STATE_BUFFERING &&
+                                preparedPlayer.playerError == null
+                            ) {
+                                delay(150)
+                                prepWaited += 150L
+                            }
+                        } else {
+                            delay(100)
+                        }
                     }
                 } catch (e: Exception) {
                     if (e !is CancellationException) {

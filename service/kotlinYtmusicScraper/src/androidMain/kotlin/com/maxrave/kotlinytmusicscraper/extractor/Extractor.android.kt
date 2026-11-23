@@ -41,9 +41,8 @@ private const val MAX_TIER_SKIP_MS = 30 * 60 * 1000L
 private const val HEAD_TRUST_WINDOW_MS = 5 * 60 * 1000L
 private const val MAX_UNVERIFIED_TRACKS = 32
 
-// Delay before hedging BravePipe in parallel when PipePipe is slow or held behind pipePipeLock.
-private const val HEDGE_BRAVE_WITH_LOCAL_MS = 1_800L
-private const val HEDGE_BRAVE_REMOTE_ONLY_MS = 800L
+// Delay before hedging PipePipe when BravePipe is slow to answer.
+private const val HEDGE_PIPE_FALLBACK_MS = 2_000L
 private const val PIPE_LOCK_POLL_MS = 50L
 
 actual class Extractor {
@@ -268,8 +267,6 @@ actual class Extractor {
                         return@runWithToken it.streams
                     }
                 } else {
-                    val hedgeDelayMs =
-                        if (!localSkipped) HEDGE_BRAVE_WITH_LOCAL_MS else HEDGE_BRAVE_REMOTE_ONLY_MS
                     val pipeToken = ExtractorCallRegistry.newChildToken()
                     val braveToken = ExtractorCallRegistry.newChildToken()
                     val raceWon = AtomicBoolean(false)
@@ -283,25 +280,18 @@ actual class Extractor {
                             runBlocking(Dispatchers.IO) {
                                 racePrimaryWithHedgedFallback(
                                     scope = backgroundScope,
-                                    hedgeDelayMs = hedgeDelayMs,
+                                    hedgeDelayMs = HEDGE_PIPE_FALLBACK_MS,
                                     isCancelled = isCancelled,
                                     runPrimary = {
+                                        ExtractorCallRegistry.runWithToken(braveToken, isBraveCancelled) {
+                                            braveStreams(videoId, attempts, isBraveCancelled)
+                                        }
+                                    },
+                                    runFallback = {
                                         ExtractorCallRegistry.runWithToken(pipeToken, isPipeCancelled) {
-                                            var primaryExtract: TierExtract? = null
-                                            if (!localSkipped && !isPipeCancelled()) {
-                                                primaryExtract =
-                                                    pipePipeStreams(
-                                                        videoId = videoId,
-                                                        tier = LOCAL_TIER,
-                                                        useLocalDecoder = true,
-                                                        requireVideo = requireVideo,
-                                                        attempts = attempts,
-                                                        isCancelled = isPipeCancelled,
-                                                        onAudioOnlyResult = collectAudioOnly,
-                                                    )
-                                            }
-                                            if (primaryExtract == null && !remoteSkipped && !isPipeCancelled()) {
-                                                primaryExtract =
+                                            var fallbackExtract: TierExtract? = null
+                                            if (!remoteSkipped && !isPipeCancelled()) {
+                                                fallbackExtract =
                                                     pipePipeStreams(
                                                         videoId = videoId,
                                                         tier = REMOTE_TIER,
@@ -312,21 +302,28 @@ actual class Extractor {
                                                         onAudioOnlyResult = collectAudioOnly,
                                                     )
                                             }
-                                            primaryExtract
-                                        }
-                                    },
-                                    runFallback = {
-                                        ExtractorCallRegistry.runWithToken(braveToken, isBraveCancelled) {
-                                            braveStreams(videoId, attempts, isBraveCancelled)
+                                            if (fallbackExtract == null && !localSkipped && !isPipeCancelled()) {
+                                                fallbackExtract =
+                                                    pipePipeStreams(
+                                                        videoId = videoId,
+                                                        tier = LOCAL_TIER,
+                                                        useLocalDecoder = true,
+                                                        requireVideo = requireVideo,
+                                                        attempts = attempts,
+                                                        isCancelled = isPipeCancelled,
+                                                        onAudioOnlyResult = collectAudioOnly,
+                                                    )
+                                            }
+                                            fallbackExtract
                                         }
                                     },
                                     onCancelPrimary = {
                                         raceWon.set(true)
-                                        ExtractorCallRegistry.cancel(pipeToken)
+                                        ExtractorCallRegistry.cancel(braveToken)
                                     },
                                     onCancelFallback = {
                                         raceWon.set(true)
-                                        ExtractorCallRegistry.cancel(braveToken)
+                                        ExtractorCallRegistry.cancel(pipeToken)
                                     },
                                 )
                             }
@@ -473,6 +470,11 @@ actual class Extractor {
                 val got = pipeResult.map { it.first }.distinct().joinToString(",")
                 attempts.add("$tier:noItags($got)/${extractMs}ms")
                 Logger.d(TAG, "PipePipe[$tier] missing required itags for $videoId (got=${pipeResult.map { it.first }})")
+                if (tier == LOCAL_TIER) {
+                    markLocalTierBroken()
+                } else if (tier == REMOTE_TIER) {
+                    markRemoteTierBroken()
+                }
                 return null
             }
             val trusted = isTierTrusted(tier)
@@ -530,6 +532,11 @@ actual class Extractor {
             }
             attempts.add("$tier:err(${e::class.simpleName})/${extractMs}ms")
             Logger.w(TAG, "PipePipe[$tier] extractor failed for $videoId: ${e.message}")
+            if (tier == LOCAL_TIER) {
+                markLocalTierBroken()
+            } else if (tier == REMOTE_TIER) {
+                markRemoteTierBroken()
+            }
             return null
         }
     }
@@ -554,7 +561,7 @@ actual class Extractor {
                 streamsList.mapNotNull {
                     (it.itagItem?.id ?: return@mapNotNull null) to it.content
                 }
-            if (braveResult.isEmpty()) {
+            if (braveResult.isEmpty() || !braveResult.hasAudioItag()) {
                 attempts.add("$BRAVE_TIER:empty/${extractMs}ms")
                 return@runCatching null
             }

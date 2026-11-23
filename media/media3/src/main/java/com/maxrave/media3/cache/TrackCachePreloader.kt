@@ -94,6 +94,7 @@ internal class TrackCachePreloader(
      */
     private suspend fun cacheWithWatchdog(mediaId: String) {
         var attempt = 0
+        var zeroProgressPasses = 0
         while (attempt < MAX_ATTEMPTS) {
             attempt++
             val outcome =
@@ -110,8 +111,16 @@ internal class TrackCachePreloader(
                     Logger.d(TAG, "Track fully cached: $mediaId")
                     return
                 }
-                // Retrying cannot fix a missing content length: stop instead of looping 8 times.
+                // Retrying cannot fix a missing content length or locked span: stop instead of
+                // burning 8x redundant downloads over mobile data.
                 PassOutcome.GIVE_UP -> return
+                PassOutcome.NO_PROGRESS -> {
+                    zeroProgressPasses++
+                    if (zeroProgressPasses >= MAX_NO_PROGRESS_PASSES) {
+                        Logger.d(TAG, "Full-track cache stopping on $mediaId after $zeroProgressPasses zero-progress passes")
+                        return
+                    }
+                }
                 PassOutcome.RETRY -> Unit
             }
             if (attempt < MAX_ATTEMPTS) {
@@ -122,14 +131,16 @@ internal class TrackCachePreloader(
     }
 
     /**
-     * Reads the whole track through the resolving chain, discarding the bytes: every byte read
-     * lands in the player cache, exactly as it does when the player itself streams it. Reopens at
-     * resolver chunk boundaries, like WaveformReader's analysis download. Returns true only when
-     * the cache provably holds the track end to end.
+     * Reads only uncached portions of the track through the resolving chain: every new byte read
+     * lands in the player cache, while spans already cached on disk are skipped without network I/O.
+     * Stops early without repeating 8 full downloads if zero net bytes enter the cache (e.g. while
+     * the active player holds an exclusive write lock on a single-span track).
      */
     private suspend fun downloadWholeTrack(mediaId: String): PassOutcome =
         withContext(Dispatchers.IO) {
             if (downloadCache.isFullyCached(mediaId, 0L)) return@withContext PassOutcome.COMPLETE
+            val maxCacheMb = dataStoreManager.maxSongCacheSize.firstOrNull() ?: -1
+            if (maxCacheMb == 0) return@withContext PassOutcome.GIVE_UP
             val storedLength =
                 streamRepository
                     .getNewFormat(mediaId)
@@ -142,10 +153,17 @@ internal class TrackCachePreloader(
                 return@withContext PassOutcome.GIVE_UP
             }
             if (playerCache.isCached(mediaId, 0, length)) return@withContext PassOutcome.COMPLETE
+            val cachedBefore = playerCache.getCachedBytes(mediaId, 0, length)
             val buffer = ByteArray(64 * 1024)
             var position = 0L
             while (position < length) {
                 currentCoroutineContext().ensureActive()
+                // Skip contiguous cached prefix without opening HTTP requests.
+                val contiguousProbe = minOf(SKIP_PROBE_BYTES, length - position)
+                if (playerCache.isCached(mediaId, position, contiguousProbe)) {
+                    position += contiguousProbe
+                    continue
+                }
                 val source = dataSourceFactory.createDataSource()
                 var readThisOpen = 0L
                 try {
@@ -175,12 +193,18 @@ internal class TrackCachePreloader(
             if (playerCache.isCached(mediaId, 0, length)) {
                 PassOutcome.COMPLETE
             } else {
-                Logger.w(TAG, "Full-track cache pass finished but $mediaId is not fully cached ($length bytes expected)")
-                PassOutcome.RETRY
+                val cachedAfter = playerCache.getCachedBytes(mediaId, 0, length)
+                if (cachedAfter <= cachedBefore) {
+                    Logger.d(TAG, "Full-track cache made no disk progress for $mediaId ($cachedAfter/$length bytes)")
+                    PassOutcome.NO_PROGRESS
+                } else {
+                    Logger.d(TAG, "Full-track cache partial progress for $mediaId ($cachedBefore -> $cachedAfter/$length bytes)")
+                    PassOutcome.RETRY
+                }
             }
         }
 
-    private enum class PassOutcome { COMPLETE, RETRY, GIVE_UP }
+    private enum class PassOutcome { COMPLETE, RETRY, NO_PROGRESS, GIVE_UP }
 
     private fun isMetered(): Boolean {
         val connectivityManager =
@@ -198,6 +222,8 @@ internal class TrackCachePreloader(
         const val RETRY_BASE_DELAY_MS = 5_000L
         const val RETRY_BACKOFF_CAP = 6
         const val MAX_ATTEMPTS = 8
+        const val MAX_NO_PROGRESS_PASSES = 2
+        const val SKIP_PROBE_BYTES = 256L * 1024L
 
         /** Same sanity cap WaveformReader applies to a track's audio. */
         const val MAX_AUDIO_BYTES = 64L * 1024 * 1024

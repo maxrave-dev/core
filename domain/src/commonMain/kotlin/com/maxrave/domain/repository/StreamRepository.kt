@@ -94,4 +94,11 @@ interface StreamRepository {
      * describes one extraction rather than the format row, which outlives it in the cache.
      */
     fun getExtractSource(videoId: String): String?
+
+    /**
+     * Checks whether a cached/stored audio stream for [videoId] actually came from a mismatched
+     * music-video (`OMV`) asset when studio audio (`ATV`) should play instead, evicting stale cache
+     * and stored format so the next resolve upgrades it transparently.
+     */
+    suspend fun prepareAudioStreamForTrack(videoId: String) {}
 }

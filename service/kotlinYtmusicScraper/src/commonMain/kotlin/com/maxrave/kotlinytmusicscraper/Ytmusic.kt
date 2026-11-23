@@ -800,8 +800,10 @@ class Ytmusic {
         continuation: String? = null,
         countryCode: String? = null,
         setLogin: Boolean = false,
+        noLogin: Boolean = false,
     ) = httpClient.post("browse") {
-        ytClient(client, if (setLogin) true else cookie != "" && cookie != null, isUsingReferer = false)
+        val sendLogin = !noLogin && (setLogin || !cookie.isNullOrEmpty())
+        ytClient(client, sendLogin, isUsingReferer = false)
 
         if (continuation != null && browseId != null) {
             setBody(

@@ -708,6 +708,7 @@ internal class MediaServiceHandlerImpl(
                         },
                     ) { ticked -> ticked.filterNotNull().toSet() }
                         .combine(dataStoreManager.sponsorBlockEnabled) { ticked, enabled -> ticked.takeIf { enabled == TRUE } }
+                        .distinctUntilChanged()
                         .collect { sponsorBlockCategories.value = it }
                 }
             val skipSegmentsJob =
@@ -777,7 +778,7 @@ internal class MediaServiceHandlerImpl(
                 launch {
                     combine(dataStoreManager.playbackSpeed, dataStoreManager.pitch) { speed, pitch ->
                         Pair(speed, pitch)
-                    }.collectLatest { pair ->
+                    }.distinctUntilChanged().collectLatest { pair ->
                         Logger.w(TAG, "Playback speed: ${pair.first}, Pitch: ${pair.second}")
                         player.playbackParameters =
                             GenericPlaybackParameters(

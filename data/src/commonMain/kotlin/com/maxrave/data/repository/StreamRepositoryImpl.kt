@@ -17,9 +17,12 @@ import com.maxrave.domain.extension.plusSeconds
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.CacheRepository
 import com.maxrave.domain.repository.StreamRepository
+import com.maxrave.domain.utils.MusicVideoType
+import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint.WatchEndpointMusicSupportedConfigs.WatchEndpointMusicConfig.Companion.MUSIC_VIDEO_TYPE_OMV
 import com.maxrave.domain.utils.Resource
 import com.maxrave.kotlinytmusicscraper.StreamResolutionException
 import com.maxrave.kotlinytmusicscraper.YouTube
+import com.maxrave.kotlinytmusicscraper.extractor.isUrlDurationCompatible
 import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import com.maxrave.logger.Logger
@@ -30,6 +33,7 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -38,6 +42,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -63,6 +68,8 @@ internal class StreamRepositoryImpl(
     private val formatDbMutex = Mutex()
     private val formatCache = MutableStateFlow<Map<String, Pair<Long, NewFormatEntity>>>(emptyMap())
     private var nextFormatSeq = 0L
+    private val verifiedAudioIds = MutableStateFlow<Set<String>>(emptySet())
+    private val omvToAtvCache = MutableStateFlow<Map<String, String>>(emptyMap())
 
     @kotlin.concurrent.Volatile
     private var prefCollectorsStarted = false
@@ -76,15 +83,18 @@ internal class StreamRepositoryImpl(
     private var cachedVideoDownloadQuality: String? = null
     @kotlin.concurrent.Volatile
     private var cachedPreferredAudioLanguage: String? = null
+    @kotlin.concurrent.Volatile
+    private var cachedWatchVideo: String? = null
 
     private fun ensurePrefCollectors(dataStoreManager: DataStoreManager) {
         if (prefCollectorsStarted) return
         prefCollectorsStarted = true
-        backgroundScope.launch { dataStoreManager.quality.collect { cachedQuality = it } }
-        backgroundScope.launch { dataStoreManager.downloadQuality.collect { cachedDownloadQuality = it } }
-        backgroundScope.launch { dataStoreManager.videoQuality.collect { cachedVideoQuality = it } }
-        backgroundScope.launch { dataStoreManager.videoDownloadQuality.collect { cachedVideoDownloadQuality = it } }
-        backgroundScope.launch { dataStoreManager.preferredAudioLanguage.collect { cachedPreferredAudioLanguage = it } }
+        backgroundScope.launch { dataStoreManager.quality.distinctUntilChanged().collect { cachedQuality = it } }
+        backgroundScope.launch { dataStoreManager.downloadQuality.distinctUntilChanged().collect { cachedDownloadQuality = it } }
+        backgroundScope.launch { dataStoreManager.videoQuality.distinctUntilChanged().collect { cachedVideoQuality = it } }
+        backgroundScope.launch { dataStoreManager.videoDownloadQuality.distinctUntilChanged().collect { cachedVideoDownloadQuality = it } }
+        backgroundScope.launch { dataStoreManager.preferredAudioLanguage.distinctUntilChanged().collect { cachedPreferredAudioLanguage = it } }
+        backgroundScope.launch { dataStoreManager.watchVideoInsteadOfPlayingAudio.distinctUntilChanged().collect { cachedWatchVideo = it } }
     }
 
     private suspend fun recordFormatInMemory(newFormat: NewFormatEntity): Pair<Long, NewFormatEntity?> =
@@ -121,19 +131,25 @@ internal class StreamRepositoryImpl(
     ) {
         // Encode guard: the playback cache is keyed only by media id, so when a
         // re-resolve stores a different encode under an id that already has cached
-        // spans — another itag, or the same itag at another content length — the
+        // spans — another itag, or the same itag at another content length or duration — the
         // player stitches old and new bytes together and the track skips mid-play.
         // Drop the cached spans here, before the new row (and its URL) is emitted.
+        val durationChanged =
+            stored?.lengthSeconds != null &&
+                newFormat.lengthSeconds != null &&
+                abs(stored.lengthSeconds!! - newFormat.lengthSeconds!!) >= 2
         if (stored != null &&
             (stored.itag != newFormat.itag ||
                 (stored.contentLength != null &&
                     newFormat.contentLength != null &&
-                    stored.contentLength != newFormat.contentLength))
+                    stored.contentLength != newFormat.contentLength) ||
+                durationChanged)
         ) {
             Logger.w(
                 "Stream",
                 "Encode changed for ${newFormat.videoId}: itag ${stored.itag} -> ${newFormat.itag}, " +
-                    "contentLength ${stored.contentLength} -> ${newFormat.contentLength}; evicting cached spans",
+                    "contentLength ${stored.contentLength} -> ${newFormat.contentLength}, " +
+                    "lengthSeconds ${stored.lengthSeconds} -> ${newFormat.lengthSeconds}; evicting cached spans",
             )
             cacheRepository.removeCachedSong(newFormat.videoId.removePrefix(MERGING_DATA_TYPE.VIDEO))
         }
@@ -148,6 +164,39 @@ internal class StreamRepositoryImpl(
                 if (formatCache.value[newFormat.videoId]?.first == seq) {
                     localDataSource.insertNewFormat(newFormat)
                 }
+            }
+        }
+    }
+
+    override suspend fun prepareAudioStreamForTrack(videoId: String) {
+        if (videoId.isBlank() || videoId.startsWith(MERGING_DATA_TYPE.VIDEO)) return
+        if (videoId in verifiedAudioIds.value) return
+        if (cachedWatchVideo == DataStoreManager.Values.TRUE) return
+        withContext(Dispatchers.IO) {
+            val song = localDataSource.getSong(videoId) ?: return@withContext
+            val storedFormat = formatCache.value[videoId]?.second ?: localDataSource.getNewFormat(videoId)
+            val omvNeedsUpgrade =
+                song.videoType == MUSIC_VIDEO_TYPE_OMV &&
+                    (storedFormat == null ||
+                        (song.durationSeconds > 0 &&
+                            storedFormat.lengthSeconds != null &&
+                            abs(storedFormat.lengthSeconds!! - song.durationSeconds) >= 2))
+            val durationMismatch =
+                song.durationSeconds > 0 &&
+                    storedFormat?.lengthSeconds != null &&
+                    abs(storedFormat.lengthSeconds!! - song.durationSeconds) >= 2
+            if (omvNeedsUpgrade || durationMismatch) {
+                Logger.i(
+                    "Stream",
+                    "Evicting mismatched OMV/duration cache for $videoId " +
+                        "(songType=${song.videoType}, songDur=${song.durationSeconds}s, formatDur=${storedFormat?.lengthSeconds}s)",
+                )
+                cacheRepository.removeCachedSong(videoId)
+                if (storedFormat != null) {
+                    invalidateFormat(videoId)
+                }
+            } else if (storedFormat != null) {
+                verifiedAudioIds.update { it + videoId }
             }
         }
     }
@@ -204,7 +253,12 @@ internal class StreamRepositoryImpl(
                                 response.streamingData?.adaptiveFormats?.filter { it.url.isNullOrEmpty().not() }
                                     ?: emptyList(),
                             )
-                            val freshAudio = formatList.find { it.itag == oldFormat.itag }
+                            val expectedDur = response.videoDetails?.lengthSeconds?.toIntOrNull() ?: oldFormat.lengthSeconds
+                            val freshAudio =
+                                formatList.find {
+                                    it.itag == oldFormat.itag &&
+                                        it.url?.let { url -> isUrlDurationCompatible(url, expectedDur) } != false
+                                }
                             val freshVideo =
                                 formatList.find { it.itag == ITAG.VIDEO_720P }
                                     ?: formatList.find { it.itag == ITAG.VIDEO_360P }
@@ -226,6 +280,7 @@ internal class StreamRepositoryImpl(
                                     audioUrl = newAudioUrl,
                                     videoUrl = newVideoUrl,
                                     contentLength = freshAudio?.contentLength ?: oldFormat.contentLength,
+                                    lengthSeconds = expectedDur ?: oldFormat.lengthSeconds,
                                     playbackTrackingVideostatsPlaybackUrl =
                                         response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
                                             "https://s.youtube.com",
@@ -243,6 +298,7 @@ internal class StreamRepositoryImpl(
                                         ),
                                     cpn = triple.first,
                                 )
+                            evictIfEncodeChanged(oldFormat, updatedFormat)
                             val (seq, _) = recordFormatInMemory(updatedFormat)
                             formatDbMutex.withLock {
                                 if (formatCache.value[videoId]?.first == seq) {
@@ -293,16 +349,66 @@ internal class StreamRepositoryImpl(
                 }
             val preferredAudioLanguage =
                 cachedPreferredAudioLanguage ?: dataStoreManager.preferredAudioLanguage.first()
+            val watchVideoEnabled =
+                (cachedWatchVideo ?: dataStoreManager.watchVideoInsteadOfPlayingAudio.first()) == DataStoreManager.Values.TRUE
+            val initialResolveId =
+                if (!isVideo && !muxed && !watchVideoEnabled) {
+                    omvToAtvCache.value[videoId] ?: videoId
+                } else {
+                    videoId
+                }
             youTube
                 .player(
-                    videoId,
+                    initialResolveId,
                     noLogIn = muxed,
                     preferredAudioLanguage = preferredAudioLanguage,
                     isVideo = isVideo || muxed,
                 )
-                .onSuccess { data ->
-                    val response = data.second
-                    val isLive = response.videoDetails?.isLive == true
+                .onSuccess { initialData ->
+                    var resolvedSourceId = initialResolveId
+                    var data = initialData
+                    var response = data.second
+                    var isLive = response.videoDetails?.isLive == true
+                    val localSong = if (!isVideo && !muxed && !isLive) localDataSource.getSong(videoId) else null
+                    if (!isVideo && !muxed && !isLive && !watchVideoEnabled && resolvedSourceId == videoId) {
+                        val initialDur = response.videoDetails?.lengthSeconds?.toIntOrNull()
+                        val shouldTryAudioVariant =
+                            localSong?.videoType == MUSIC_VIDEO_TYPE_OMV ||
+                                (data.third == MediaType.Video && !localSong?.albumId.isNullOrEmpty()) ||
+                                (localSong != null &&
+                                    localSong.durationSeconds > 0 &&
+                                    initialDur != null &&
+                                    abs(initialDur - localSong.durationSeconds) >= 2)
+                        if (shouldTryAudioVariant) {
+                            val atvId =
+                                youTube.resolveOfficialAudioVariantId(
+                                    videoId = videoId,
+                                    title = localSong?.title ?: response.videoDetails?.title,
+                                    artist = localSong?.artistName?.firstOrNull() ?: response.videoDetails?.author,
+                                    expectedDurationSec = localSong?.durationSeconds?.takeIf { it > 0 },
+                                )
+                            if (atvId != null && atvId != videoId) {
+                                youTube
+                                    .player(
+                                        atvId,
+                                        noLogIn = muxed,
+                                        preferredAudioLanguage = preferredAudioLanguage,
+                                        isVideo = false,
+                                    ).onSuccess { atvData ->
+                                        val atvDur = atvData.second.videoDetails?.lengthSeconds?.toIntOrNull()
+                                        Logger.i(
+                                            "Stream",
+                                            "Upgraded OMV stream $videoId (${initialDur}s) -> ATV $atvId (${atvDur}s)",
+                                        )
+                                        omvToAtvCache.update { it + (videoId to atvId) }
+                                        resolvedSourceId = atvId
+                                        data = atvData
+                                        response = atvData.second
+                                        isLive = response.videoDetails?.isLive == true
+                                    }
+                            }
+                        }
+                    }
                     LiveStreamRegistry.recordLiveStatus(videoId, isLive)
                     // The song row follows, so the LIVE badge and the download gate know too —
                     // including when a broadcast has ended and its recording downloads normally.
@@ -362,6 +468,9 @@ internal class StreamRepositoryImpl(
                     // is served neither 774 nor 141 — the selection used to fall through
                     // to the last format in the list, in practice one of the lowest
                     // bitrate streams (~48-70 kbps), below even the Low setting.
+                    val expectedDurationSec =
+                        response.videoDetails?.lengthSeconds?.toIntOrNull()
+                            ?: localSong?.durationSeconds?.takeIf { it > 0 }
                     val audioFormat =
                         formatList.find { it.itag == itag }
                             ?: audioTwinItag?.let { twin -> formatList.find { it.itag == twin } }
@@ -384,15 +493,29 @@ internal class StreamRepositoryImpl(
                                 url != null && youTube.isManifestUrl(url)
                             }.maxByOrNull { it.width ?: 0 } ?: formatList.find { it.itag == videoItag }
                     }
+                    val chosenStreamUrl = format?.url
+                    if (!muxed && chosenStreamUrl != null && !isUrlDurationCompatible(chosenStreamUrl, expectedDurationSec)) {
+                        Logger.w(
+                            "Stream",
+                            "Rejected URL with mismatched dur= for $videoId (resolved=$resolvedSourceId, expected=${expectedDurationSec}s)",
+                        )
+                        youTube.onStreamRejected(resolvedSourceId)
+                        emit(null)
+                        return@onSuccess
+                    }
                     // One line per resolved stream and never the URL: a googlevideo URL carries the
                     // listener's IP address.
                     Logger.i(
                         "Stream",
                         "$videoId: ${data.third}, itag ${format?.itag} ${format?.mimeType?.substringBefore(';')}" +
+                            (if (resolvedSourceId != videoId) " [atv=$resolvedSourceId]" else "") +
                             (if (muxed) ", HLS" else "") +
                             ", expires in ${response.streamingData?.expiresInSeconds}s",
                     )
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
+                    if (!isVideo && !muxed) {
+                        verifiedAudioIds.update { it + videoId }
+                    }
                     insertNewFormatAsync(
                         NewFormatEntity(
                             videoId = if ((isVideo && !muxed) || VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
@@ -417,7 +540,7 @@ internal class StreamRepositoryImpl(
                                     ?.audioConfig
                                     ?.loudnessDb
                                     ?.toFloat(),
-                            lengthSeconds = response.videoDetails?.lengthSeconds?.toIntOrNull(),
+                            lengthSeconds = durationSecond,
                             playbackTrackingVideostatsPlaybackUrl =
                                 response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
                                     "https://s.youtube.com",

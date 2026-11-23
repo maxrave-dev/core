@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Context.BIND_AUTO_CREATE
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.ApplicationInfo
 import android.os.IBinder
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
@@ -25,11 +26,7 @@ import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.NoOpCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.DefaultLoadControl.DEFAULT_MAX_BUFFER_MS
-import androidx.media3.exoplayer.DefaultLoadControl.DEFAULT_MIN_BUFFER_MS
 import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
@@ -318,6 +315,11 @@ private fun provideResolvingDataSourceFactory(
         if (LiveStreamRegistry.isLive(videoId)) throw LiveStreamDetectedException(videoId)
         Logger.d("Stream", mediaId)
         Logger.d("Stream", mediaId.startsWith(MERGING_DATA_TYPE.VIDEO).toString())
+        if (dataSpec.position == 0L && !mediaId.startsWith(MERGING_DATA_TYPE.VIDEO)) {
+            runBlocking(Dispatchers.IO) {
+                streamRepository.prepareAudioStreamForTrack(mediaId)
+            }
+        }
         if (downloadCache.isFullyCached(mediaId, dataSpec.position)) {
             // Only on the first chunk: the subrange below makes the resolver run once per
             // chunk, and updateFormat is a fire-and-forget youTube.player() call with no
@@ -657,42 +659,40 @@ private fun provideCacheDataSource(
         ).setCacheWriteDataSinkFactory(null)
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
-/** The network underneath every player source: OkHttp behind the user's proxy, with header logging. */
+private val sharedMediaOkHttpClient: OkHttpClient by lazy {
+    OkHttpClient
+        .Builder()
+        .connectionPool(okhttp3.ConnectionPool(8, 5, java.util.concurrent.TimeUnit.MINUTES))
+        .connectTimeout(8.seconds)
+        .readTimeout(15.seconds)
+        .build()
+}
+
+/** The network underneath every player source: shared OkHttp pool behind the user's proxy, with header logging in debug builds. */
 @UnstableApi
 private fun provideHttpDataSourceFactory(
     context: Context,
     proxy: Proxy?,
-): DataSource.Factory =
-    DefaultDataSource.Factory(
-        context,
-        OkHttpDataSource.Factory(
-            OkHttpClient
-                .Builder()
-                .connectTimeout(30.seconds)
-                .readTimeout(30.seconds)
-                .proxy(
-                    proxy,
-                ).addInterceptor(
-                    HttpLoggingInterceptor()
-                        .apply {
+): DataSource.Factory {
+    val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    val client =
+        sharedMediaOkHttpClient
+            .newBuilder()
+            .proxy(proxy)
+            .apply {
+                if (isDebuggable) {
+                    addInterceptor(
+                        HttpLoggingInterceptor().apply {
                             level = HttpLoggingInterceptor.Level.HEADERS
                         },
-                ).build(),
-        ),
+                    )
+                }
+            }.build()
+    return DefaultDataSource.Factory(
+        context,
+        OkHttpDataSource.Factory(client),
     )
-
-@UnstableApi
-private fun provideLoadControl(): LoadControl =
-    DefaultLoadControl
-        .Builder()
-        .setBufferDurationsMs(
-            DEFAULT_MIN_BUFFER_MS * 4,
-            DEFAULT_MAX_BUFFER_MS * 4,
-            // bufferForPlaybackMs=
-            0,
-            // bufferForPlaybackAfterRebufferMs=
-            0,
-        ).build()
+}
 
 @UnstableApi
 private fun provideAudioAttributes(): AudioAttributes =

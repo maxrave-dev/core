@@ -19,6 +19,7 @@ import com.maxrave.logger.Logger
 import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 @UnstableApi
@@ -36,9 +37,11 @@ internal class MergingMediaSourceFactory(
 
     init {
         coroutineScope.launch(Dispatchers.IO) {
-            dataStoreManager.watchVideoInsteadOfPlayingAudio.collect { value ->
-                watchVideoEnabled = value == DataStoreManager.Values.TRUE
-            }
+            dataStoreManager.watchVideoInsteadOfPlayingAudio
+                .distinctUntilChanged()
+                .collect { value ->
+                    watchVideoEnabled = value == DataStoreManager.Values.TRUE
+                }
         }
     }
 

@@ -29,6 +29,11 @@ interface AlbumRepository {
         albumId: String,
     )
 
+    suspend fun updateAlbumTracks(
+        albumId: String,
+        tracks: List<String>?,
+    ) {}
+
     suspend fun updateAlbumDownloadState(
         albumId: String,
         downloadState: Int,

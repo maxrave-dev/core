@@ -2,13 +2,20 @@ package com.maxrave.kotlinytmusicscraper.extractor
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 // xtags values copied from a live player response for 0e3GPea1Tyg (25 audio tracks per itag).
 private fun url(
     xtags: String?,
     clen: Long = 1,
+    dur: String? = null,
 ) = "https://rr1---sn-x.googlevideo.com/videoplayback?expire=1&itag=251" +
-    (xtags?.let { "&xtags=$it" } ?: "") + "&clen=$clen&mime=audio%2Fwebm"
+    (xtags?.let { "&xtags=$it" } ?: "") +
+    "&clen=$clen" +
+    (dur?.let { "&dur=$it" } ?: "") +
+    "&mime=audio%2Fwebm"
 
 private val ARABIC = url("acont%3Ddubbed%3Alang%3Dar", clen = 25099982)
 private val VIETNAMESE_AUTO = url("acont%3Ddubbed-auto%3Alang%3Dvi")
@@ -52,5 +59,20 @@ class AudioTrackOrderTest {
     fun contentLengthComesFromTheChosenUrl() {
         assertEquals(24140597L, contentLengthOf(ORIGINAL))
         assertEquals(25099982L, contentLengthOf(ARABIC))
+    }
+
+    @Test
+    fun durationCompatibilityRejectsOmvIntroMismatchAndAcceptsAtv() {
+        val atvUrl = url(null, dur = "198.721")
+        val omvUrl = url(null, dur = "206.100")
+
+        assertEquals(198.721, durationSecondsOf(atvUrl))
+        assertEquals(206.1, durationSecondsOf(omvUrl))
+        assertNull(durationSecondsOf(SINGLE_TRACK))
+
+        assertTrue(isUrlDurationCompatible(atvUrl, expectedSeconds = 199))
+        assertFalse(isUrlDurationCompatible(omvUrl, expectedSeconds = 199))
+        assertTrue(isUrlDurationCompatible(SINGLE_TRACK, expectedSeconds = 199))
+        assertTrue(isUrlDurationCompatible(omvUrl, expectedSeconds = null))
     }
 }

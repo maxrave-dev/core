@@ -1,7 +1,10 @@
 package com.maxrave.kotlinytmusicscraper.extractor
 
+import kotlin.math.abs
+
 private val XTAGS = Regex("[?&]xtags=([^&]+)")
 private val CLEN = Regex("[?&]clen=(\\d+)")
+private val DUR = Regex("[?&]dur=([0-9]+(?:\\.[0-9]+)?)")
 
 /**
  * A video with several audio tracks (dubbed podcasts, MrBeast-style channels) lists every one of
@@ -49,3 +52,23 @@ internal fun audioTrackRank(
  * itag, and each dub has its own size.
  */
 internal fun contentLengthOf(url: String): Long? = CLEN.find(url)?.groupValues?.get(1)?.toLongOrNull()
+
+/**
+ * Duration in seconds carried by the `dur=` query parameter of a googlevideo stream URL, or null
+ * if absent.
+ */
+fun durationSecondsOf(url: String): Double? = DUR.find(url)?.groupValues?.get(1)?.toDoubleOrNull()
+
+/**
+ * Returns true when [url] has no `dur=` query parameter, [expectedSeconds] is unset/non-positive,
+ * or the stream's declared `dur=` matches [expectedSeconds] within `max(2s, 1.5%)`.
+ */
+fun isUrlDurationCompatible(
+    url: String,
+    expectedSeconds: Int?,
+): Boolean {
+    if (expectedSeconds == null || expectedSeconds <= 0) return true
+    val streamDuration = durationSecondsOf(url) ?: return true
+    val tolerance = maxOf(2.0, expectedSeconds * 0.015)
+    return abs(streamDuration - expectedSeconds) <= tolerance
+}

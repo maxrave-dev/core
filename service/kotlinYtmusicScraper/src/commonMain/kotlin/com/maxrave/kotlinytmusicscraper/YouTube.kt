@@ -2,12 +2,14 @@ package com.maxrave.kotlinytmusicscraper
 
 import com.eygraber.uri.toKmpUri
 import com.maxrave.common.ITAG
+import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractTiming
 import com.maxrave.kotlinytmusicscraper.extractor.contentLengthOf
 import com.maxrave.kotlinytmusicscraper.extractor.orderByAudioTrack
+import kotlin.math.abs
 import com.maxrave.kotlinytmusicscraper.models.AccountInfo
 import com.maxrave.kotlinytmusicscraper.models.AlbumItem
 import com.maxrave.kotlinytmusicscraper.models.Artist
@@ -384,7 +386,11 @@ class YouTube {
         withSongs: Boolean = true,
     ): Result<AlbumPage> =
         runCatching {
-            val response = ytMusic.browse(WEB_REMIX, browseId).body<BrowseResponse>()
+            val response =
+                runCatching {
+                    ytMusic.browse(WEB_REMIX, browseId, noLogin = true).body<BrowseResponse>()
+                }.getOrNull()?.takeIf { it.contents != null }
+                    ?: ytMusic.browse(WEB_REMIX, browseId).body<BrowseResponse>()
             val playlistId =
                 response.microformat
                     ?.microformatDataRenderer
@@ -456,10 +462,9 @@ class YouTube {
                             ?.musicThumbnailRenderer
                             ?.getThumbnailUrl()!!,
                 )
-            AlbumPage(
-                album = albumItem,
-                songs =
-                    if (withSongs) {
+            val parsedSongs =
+                if (withSongs) {
+                    val rawSongs =
                         albumSongs(
                             response.contents
                                 .twoColumnBrowseResultsRenderer
@@ -471,9 +476,13 @@ class YouTube {
                                 ?.contents,
                             albumItem,
                         ).getOrThrow()
-                    } else {
-                        emptyList()
-                    },
+                    resolveAlbumVideoSongs(playlistId, rawSongs)
+                } else {
+                    emptyList()
+                }
+            AlbumPage(
+                album = albumItem,
+                songs = parsedSongs,
                 description =
                     getDescription(
                         response.contents.twoColumnBrowseResultsRenderer.tabs
@@ -560,6 +569,194 @@ class YouTube {
                 }
             }
         }
+
+    private suspend fun resolveAlbumVideoSongs(
+        playlistId: String,
+        songs: List<SongItem>,
+    ): List<SongItem> {
+        if (songs.none { MusicVideoType.isVideoSong(it.musicVideoType) }) return songs
+        val nextItems =
+            runCatching {
+                next(WatchEndpoint(playlistId = playlistId)).getOrNull()?.items.orEmpty()
+            }.getOrDefault(emptyList())
+        return songs.map { song ->
+            if (!MusicVideoType.isVideoSong(song.musicVideoType)) {
+                return@map song
+            }
+            val nextCandidate =
+                nextItems
+                    .firstOrNull { it.id == song.id }
+                    ?.counterpart
+                    ?.takeIf { MusicVideoType.isAudio(it.musicVideoType) }
+                    ?: nextItems.firstOrNull { candidate ->
+                        MusicVideoType.isAudio(candidate.musicVideoType) &&
+                            AudioVariantMatcher.isAudioCandidateMatch(
+                                candidate = candidate,
+                                expectedTitle = song.title,
+                                expectedArtist = song.artists.firstOrNull()?.name,
+                                expectedDurationSec = song.duration,
+                                excludeVideoId = song.id,
+                            )
+                    }
+            val resolvedAudio =
+                nextCandidate ?: resolveOfficialAudioVariant(
+                    excludeVideoId = song.id,
+                    title = song.title,
+                    artist = song.artists.firstOrNull()?.name,
+                    expectedDurationSec = song.duration,
+                )
+            if (resolvedAudio != null) {
+                Logger.i(
+                    TAG,
+                    "Album track upgraded to ATV audio: ${song.title} (${song.id} ${song.musicVideoType} -> ${resolvedAudio.id} ${resolvedAudio.musicVideoType})",
+                )
+                song.copy(
+                    id = resolvedAudio.id,
+                    duration = resolvedAudio.duration ?: song.duration,
+                    musicVideoType = resolvedAudio.musicVideoType ?: "MUSIC_VIDEO_TYPE_ATV",
+                )
+            } else {
+                song
+            }
+        }
+    }
+
+    /**
+     * Resolves an official `MUSIC_VIDEO_TYPE_ATV` audio track ID for [videoId] (e.g. an `OMV` music
+     * video whose audio stream carries an intro silence or credit roll). Returns null if no closely
+     * matching official studio track exists.
+     */
+    suspend fun resolveOfficialAudioVariantId(
+        videoId: String,
+        title: String?,
+        artist: String?,
+        expectedDurationSec: Int? = null,
+    ): String? =
+        resolveOfficialAudioVariant(
+            excludeVideoId = videoId,
+            title = title,
+            artist = artist,
+            expectedDurationSec = expectedDurationSec,
+        )?.id
+
+    private suspend fun resolveOfficialAudioVariant(
+        excludeVideoId: String,
+        title: String?,
+        artist: String?,
+        expectedDurationSec: Int?,
+    ): SongItem? {
+        runCatching {
+            next(WatchEndpoint(videoId = excludeVideoId)).getOrNull()?.items.orEmpty()
+        }.getOrDefault(emptyList())
+            .firstOrNull { it.id == excludeVideoId }
+            ?.counterpart
+            ?.takeIf { counterpart ->
+                counterpart.id != excludeVideoId &&
+                    MusicVideoType.isAudio(counterpart.musicVideoType) &&
+                    AudioVariantMatcher.isDurationClose(counterpart.duration, expectedDurationSec)
+            }?.let { return it }
+
+        val cleanedTitle = AudioVariantMatcher.cleanTrackTitleForAudioSearch(title) ?: return null
+        val cleanedArtist = artist?.trim().orEmpty()
+        val query = "$cleanedTitle $cleanedArtist".trim()
+        val results =
+            runCatching {
+                search(query, SearchFilter.FILTER_SONG).getOrNull()?.items.orEmpty()
+            }.getOrDefault(emptyList())
+                .filterIsInstance<SongItem>()
+        return AudioVariantMatcher.pickBestAudioCandidate(
+            candidates = results,
+            expectedTitle = cleanedTitle,
+            expectedArtist = cleanedArtist.ifBlank { null },
+            expectedDurationSec = expectedDurationSec,
+            excludeVideoId = excludeVideoId,
+        )
+    }
+
+    internal object AudioVariantMatcher {
+        private val VIDEO_SUFFIX_REGEX =
+            Regex(
+                """\s*[\(\[][^)\]]*(official\s*(music\s*)?video|music\s*video|lyric\s*video|official\s*audio|video\s*clip|videoclipe|clip\s*oficial|hd|4k|mv)[^)\]]*[\)\]]\s*$""",
+                RegexOption.IGNORE_CASE,
+            )
+        private val NON_ALNUM_REGEX = Regex("[^\\p{L}\\p{N}]+")
+
+        fun cleanTrackTitleForAudioSearch(raw: String?): String? {
+            if (raw.isNullOrBlank()) return null
+            var cleaned = raw.trim()
+            while (true) {
+                val stripped = VIDEO_SUFFIX_REGEX.replace(cleaned, "").trim()
+                if (stripped == cleaned || stripped.isEmpty()) break
+                cleaned = stripped
+            }
+            return cleaned.takeIf { it.isNotBlank() }
+        }
+
+        fun normalizeCompare(text: String?): String =
+            text.orEmpty()
+                .lowercase()
+                .replace(NON_ALNUM_REGEX, " ")
+                .trim()
+
+        fun isDurationClose(
+            candidateSec: Int?,
+            expectedSec: Int?,
+        ): Boolean {
+            if (expectedSec == null || expectedSec <= 0 || candidateSec == null || candidateSec <= 0) {
+                return true
+            }
+            val tolerance = maxOf(4, (expectedSec * 0.03).toInt())
+            return abs(candidateSec - expectedSec) <= tolerance
+        }
+
+        fun isAudioCandidateMatch(
+            candidate: SongItem,
+            expectedTitle: String,
+            expectedArtist: String?,
+            expectedDurationSec: Int?,
+            excludeVideoId: String,
+        ): Boolean {
+            if (candidate.id == excludeVideoId) return false
+            if (!MusicVideoType.isAudio(candidate.musicVideoType)) return false
+            val candTitle = normalizeCompare(cleanTrackTitleForAudioSearch(candidate.title) ?: candidate.title)
+            val expTitle = normalizeCompare(cleanTrackTitleForAudioSearch(expectedTitle) ?: expectedTitle)
+            if (candTitle.isEmpty() || expTitle.isEmpty()) return false
+            val titleMatches =
+                candTitle == expTitle ||
+                    (candTitle.startsWith("$expTitle ") && !candTitle.contains("remix") && !candTitle.contains("slowed") && !candTitle.contains("live")) ||
+                    (expTitle.startsWith("$candTitle ") && !expTitle.contains("remix") && !expTitle.contains("slowed") && !expTitle.contains("live"))
+            if (!titleMatches) return false
+            if (!expectedArtist.isNullOrBlank()) {
+                val expArtistNorm = normalizeCompare(expectedArtist)
+                val artistMatches =
+                    candidate.artists.any { art ->
+                        val candArtNorm = normalizeCompare(art.name)
+                        candArtNorm.isNotEmpty() &&
+                            (candArtNorm == expArtistNorm || candArtNorm.contains(expArtistNorm) || expArtistNorm.contains(candArtNorm))
+                    }
+                if (!artistMatches) return false
+            }
+            return isDurationClose(candidate.duration, expectedDurationSec)
+        }
+
+        fun pickBestAudioCandidate(
+            candidates: List<SongItem>,
+            expectedTitle: String,
+            expectedArtist: String?,
+            expectedDurationSec: Int?,
+            excludeVideoId: String,
+        ): SongItem? {
+            val matching =
+                candidates.filter {
+                    isAudioCandidateMatch(it, expectedTitle, expectedArtist, expectedDurationSec, excludeVideoId)
+                }
+            if (matching.isEmpty()) return null
+            if (expectedDurationSec == null || expectedDurationSec <= 0) return matching.first()
+            return matching.minByOrNull { cand ->
+                cand.duration?.let { abs(it - expectedDurationSec) } ?: Int.MAX_VALUE
+            }
+        }
+    }
 
     suspend fun testArtist(browseId: String): Result<ArrayList<ArtistSection>> =
         runCatching {

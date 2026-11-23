@@ -555,6 +555,12 @@ interface DatabaseDao {
         browseId: String,
     )
 
+    @Query("UPDATE album SET tracks = :tracks WHERE browseId = :browseId")
+    suspend fun updateAlbumTracks(
+        tracks: List<String>?,
+        browseId: String,
+    )
+
     @Query("UPDATE album SET downloadState = :downloadState, downloadedAt = :downloadedAt WHERE browseId = :browseId")
     suspend fun updateAlbumDownloadState(
         downloadState: Int,

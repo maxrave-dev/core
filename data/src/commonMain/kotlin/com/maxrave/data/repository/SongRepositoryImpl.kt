@@ -429,19 +429,26 @@ internal class SongRepositoryImpl(
      * no counterparts, as for a client that is not logged in — is kept as it came: a radio that
      * plays videos beats one that plays nothing.
      */
-    private suspend fun List<SongItem>.preferAudioWhenRadioAudioOnly(isRadio: Boolean): List<SongItem> {
-        if (!isRadio) return this
-        if (dataStoreManager.radioAudioOnly.first() != TRUE) return this
+    private suspend fun List<SongItem>.preferAudioVariant(isRadio: Boolean): List<SongItem> {
+        val radioOnly = isRadio && dataStoreManager.radioAudioOnly.first() == TRUE
+        val swapCounterpartOnly = !radioOnly && dataStoreManager.watchVideoInsteadOfPlayingAudio.first() != TRUE
+        if (!radioOnly && !swapCounterpartOnly) return this
         val songs =
             mapNotNull { item ->
                 if (MusicVideoType.isVideoSong(item.musicVideoType)) {
-                    item.counterpart?.takeIf { MusicVideoType.isAudio(it.musicVideoType) }
+                    val audioCounterpart =
+                        item.counterpart?.takeIf { MusicVideoType.isAudio(it.musicVideoType) }
+                    when {
+                        audioCounterpart != null -> audioCounterpart
+                        radioOnly -> null
+                        else -> item
+                    }
                 } else {
                     item
                 }
             }.distinctBy { it.id }
         val swapped = count { MusicVideoType.isVideoSong(it.musicVideoType) && MusicVideoType.isAudio(it.counterpart?.musicVideoType) }
-        Logger.d(TAG, "Radio audio version: $size rows, $swapped swapped to the song, ${songs.size} kept")
+        Logger.d(TAG, "Audio variant pass (radioOnly=$radioOnly): $size rows, $swapped swapped to song, ${songs.size} kept")
         return songs.ifEmpty { this }
     }
 
@@ -473,7 +480,7 @@ internal class SongRepositoryImpl(
                             // own playlistId.
                             val isRadio =
                                 playlistId.startsWith("RRDAMVM") || playlistId.isRadioQueueId()
-                            data.addAll(next.items.preferAudioWhenRadioAudioOnly(isRadio))
+                            data.addAll(next.items.preferAudioVariant(isRadio))
                             newContinuation = next.continuation
                             emit(Pair(data.toListTrack(), newContinuation))
                         }.onFailure { exception ->
@@ -665,7 +672,7 @@ internal class SongRepositoryImpl(
                                 .filter { it.id != videoId }
                                 .toSet()
                                 .toList()
-                                .preferAudioWhenRadioAudioOnly(isRadio = true),
+                                .preferAudioVariant(isRadio = true),
                         )
                         val nextContinuation = next.continuation
                         emit(Resource.Success<Pair<List<Track>, String?>>(Pair(data.toListTrack().toList(), nextContinuation)))
@@ -754,7 +761,7 @@ internal class SongRepositoryImpl(
                     .next(endpoint.toWatchEndpoint())
                     .onSuccess { next ->
                         val items =
-                            next.items.preferAudioWhenRadioAudioOnly(
+                            next.items.preferAudioVariant(
                                 isRadio = endpoint.playlistId?.isRadioQueueId() == true,
                             )
                         emit(Resource.Success(Pair(items.toListTrack(), next.continuation)))
