@@ -17,6 +17,7 @@ internal class WaveformAudioSink(
     delegate: AudioSink,
     private val mediaId: String,
     private val waveforms: PlaybackWaveforms,
+    private val isCaptureEnabled: () -> Boolean = { true },
 ) : ForwardingAudioSink(delegate) {
     private var format: Format? = null
     private var streamOffsetUs = 0L
@@ -26,12 +27,26 @@ internal class WaveformAudioSink(
     private var captureFailed = false
 
     // A waveform needs decoded samples. Encoded passthrough/offload bypasses PCM entirely.
-    override fun supportsFormat(format: Format): Boolean = format.sampleMimeType == MimeTypes.AUDIO_RAW && super.supportsFormat(format)
+    override fun supportsFormat(format: Format): Boolean =
+        if (isCaptureEnabled()) {
+            format.sampleMimeType == MimeTypes.AUDIO_RAW && super.supportsFormat(format)
+        } else {
+            super.supportsFormat(format)
+        }
 
     override fun getFormatSupport(format: Format): Int =
-        if (format.sampleMimeType == MimeTypes.AUDIO_RAW) super.getFormatSupport(format) else AudioSink.SINK_FORMAT_UNSUPPORTED
+        if (!isCaptureEnabled() || format.sampleMimeType == MimeTypes.AUDIO_RAW) {
+            super.getFormatSupport(format)
+        } else {
+            AudioSink.SINK_FORMAT_UNSUPPORTED
+        }
 
-    override fun getFormatOffloadSupport(format: Format): AudioOffloadSupport = AudioOffloadSupport.DEFAULT_UNSUPPORTED
+    override fun getFormatOffloadSupport(format: Format): AudioOffloadSupport =
+        if (isCaptureEnabled()) {
+            AudioOffloadSupport.DEFAULT_UNSUPPORTED
+        } else {
+            super.getFormatOffloadSupport(format)
+        }
 
     override fun configure(audioSinkConfig: AudioSink.AudioSinkConfig) {
         super.configure(audioSinkConfig)
@@ -58,7 +73,7 @@ internal class WaveformAudioSink(
         // Playback exceptions and the delegate's return value are deliberately unchanged.
         val handled = super.handleBuffer(buffer, presentationTimeUs, encodedAccessUnitCount)
         val format = format
-        if (!captureFailed && format != null && !LiveStreamRegistry.isLive(mediaId)) {
+        if (isCaptureEnabled() && !captureFailed && format != null && !LiveStreamRegistry.isLive(mediaId)) {
             try {
                 val sampleBytes = PlaybackWaveforms.bytesPerSample(format.pcmEncoding)
                 val frameBytes = sampleBytes * format.channelCount
