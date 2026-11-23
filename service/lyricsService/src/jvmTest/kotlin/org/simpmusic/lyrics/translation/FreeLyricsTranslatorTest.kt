@@ -600,4 +600,122 @@ class FreeLyricsTranslatorTest {
             )
         }
     }
+
+    @Test
+    fun detectsArtificialDuplicateWordsWhilePreservingIntentionalSourceRepetitions() {
+        assertTrue(hasArtificialDuplicateWord("She's a wacky crazy lady", "Ela é uma mulher maluca e maluca", "pt"))
+        assertTrue(hasArtificialDuplicateWord("She's a silly goofy girl", "Ela é uma garota boba e boba", "pt"))
+        assertTrue(hasArtificialDuplicateWord("A big huge mistake", "Um enorme, enorme erro", "pt"))
+        assertFalse(hasArtificialDuplicateWord("He's a rich, rich man", "Ele é um homem muito, muito rico", "pt"))
+        assertFalse(hasArtificialDuplicateWord("Over and over again", "De novo e de novo", "pt"))
+        assertFalse(hasArtificialDuplicateWord("When nobody, nobody calls", "Quando ninguém, ninguém liga", "pt"))
+    }
+
+    @Test
+    fun crossChecksFlaggedLinesWithGoogleAndRepairsRemainingDuplicates() {
+        runBlocking {
+            val translator = FreeLyricsTranslator()
+            val transport = FakeTransport()
+            transport.edgeHandler = { texts, _ ->
+                val joined =
+                    texts.single().split("\n").joinToString("\\n") { line ->
+                        when (line) {
+                            "Get in the car, honey" -> "Entra no carro, querida"
+                            "She's a wacky crazy lady" -> "Ela é uma mulher maluca e maluca"
+                            "He's a rich, rich man" -> "Ele é um homem muito, muito rico"
+                            else -> "Tão estranho e estranho"
+                        }
+                    }
+                200 to
+                    """[{"detectedLanguage":{"language":"en","score":1.0},"translations":[{"text":"$joined","to":"pt"}]}]"""
+            }
+            var googleCalled = 0
+            transport.googleGtxHandler = { text, _ ->
+                googleCalled++
+                // Only the two flagged lines (wacky crazy + weird and strange) should be cross-checked!
+                val lines = text.split("\n")
+                assertEquals(
+                    listOf("She's a wacky crazy lady", "So weird and strange"),
+                    lines,
+                )
+                200 to """[[["Ela é uma senhora louca e maluca\n","She's a wacky crazy lady"],["Tão estranho e estranho","So weird and strange"]],null,"en"]"""
+            }
+
+            val lyrics =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            line("1000", "Get in the car, honey"),
+                            line("3000", "She's a wacky crazy lady"),
+                            line("5000", "He's a rich, rich man"),
+                            line("7000", "So weird and strange"),
+                        ),
+                )
+
+            val result = assertIs<LyricsTranslationResult.Translated>(translator.translateWithTransport(transport, lyrics, "pt"))
+            assertEquals(1, googleCalled)
+            assertEquals(
+                listOf(
+                    "Entra no carro, querida",
+                    "Ela é uma senhora louca e maluca",
+                    "Ele é um homem muito, muito rico",
+                    "Tão estranho e esquisito",
+                ),
+                result.lyrics.lines!!.map { it.words },
+            )
+
+            // Fallback collapse for unknown words outside synonym map
+            assertEquals(
+                "Um bizarro sonho",
+                repairArtificialDuplicateInPortuguese("A weird odd dream", "Um bizarro e bizarro sonho"),
+            )
+        }
+    }
+
+    @Test
+    fun parsesTwoColumnLetrasHumanTranslationConservativelyWhenStackedBlockAbsent() {
+        runBlocking {
+            val twoColumnHtml =
+                """
+                <html>
+                <head><link rel="canonical" href="https://www.letras.mus.br/claire-rosinkranz/beverly-hills-boyfriend/traducao.html" /></head>
+                <body>
+                  <h1>BeVerly Hills BoYfRiEnd</h1>
+                  <div class="lyric-original">
+                    <p>Get in the car honey<br>She's a wacky crazy lady</p>
+                    <p>He's a rich rich man<br>She moved to California</p>
+                  </div>
+                  <div class="lyric-translation">
+                    <p>Entre no carro docinho<br>Ela é uma moça louca</p>
+                    <p>Ele é um cara rico<br>Ela se mudou para a Califórnia</p>
+                    <p>Linha extra do fim</p>
+                  </div>
+                </body>
+                </html>
+                """.trimIndent()
+            val parsed = parseLetrasTranslationPage(twoColumnHtml)
+            assertEquals(4, parsed.pairs.size)
+            assertEquals("Ela é uma moça louca", parsed.pairs[1].translated)
+
+            val mismatchedMiddleHtml =
+                """
+                <html>
+                <body>
+                  <div class="lyric-original">
+                    <p>Line 1<br>Line 2</p>
+                    <p>Line 3</p>
+                  </div>
+                  <div class="lyric-translation">
+                    <p>Linha 1</p>
+                    <p>Linha 2<br>Linha 3</p>
+                  </div>
+                </body>
+                </html>
+                """.trimIndent()
+            val rejected = parseLetrasTranslationPage(mismatchedMiddleHtml)
+            assertEquals(0, rejected.pairs.size)
+        }
+    }
 }

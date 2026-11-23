@@ -513,9 +513,37 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
     var romanSpanDepth = -1
     var tradSpanDepth = -1
 
+    var colOrigDivDepth = -1
+    var colTradDivDepth = -1
+    var colInParagraph = false
+    val colLineBuf = StringBuilder()
+    val colCurrentStanza = ArrayList<String>()
+    val colOrigStanzas = ArrayList<List<String>>()
+    val colTradStanzas = ArrayList<List<String>>()
+
     val origBuf = StringBuilder()
     val tradBuf = StringBuilder()
     val pairs = ArrayList<BilingualLinePair>()
+
+    fun flushTwoColumnLine() {
+        val cleaned = cleanParsedText(colLineBuf)
+        colLineBuf.setLength(0)
+        if (cleaned.isNotEmpty()) {
+            colCurrentStanza.add(cleaned)
+        }
+    }
+
+    fun flushTwoColumnParagraph() {
+        flushTwoColumnLine()
+        if (colCurrentStanza.isNotEmpty()) {
+            when {
+                colOrigDivDepth > 0 -> colOrigStanzas.add(colCurrentStanza.toList())
+                colTradDivDepth > 0 -> colTradStanzas.add(colCurrentStanza.toList())
+            }
+            colCurrentStanza.clear()
+        }
+        colInParagraph = false
+    }
 
     val parser =
         KsoupHtmlParser(
@@ -550,11 +578,29 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
 
                             "div" -> {
                                 divDepth++
-                                if (stackedContainerDivDepth == -1) {
-                                    val classes = splitClassList(attributes["class"])
-                                    if ("lyric-stackedtranslation" in classes || "lyric-stackedTranslation".lowercase() in classes) {
-                                        stackedContainerDivDepth = divDepth
-                                    }
+                                val classes = splitClassList(attributes["class"])
+                                if (stackedContainerDivDepth == -1 &&
+                                    ("lyric-stackedtranslation" in classes || "lyric-stackedTranslation".lowercase() in classes)
+                                ) {
+                                    stackedContainerDivDepth = divDepth
+                                } else if (colOrigDivDepth == -1 &&
+                                    colTradDivDepth == -1 &&
+                                    ("lyric-original" in classes || "cnt-trad_l" in classes)
+                                ) {
+                                    colOrigDivDepth = divDepth
+                                } else if (colTradDivDepth == -1 &&
+                                    colOrigDivDepth == -1 &&
+                                    ("lyric-translation" in classes || "cnt-trad_r" in classes || "lyric-tra" in classes)
+                                ) {
+                                    colTradDivDepth = divDepth
+                                }
+                            }
+
+                            "p" -> {
+                                if (stackedContainerDivDepth == -1 && (colOrigDivDepth > 0 || colTradDivDepth > 0)) {
+                                    colInParagraph = true
+                                    colLineBuf.setLength(0)
+                                    colCurrentStanza.clear()
                                 }
                             }
 
@@ -584,6 +630,7 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
                                 if (inFirstH1) h1Buf.append(' ')
                                 if (romanSpanDepth > 0) origBuf.append(' ')
                                 if (tradSpanDepth > 0) tradBuf.append(' ')
+                                if (colInParagraph) flushTwoColumnLine()
                             }
                         }
                     }
@@ -598,7 +645,9 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
                                 romanSpanDepth > 0 -> origBuf.append(text)
                                 tradSpanDepth > 0 -> tradBuf.append(text)
                             }
-                        } else if (!isAutoTranslated && stackedContainerDivDepth == -1) {
+                        } else if (colInParagraph) {
+                            colLineBuf.append(text)
+                        } else if (!isAutoTranslated && stackedContainerDivDepth == -1 && colOrigDivDepth == -1 && colTradDivDepth == -1) {
                             val normalized =
                                 cleanParsedText(text)
                                     .lowercase()
@@ -632,9 +681,23 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
                                 }
                             }
 
+                            "p" -> {
+                                if (colInParagraph) {
+                                    flushTwoColumnParagraph()
+                                }
+                            }
+
                             "div" -> {
                                 if (divDepth == stackedContainerDivDepth) {
                                     stackedContainerDivDepth = -1
+                                }
+                                if (divDepth == colOrigDivDepth) {
+                                    if (colInParagraph) flushTwoColumnParagraph()
+                                    colOrigDivDepth = -1
+                                }
+                                if (divDepth == colTradDivDepth) {
+                                    if (colInParagraph) flushTwoColumnParagraph()
+                                    colTradDivDepth = -1
                                 }
                                 if (divDepth > 0) divDepth--
                             }
@@ -665,12 +728,47 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
     parser.write(html)
     parser.end()
 
+    val finalPairs =
+        if (pairs.isNotEmpty()) {
+            pairs
+        } else if (!isAutoTranslated) {
+            pairTwoColumnStanzasConservatively(colOrigStanzas, colTradStanzas)
+        } else {
+            emptyList()
+        }
+
     return LetrasParsedTranslationPage(
         canonicalHref = canonicalHref,
         headingTitle = cleanParsedText(h1Buf),
-        pairs = pairs,
+        pairs = finalPairs,
         isAutoTranslated = isAutoTranslated,
     )
+}
+
+internal fun pairTwoColumnStanzasConservatively(
+    origStanzas: List<List<String>>,
+    tradStanzas: List<List<String>>,
+): List<BilingualLinePair> {
+    if (origStanzas.size < 2 || tradStanzas.size < 2) return emptyList()
+    if (kotlin.math.abs(origStanzas.size - tradStanzas.size) > 1) return emptyList()
+
+    val commonStanzas = minOf(origStanzas.size, tradStanzas.size)
+    val pairs = ArrayList<BilingualLinePair>()
+    for (i in 0 until commonStanzas) {
+        val orig = origStanzas[i]
+        val trad = tradStanzas[i]
+        if (orig.isEmpty() || orig.size != trad.size) {
+            return emptyList()
+        }
+        for (j in orig.indices) {
+            val origLine = orig[j]
+            val tradLine = trad[j]
+            if (isTranslatableLyricLine(origLine) && tradLine.isNotBlank()) {
+                pairs.add(BilingualLinePair(original = origLine, translated = tradLine))
+            }
+        }
+    }
+    return pairs
 }
 
 internal fun isValidLetrasOriginalPath(

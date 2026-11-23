@@ -200,7 +200,13 @@ internal class FreeLyricsTranslator {
         // 1) Primary: Microsoft Edge zero-auth neural translator with stanza & enjambment context.
         val edgeResult =
             try {
-                translateViaEdge(transport, uniqueList, normalizedEdgeTarget, targetBase)
+                translateViaEdge(
+                    transport = transport,
+                    uniqueStanzas = uniqueList,
+                    targetLanguage = normalizedEdgeTarget,
+                    googleTargetLanguage = normalizedGoogleTarget,
+                    targetBase = targetBase,
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -264,6 +270,7 @@ internal class FreeLyricsTranslator {
         transport: FreeTranslationTransport,
         uniqueStanzas: List<LyricStanza>,
         targetLanguage: String,
+        googleTargetLanguage: String,
         targetBase: String,
     ): StanzaTranslationOutcome {
         val segmentsByStanza =
@@ -349,6 +356,16 @@ internal class FreeLyricsTranslator {
                 translatedByKey[stanza.dedupeKey] = expandSegmentsToLines(slice, segments)
                 offset += segments.size
             }
+        }
+
+        // Targeted cross-check + lexical repair when Edge collapses distinct source adjectives into
+        // artificial repetitions (e.g. "wacky crazy" -> "maluca e maluca"). Zero extra calls on clean songs.
+        healArtificialDuplicateTranslations(
+            uniqueStanzas = uniqueStanzas,
+            translatedByKey = translatedByKey,
+            targetBase = targetBase,
+        ) { flaggedSources ->
+            translateGooglePlainBatch(transport, googleTargetLanguage, flaggedSources).lines
         }
 
         return StanzaTranslationOutcome.Success(
@@ -453,6 +470,13 @@ internal class FreeLyricsTranslator {
         if (topLang != null && totalWeight > 0 && topLang.key == targetBase && topLang.value.toFloat() / totalWeight >= 0.8f) {
             return StanzaTranslationOutcome.AlreadyInTarget(topLang.key)
         }
+
+        healArtificialDuplicateTranslations(
+            uniqueStanzas = uniqueStanzas,
+            translatedByKey = translatedByKey,
+            targetBase = targetBase,
+            secondOpinionTranslate = null,
+        )
 
         return StanzaTranslationOutcome.Success(
             translatedByKey = translatedByKey,
@@ -1067,4 +1091,278 @@ internal fun parseGoogleClients5Response(
     }
     val topDetected = detectedCounts.maxByOrNull { it.value }?.key
     return GoogleBatchTranslation(lines = lines, detectedLanguage = topDetected)
+}
+
+private data class WordSpan(
+    val start: Int,
+    val end: Int,
+    val raw: String,
+    val folded: String,
+)
+
+private val DUPLICATE_ALLOWED_PT_WORDS =
+    setOf(
+        "muito", "muita", "muitos", "muitas", "mais", "menos", "bem", "mal",
+        "tao", "sempre", "nunca", "quase", "tudo", "nada", "assim", "aqui",
+        "ali", "la", "ja", "vai", "vem", "sim", "nao", "hey", "ooh", "oh",
+        "ah", "uh", "yeah", "yea", "yah", "bla", "tic", "toc",
+    )
+
+private val INTENTIONAL_CONNECTORS =
+    setOf("and", "by", "after", "to", "for", "on", "in", "or", "with", "of", "e", "por", "a")
+
+private val SOURCE_STOPWORDS =
+    setOf(
+        "that", "this", "with", "from", "your", "have", "were", "what", "when",
+        "they", "them", "will", "just", "been", "into", "like", "know", "don't",
+        "it's", "she's", "you're", "i'm", "we're", "they're", "there", "where",
+    )
+
+private val PT_ARTIFICIAL_DUPLICATE_SYNONYMS: Map<String, String> =
+    mapOf(
+        "maluco" to "maluco e doido",
+        "maluca" to "maluca e doida",
+        "malucos" to "malucos e doidos",
+        "malucas" to "malucas e doidas",
+        "louco" to "louco e insano",
+        "louca" to "louca e insana",
+        "loucos" to "loucos e insanos",
+        "loucas" to "loucas e insanas",
+        "estranho" to "estranho e esquisito",
+        "estranha" to "estranha e esquisita",
+        "estranhos" to "estranhos e esquisitos",
+        "estranhas" to "estranhas e esquisitas",
+        "bobo" to "bobo e pateta",
+        "boba" to "boba e pateta",
+        "bobos" to "bobos e patetas",
+        "bobas" to "bobas e patetas",
+        "pequeno" to "pequeno e minúsculo",
+        "pequena" to "pequena e minúscula",
+        "frio" to "frio e gelado",
+        "fria" to "fria e gelada",
+        "bravo" to "bravo e furioso",
+        "brava" to "brava e furiosa",
+        "lindo" to "lindo e maravilhoso",
+        "linda" to "linda e maravilhosa",
+        "belo" to "belo e lindo",
+        "bela" to "bela e linda",
+        "rápido" to "rápido e veloz",
+        "rápida" to "rápida e veloz",
+        "velho" to "velho e antigo",
+        "velha" to "velha e antiga",
+        "ruim" to "ruim e terrível",
+        "mau" to "mau e cruel",
+        "má" to "má e cruel",
+        "bom" to "bom e ótimo",
+        "boa" to "boa e ótima",
+        "doce" to "doce e gentil",
+        "suave" to "suave e macio",
+        "escuro" to "escuro e sombrio",
+        "escura" to "escura e sombria",
+    )
+
+private fun foldLowerSimple(text: String): String =
+    buildString(text.length) {
+        for (ch in text.lowercase()) {
+            append(
+                when (ch) {
+                    'á', 'à', 'â', 'ã', 'ä', 'å' -> 'a'
+                    'é', 'è', 'ê', 'ë' -> 'e'
+                    'í', 'ì', 'î', 'ï' -> 'i'
+                    'ó', 'ò', 'ô', 'õ', 'ö', 'ø' -> 'o'
+                    'ú', 'ù', 'û', 'ü' -> 'u'
+                    'ç' -> 'c'
+                    'ñ' -> 'n'
+                    else -> ch
+                },
+            )
+        }
+    }
+
+private fun scanLetterWords(text: String): List<WordSpan> {
+    val words = ArrayList<WordSpan>()
+    var start = -1
+    for (i in text.indices) {
+        val isWordChar = text[i].isLetter()
+        if (isWordChar) {
+            if (start < 0) start = i
+        } else if (start >= 0) {
+            val raw = text.substring(start, i)
+            words.add(WordSpan(start = start, end = i, raw = raw, folded = foldLowerSimple(raw)))
+            start = -1
+        }
+    }
+    if (start >= 0) {
+        val raw = text.substring(start)
+        words.add(WordSpan(start = start, end = text.length, raw = raw, folded = foldLowerSimple(raw)))
+    }
+    return words
+}
+
+internal fun hasIntentionalWordRepetition(originalLine: String): Boolean {
+    val words = ArrayList<String>()
+    val buf = StringBuilder()
+    for (i in originalLine.indices) {
+        val ch = originalLine[i]
+        val keepApostrophe =
+            (ch == '\'' || ch == '’') &&
+                buf.isNotEmpty() &&
+                i + 1 < originalLine.length &&
+                originalLine[i + 1].isLetter()
+        if (ch.isLetter()) {
+            buf.append(ch.lowercaseChar())
+        } else if (keepApostrophe) {
+            buf.append('\'')
+        } else if (buf.isNotEmpty()) {
+            words.add(buf.toString())
+            buf.setLength(0)
+        }
+    }
+    if (buf.isNotEmpty()) words.add(buf.toString())
+
+    for (i in 0 until words.size - 1) {
+        if (words[i] == words[i + 1]) return true
+        if (i + 2 < words.size && words[i] == words[i + 2] && words[i + 1] in INTENTIONAL_CONNECTORS) {
+            return true
+        }
+    }
+
+    val seenContentWords = HashSet<String>(words.size)
+    for (w in words) {
+        if (w.length >= 4 && w !in SOURCE_STOPWORDS && !seenContentWords.add(w)) {
+            return true
+        }
+    }
+    return false
+}
+
+private fun findArtificialDuplicatePair(
+    originalLine: String,
+    translatedLine: String,
+    targetBaseLanguage: String,
+): Pair<WordSpan, WordSpan>? {
+    if (targetBaseLanguage != "pt") return null
+    if (translatedLine.isBlank() || hasIntentionalWordRepetition(originalLine)) return null
+
+    val words = scanLetterWords(translatedLine)
+    for (i in 0 until words.size - 1) {
+        val wA = words[i]
+        if (wA.raw.length < 3 || wA.folded in DUPLICATE_ALLOWED_PT_WORDS) continue
+
+        // 1. "X X" or "X, X"
+        val wNext = words[i + 1]
+        if (wA.folded == wNext.folded) {
+            val sep = translatedLine.substring(wA.end, wNext.start).trim()
+            if (sep.isEmpty() || sep == ",") {
+                return wA to wNext
+            }
+        }
+
+        // 2. "X e X" (words[i + 1] is the Portuguese conjunction "e")
+        if (i + 2 < words.size && wNext.folded == "e") {
+            val wThird = words[i + 2]
+            if (wA.folded == wThird.folded) {
+                val leftSep = translatedLine.substring(wA.end, wNext.start)
+                val rightSep = translatedLine.substring(wNext.end, wThird.start)
+                if (leftSep.all { it.isWhitespace() || it == ',' } && rightSep.all { it.isWhitespace() }) {
+                    return wA to wThird
+                }
+            }
+        }
+    }
+    return null
+}
+
+internal fun hasArtificialDuplicateWord(
+    originalLine: String,
+    translatedLine: String,
+    targetBaseLanguage: String,
+): Boolean = findArtificialDuplicatePair(originalLine, translatedLine, targetBaseLanguage) != null
+
+internal fun repairArtificialDuplicateInPortuguese(
+    originalLine: String,
+    translatedLine: String,
+): String {
+    var current = translatedLine.trim()
+    repeat(2) {
+        val pair = findArtificialDuplicatePair(originalLine, current, "pt") ?: return current
+        val (wA, wB) = pair
+        val synonymPair = PT_ARTIFICIAL_DUPLICATE_SYNONYMS[wA.raw.lowercase()]
+        val replacementCore = synonymPair ?: wA.raw
+        val replacement =
+            if (wA.raw.isNotEmpty() && wA.raw[0].isUpperCase() && replacementCore.isNotEmpty()) {
+                replacementCore[0].uppercaseChar() + replacementCore.substring(1)
+            } else {
+                replacementCore
+            }
+        current =
+            (current.substring(0, wA.start) + replacement + current.substring(wB.end))
+                .replace(MULTI_SPACE_REGEX, " ")
+                .trim()
+    }
+    return current
+}
+
+internal suspend fun healArtificialDuplicateTranslations(
+    uniqueStanzas: List<LyricStanza>,
+    translatedByKey: MutableMap<String, List<String>>,
+    targetBase: String,
+    secondOpinionTranslate: (suspend (List<String>) -> List<String>)?,
+) {
+    if (targetBase != "pt") return
+
+    val flaggedDistinctSources = LinkedHashSet<String>()
+    uniqueStanzas.forEach { stanza ->
+        val translatedLines = translatedByKey[stanza.dedupeKey] ?: return@forEach
+        stanza.lines.forEachIndexed { i, origLine ->
+            val trad = translatedLines.getOrNull(i).orEmpty()
+            if (hasArtificialDuplicateWord(origLine.cleanedText, trad, targetBase)) {
+                flaggedDistinctSources.add(origLine.cleanedText)
+            }
+        }
+    }
+    if (flaggedDistinctSources.isEmpty()) return
+
+    val secondOpinionMap = HashMap<String, String>(flaggedDistinctSources.size)
+    if (secondOpinionTranslate != null) {
+        val sourceList = flaggedDistinctSources.toList()
+        val retranslated =
+            try {
+                secondOpinionTranslate(sourceList)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Logger.d(TAG, "Google second-opinion check skipped: ${t.message}")
+                null
+            }
+        if (retranslated != null && retranslated.size == sourceList.size) {
+            sourceList.forEachIndexed { idx, src ->
+                val candidate = retranslated[idx].trim()
+                if (candidate.isNotEmpty() && !hasArtificialDuplicateWord(src, candidate, targetBase)) {
+                    secondOpinionMap[src] = candidate
+                }
+            }
+        }
+    }
+
+    uniqueStanzas.forEach { stanza ->
+        val translatedLines = translatedByKey[stanza.dedupeKey] ?: return@forEach
+        var mutated = false
+        val updated = translatedLines.toMutableList()
+        stanza.lines.forEachIndexed { i, origLine ->
+            val current = updated.getOrNull(i).orEmpty()
+            if (hasArtificialDuplicateWord(origLine.cleanedText, current, targetBase)) {
+                val fixed =
+                    secondOpinionMap[origLine.cleanedText]
+                        ?: repairArtificialDuplicateInPortuguese(origLine.cleanedText, current)
+                if (fixed != current && fixed.isNotBlank()) {
+                    updated[i] = fixed
+                    mutated = true
+                }
+            }
+        }
+        if (mutated) {
+            translatedByKey[stanza.dedupeKey] = updated
+        }
+    }
 }
