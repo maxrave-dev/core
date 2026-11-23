@@ -4115,13 +4115,17 @@ internal class CrossfadeExoPlayerAdapter(
                 if (error.isUnrecoverableStreamFailure() || !error.isRetryableSourceError() || attempts >= maxRetryCount) return
                 if (precachedPlayers[videoId]?.player !== player) return
                 attempts++
-                Logger.w(TAG, "Precache source error (attempt $attempts/$maxRetryCount) for $videoId: ${error.errorCodeName}")
+                val attemptNumber = attempts
+                Logger.w(TAG, "Precache source error (attempt $attemptNumber/$maxRetryCount) for $videoId: ${error.errorCodeName}")
                 adapterScope.launch {
                     try {
                         streamRepository.onStreamRejected(videoId)
                         streamRepository.invalidateFormat(videoId)
                         streamRepository.invalidateFormat("${MERGING_DATA_TYPE.VIDEO}$videoId")
-                        // Promoted or released while the format was being dropped: nothing left to retry.
+                        // Back off briefly so transient DNS/network hiccups settle instead of
+                        // burning retries milliseconds apart on the same drop.
+                        delay(1_500L * attemptNumber)
+                        // Promoted or released while waiting/dropping format: nothing left to retry.
                         if (precachedPlayers[videoId]?.player === player) player.prepare()
                     } catch (e: Exception) {
                         if (e is CancellationException) throw e

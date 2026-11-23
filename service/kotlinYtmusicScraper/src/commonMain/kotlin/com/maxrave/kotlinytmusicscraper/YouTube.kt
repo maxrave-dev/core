@@ -5,6 +5,8 @@ import com.maxrave.common.ITAG
 import com.maxrave.domain.utils.MusicVideoType
 import com.maxrave.kotlinytmusicscraper.YouTube.Companion.DEFAULT_VISITOR_DATA
 import com.maxrave.kotlinytmusicscraper.extension.toListFormat
+import com.maxrave.kotlinytmusicscraper.extractor.AndroidVrFastPathState
+import com.maxrave.kotlinytmusicscraper.extractor.AndroidVrStreamMerger
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractSource
 import com.maxrave.kotlinytmusicscraper.extractor.ExtractTiming
 import com.maxrave.kotlinytmusicscraper.extractor.contentLengthOf
@@ -121,6 +123,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -151,6 +154,18 @@ private const val TAG = "YouTubeScraper"
  * resolver budget instead of eating the whole budget while the resolver waits on it. */
 private const val PLAYER_REQUEST_TIMEOUT_MS = 10_000L
 
+/** Short cap on OMV -> ATV official audio lookup so poor networks never stall playback start. */
+private const val AUDIO_VARIANT_RESOLVE_TIMEOUT_MS = 3_500L
+
+/** Fast cap on the anonymous ANDROID_VR direct audio POST before yielding to BravePipe. */
+private const val ANDROID_VR_FAST_PATH_TIMEOUT_MS = 3_000L
+
+/** Delay before starting BravePipe while ANDROID_VR races in parallel (or 0ms on early VR failure). */
+private const val ANDROID_VR_BRAVE_HEDGE_DELAY_MS = 700L
+
+/** Reuse anonymous visitorData (fetched without session cookies) for up to 30 minutes. */
+private const val ANON_VISITOR_DATA_TTL_MS = 30 * 60 * 1000L
+
 /**
  * Special thanks to [z-huang/InnerTune](https://github.com/z-huang/InnerTune)
  * This library is from [z-huang/InnerTune] and I just modified it to comply with SimpMusic
@@ -163,6 +178,10 @@ private const val PLAYER_REQUEST_TIMEOUT_MS = 10_000L
 class YouTube {
     private val ytMusic = Ytmusic()
     private val directTempRejectedIds = kotlinx.coroutines.flow.MutableStateFlow<Set<String>>(emptySet())
+    private val androidVrFastPath = AndroidVrFastPathState()
+    private val anonVisitorMutex = Mutex()
+    private var cachedAnonymousVisitorData: String? = null
+    private var cachedAnonymousVisitorDataAtMs: Long = 0L
 
     private val tidalTokenMutex = Mutex()
     private var tidalAccessToken: String? = null
@@ -644,34 +663,44 @@ class YouTube {
         title: String?,
         artist: String?,
         expectedDurationSec: Int?,
-    ): SongItem? {
-        runCatching {
-            next(WatchEndpoint(videoId = excludeVideoId)).getOrNull()?.items.orEmpty()
-        }.getOrDefault(emptyList())
-            .firstOrNull { it.id == excludeVideoId }
-            ?.counterpart
-            ?.takeIf { counterpart ->
-                counterpart.id != excludeVideoId &&
-                    MusicVideoType.isAudio(counterpart.musicVideoType) &&
-                    AudioVariantMatcher.isDurationClose(counterpart.duration, expectedDurationSec)
-            }?.let { return it }
+    ): SongItem? =
+        withTimeoutOrNull(AUDIO_VARIANT_RESOLVE_TIMEOUT_MS) {
+            val nextItems =
+                try {
+                    next(WatchEndpoint(videoId = excludeVideoId)).getOrNull()?.items.orEmpty()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            nextItems
+                .firstOrNull { it.id == excludeVideoId }
+                ?.counterpart
+                ?.takeIf { counterpart ->
+                    counterpart.id != excludeVideoId &&
+                        MusicVideoType.isAudio(counterpart.musicVideoType) &&
+                        AudioVariantMatcher.isDurationClose(counterpart.duration, expectedDurationSec)
+                }?.let { return@withTimeoutOrNull it }
 
-        val cleanedTitle = AudioVariantMatcher.cleanTrackTitleForAudioSearch(title) ?: return null
-        val cleanedArtist = artist?.trim().orEmpty()
-        val query = "$cleanedTitle $cleanedArtist".trim()
-        val results =
-            runCatching {
-                search(query, SearchFilter.FILTER_SONG).getOrNull()?.items.orEmpty()
-            }.getOrDefault(emptyList())
-                .filterIsInstance<SongItem>()
-        return AudioVariantMatcher.pickBestAudioCandidate(
-            candidates = results,
-            expectedTitle = cleanedTitle,
-            expectedArtist = cleanedArtist.ifBlank { null },
-            expectedDurationSec = expectedDurationSec,
-            excludeVideoId = excludeVideoId,
-        )
-    }
+            val cleanedTitle = AudioVariantMatcher.cleanTrackTitleForAudioSearch(title) ?: return@withTimeoutOrNull null
+            val cleanedArtist = artist?.trim().orEmpty()
+            val query = "$cleanedTitle $cleanedArtist".trim()
+            val results =
+                try {
+                    search(query, SearchFilter.FILTER_SONG).getOrNull()?.items.orEmpty()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    emptyList()
+                }.filterIsInstance<SongItem>()
+            AudioVariantMatcher.pickBestAudioCandidate(
+                candidates = results,
+                expectedTitle = cleanedTitle,
+                expectedArtist = cleanedArtist.ifBlank { null },
+                expectedDurationSec = expectedDurationSec,
+                excludeVideoId = excludeVideoId,
+            )
+        }
 
     internal object AudioVariantMatcher {
         private val VIDEO_SUFFIX_REGEX =
@@ -1888,6 +1917,134 @@ class YouTube {
         }
     }
 
+    private sealed interface VrAudioOutcome {
+        data class Success(
+            val response: PlayerResponse,
+            val elapsedMs: Long,
+            val headLabel: String,
+        ) : VrAudioOutcome
+
+        data class Failure(
+            val reason: String,
+            val elapsedMs: Long,
+        ) : VrAudioOutcome
+    }
+
+    @OptIn(ExperimentalTime::class)
+    private suspend fun getAnonymousVisitorData(): String? {
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        val cached = cachedAnonymousVisitorData
+        if (!cached.isNullOrBlank() && nowMs - cachedAnonymousVisitorDataAtMs < ANON_VISITOR_DATA_TTL_MS) {
+            return cached
+        }
+        return anonVisitorMutex.withLock {
+            val lockedNow = Clock.System.now().toEpochMilliseconds()
+            val lockedCached = cachedAnonymousVisitorData
+            if (!lockedCached.isNullOrBlank() && lockedNow - cachedAnonymousVisitorDataAtMs < ANON_VISITOR_DATA_TTL_MS) {
+                return@withLock lockedCached
+            }
+            val fresh = withTimeoutOrNull(2_000L) { visitorData() }
+            if (!fresh.isNullOrBlank()) {
+                cachedAnonymousVisitorData = fresh
+                cachedAnonymousVisitorDataAtMs = Clock.System.now().toEpochMilliseconds()
+            }
+            fresh
+        }
+    }
+
+    @OptIn(ExperimentalTime::class)
+    private suspend fun fetchAndroidVrAudio(
+        videoId: String,
+        cpn: String,
+        preferredAudioLanguage: String?,
+    ): VrAudioOutcome {
+        val startMs = Clock.System.now().toEpochMilliseconds()
+        val anonVisitor =
+            try {
+                getAnonymousVisitorData()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        val vrResponse =
+            try {
+                withTimeoutOrNull(ANDROID_VR_FAST_PATH_TIMEOUT_MS) {
+                    ytMusic.androidVrPlayer(videoId, anonVisitor, cpn).body<PlayerResponse>()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val elapsed = Clock.System.now().toEpochMilliseconds() - startMs
+                Logger.w(TAG, "ANDROID_VR player request failed for $videoId (${e.message})")
+                androidVrFastPath.markFailedOrRejected(Clock.System.now().toEpochMilliseconds())
+                return VrAudioOutcome.Failure("err", elapsed)
+            }
+        val elapsed = Clock.System.now().toEpochMilliseconds() - startMs
+        if (vrResponse == null) {
+            androidVrFastPath.markFailedOrRejected(Clock.System.now().toEpochMilliseconds())
+            return VrAudioOutcome.Failure("timeout", elapsed)
+        }
+        if (vrResponse.videoDetails?.isLive == true) {
+            return VrAudioOutcome.Failure("live", elapsed)
+        }
+        if (vrResponse.playabilityStatus.status != "OK") {
+            Logger.w(TAG, "ANDROID_VR refused $videoId (${vrResponse.playabilityStatus.status})")
+            androidVrFastPath.markFailedOrRejected(Clock.System.now().toEpochMilliseconds())
+            return VrAudioOutcome.Failure(vrResponse.playabilityStatus.status.lowercase(), elapsed)
+        }
+        val directStreams = AndroidVrStreamMerger.extractDirectAudioStreams(vrResponse)
+        val probeUrl = AndroidVrStreamMerger.pickHeadProbeUrl(directStreams, preferredAudioLanguage)
+        if (probeUrl == null) {
+            androidVrFastPath.markFailedOrRejected(Clock.System.now().toEpochMilliseconds())
+            return VrAudioOutcome.Failure("no_audio", elapsed)
+        }
+        val nowMs = Clock.System.now().toEpochMilliseconds()
+        val headLabel =
+            if (androidVrFastPath.isTrusted(nowMs)) {
+                "head=skip"
+            } else if (ytMusic.isStreamUrlReachable(probeUrl)) {
+                androidVrFastPath.markTrusted(Clock.System.now().toEpochMilliseconds())
+                "head=ok"
+            } else {
+                Logger.w(TAG, "ANDROID_VR direct URL failed HEAD check for $videoId; cooling down for 15m")
+                androidVrFastPath.markFailedOrRejected(Clock.System.now().toEpochMilliseconds())
+                return VrAudioOutcome.Failure("head_fail", Clock.System.now().toEpochMilliseconds() - startMs)
+            }
+        return VrAudioOutcome.Success(
+            response = vrResponse,
+            elapsedMs = Clock.System.now().toEpochMilliseconds() - startMs,
+            headLabel = headLabel,
+        )
+    }
+
+    private suspend fun extractFallbackStreams(
+        videoId: String,
+        extractionId: Long,
+        requireVideo: Boolean,
+    ): List<Pair<Int, String>> {
+        val callerContext = coroutineContext
+        val cancelHook =
+            callerContext[Job]?.invokeOnCompletion { cause ->
+                if (cause != null) ytMusic.cancelExtraction(extractionId)
+            }
+        return try {
+            ytMusic.getNewPipePlayer(
+                videoId = videoId,
+                extractionId = extractionId,
+                isCancelled = { !callerContext.isActive },
+                requireVideo = requireVideo,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "Extractor failed for $videoId (${e.message}); resolving without it")
+            emptyList()
+        } finally {
+            cancelHook?.dispose()
+        }
+    }
+
     suspend fun player(
         videoId: String,
         playlistId: String? = null,
@@ -1924,6 +2081,21 @@ class YouTube {
             val resolveStartMs = Clock.System.now().toEpochMilliseconds()
             var playerResponseMs = 0L
             var extractorMs = 0L
+            // On audio-only tracks, race the anonymous ANDROID_VR client alongside WEB_REMIX and
+            // delay BravePipe by 700ms (or wake BravePipe immediately if ANDROID_VR fails earlier).
+            // When ANDROID_VR is in cooldown or video streams are requested, BravePipe starts at t=0.
+            val useAndroidVrFastPath =
+                !isVideo &&
+                    videoId !in directTempRejectedIds.value &&
+                    androidVrFastPath.isAvailable(resolveStartMs)
+            val vrDeferred =
+                if (useAndroidVrFastPath) {
+                    CoroutineScope(coroutineContext).async(Dispatchers.IO) {
+                        fetchAndroidVrAudio(videoId, cpn, preferredAudioLanguage)
+                    }
+                } else {
+                    null
+                }
             // The extractor's half of a resolution does not depend on the player response —
             // newPipePlayer only pairs the URLs it produces onto that response — so it starts
             // now and runs alongside the POST below instead of after it. The merge still
@@ -1934,31 +2106,27 @@ class YouTube {
             val extractionId = Random.nextLong().let { if (it == 0L) 1L else it }
             val streamsDeferred =
                 CoroutineScope(coroutineContext).async(Dispatchers.IO) {
-                    val cancelHook =
-                        coroutineContext[Job]?.invokeOnCompletion { cause ->
-                            if (cause != null) ytMusic.cancelExtraction(extractionId)
+                    if (vrDeferred != null) {
+                        val earlyVr =
+                            withTimeoutOrNull(ANDROID_VR_BRAVE_HEDGE_DELAY_MS) {
+                                vrDeferred.await()
+                            }
+                        if (earlyVr is VrAudioOutcome.Success) {
+                            return@async emptyList()
                         }
-                    try {
-                        ytMusic.getNewPipePlayer(
-                            videoId = videoId,
-                            extractionId = extractionId,
-                            isCancelled = { !isActive },
-                            requireVideo = isVideo,
-                        )
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Logger.w(TAG, "Extractor failed for $videoId (${e.message}); resolving without it")
-                        emptyList()
-                    } finally {
-                        cancelHook?.dispose()
                     }
+                    extractFallbackStreams(
+                        videoId = videoId,
+                        extractionId = extractionId,
+                        requireVideo = isVideo,
+                    )
                 }
             var altClientTried = false
             var tempRes: PlayerResponse =
                 try {
                     fetchPlayerResponse(WEB_REMIX, videoId, playlistId, cpn, signatureTimestamp)
                 } catch (e: CancellationException) {
+                    vrDeferred?.cancel()
                     streamsDeferred.cancel()
                     throw e
                 } catch (e: Exception) {
@@ -1975,9 +2143,11 @@ class YouTube {
                     try {
                         fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
                     } catch (altError: CancellationException) {
+                        vrDeferred?.cancel()
                         streamsDeferred.cancel()
                         throw altError
                     } catch (altError: Exception) {
+                        vrDeferred?.cancel()
                         streamsDeferred.cancel()
                         throw playerRequestFailure(videoId, altError)
                     }
@@ -1990,6 +2160,7 @@ class YouTube {
             // check comes before anything that requires an OK status.
             if (tempRes.videoDetails?.isLive == true) {
                 // The parallel extraction above is useless to a live broadcast; drop it.
+                vrDeferred?.cancel()
                 streamsDeferred.cancel()
                 // tempRes carries an hlsManifestUrl of its own, and it is deliberately not used: the
                 // web clients' live playlists load, but every segment is refused with 403.
@@ -2004,9 +2175,63 @@ class YouTube {
                 return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
             }
 
-            val streams = streamsDeferred.await()
+            var streams: List<Pair<Int, String>> = emptyList()
+            var response: PlayerResponse? = null
+            var vrTierOverride: String? = null
+            var vrFailurePrefix: String? = null
+            if (vrDeferred != null) {
+                val vrOutcome =
+                    if (vrDeferred.isCompleted) {
+                        vrDeferred.await()
+                    } else {
+                        select<VrAudioOutcome?> {
+                            vrDeferred.onAwait { it }
+                            streamsDeferred.onAwait { readyStreams ->
+                                if (readyStreams.isNotEmpty()) {
+                                    streams = readyStreams
+                                    null
+                                } else {
+                                    vrDeferred.await()
+                                }
+                            }
+                        }
+                    }
+                if (vrOutcome is VrAudioOutcome.Success) {
+                    val merged =
+                        AndroidVrStreamMerger.mergeDirectAudioUrls(
+                            baseResponse = tempRes,
+                            vrResponse = vrOutcome.response,
+                            preferredAudioLanguage = preferredAudioLanguage,
+                        )
+                    if (merged != null) {
+                        streamsDeferred.cancel()
+                        androidVrFastPath.recordServed(videoId)
+                        ExtractSource.record(videoId, "ANDROID_VR")
+                        ExtractTiming.consume(videoId)
+                        vrTierOverride = "android_vr:ok/${vrOutcome.elapsedMs}ms/${vrOutcome.headLabel}"
+                        response = merged
+                    } else {
+                        androidVrFastPath.markFailedOrRejected(Clock.System.now().toEpochMilliseconds())
+                        vrFailurePrefix = "android_vr:dur_mismatch/${vrOutcome.elapsedMs}ms"
+                        streams = streamsDeferred.await()
+                        if (streams.isEmpty()) {
+                            streams = extractFallbackStreams(videoId, extractionId, requireVideo = isVideo)
+                        }
+                    }
+                } else if (vrOutcome is VrAudioOutcome.Failure) {
+                    vrFailurePrefix = "android_vr:${vrOutcome.reason}/${vrOutcome.elapsedMs}ms"
+                    streams = streamsDeferred.await()
+                } else {
+                    vrDeferred.cancel()
+                }
+            } else {
+                streams = streamsDeferred.await()
+            }
+
             extractorMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
-            var response = newPipePlayer(videoId, tempRes, preferredAudioLanguage, streams)
+            if (response == null) {
+                response = newPipePlayer(videoId, tempRes, preferredAudioLanguage, streams)
+            }
             // The retries below pair the extractor's URLs onto another response, so they
             // only make sense when the extractor produced URLs at all.
             var altRes: PlayerResponse? = null
@@ -2148,7 +2373,12 @@ class YouTube {
             } else {
                 Logger.d(TAG, "YouTube Player no URL found")
             }
-            val tierSummary = ExtractTiming.consume(videoId) ?: "none"
+            val extractorTier = ExtractTiming.consume(videoId)
+            val tierSummary =
+                vrTierOverride
+                    ?: listOfNotNull(vrFailurePrefix, extractorTier)
+                        .joinToString(" -> ")
+                        .ifEmpty { "none" }
             if (decodedSigResponse == null) {
                 Logger.w(
                     "PlayTiming",
@@ -2961,16 +3191,23 @@ class YouTube {
     /** Warm the stream decipher pipeline ahead of the first play; see [Ytmusic.warmUpExtractor]. */
     fun warmUpDecoder() = ytMusic.warmUpExtractor()
 
+    @OptIn(ExperimentalTime::class)
     fun onStreamRejected(videoId: String) {
         directTempRejectedIds.value =
             (directTempRejectedIds.value + videoId).let { set ->
                 if (set.size > 32) set.drop(set.size - 32).toSet() else set
             }
+        if (androidVrFastPath.onStreamRejected(videoId, Clock.System.now().toEpochMilliseconds())) {
+            Logger.w(TAG, "ANDROID_VR stream rejected for $videoId; revoking trust and cooling down for 15m")
+        }
         ytMusic.onStreamRejected(videoId)
     }
 
     fun clearExtractorTrust() {
         directTempRejectedIds.value = emptySet()
+        androidVrFastPath.clear()
+        cachedAnonymousVisitorData = null
+        cachedAnonymousVisitorDataAtMs = 0L
         ytMusic.clearExtractorTrust()
     }
 

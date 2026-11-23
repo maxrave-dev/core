@@ -42,7 +42,7 @@ private const val HEAD_TRUST_WINDOW_MS = 5 * 60 * 1000L
 private const val MAX_UNVERIFIED_TRACKS = 32
 
 // Delay before hedging PipePipe when BravePipe is slow to answer.
-private const val HEDGE_PIPE_FALLBACK_MS = 2_000L
+private const val HEDGE_PIPE_FALLBACK_MS = 3_500L
 private const val PIPE_LOCK_POLL_MS = 50L
 
 actual class Extractor {

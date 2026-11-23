@@ -7,6 +7,7 @@ import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID_VR
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.IOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB_REMIX
@@ -461,6 +462,33 @@ class Ytmusic {
                     videoId = videoId,
                     playlistId = null,
                     cpn = null,
+                ),
+            )
+            parameter("prettyPrint", false)
+        }
+
+    /**
+     * Anonymous ANDROID_VR player request used as an audio-only fast path. Never carries account
+     * cookies or the signed-in session's visitorData (which triggers LOGIN_REQUIRED on ANDROID_VR).
+     */
+    suspend fun androidVrPlayer(
+        videoId: String,
+        anonymousVisitorData: String?,
+        cpn: String?,
+    ) = httpClient.post("https://www.youtube.com/youtubei/v1/player") {
+            contentType(ContentType.Application.Json)
+            header(HttpHeaders.UserAgent, ANDROID_VR.userAgent)
+            header("X-YouTube-Client-Name", "${ANDROID_VR.xClientName}")
+            header("X-YouTube-Client-Version", ANDROID_VR.clientVersion)
+            if (!anonymousVisitorData.isNullOrBlank()) {
+                header("X-Goog-Visitor-Id", anonymousVisitorData)
+            }
+            setBody(
+                PlayerBody(
+                    context = ANDROID_VR.toContext(locale, anonymousVisitorData),
+                    videoId = videoId,
+                    playlistId = null,
+                    cpn = cpn,
                 ),
             )
             parameter("prettyPrint", false)

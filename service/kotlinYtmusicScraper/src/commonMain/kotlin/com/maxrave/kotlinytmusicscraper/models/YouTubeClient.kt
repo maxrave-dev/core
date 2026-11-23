@@ -75,6 +75,26 @@ data class YouTubeClient(
                 xClientName = 3,
             )
 
+        /**
+         * Anonymous YouTube Android VR client — returns direct audio URLs (e.g. itag 251/140)
+         * in a single JSON POST without web HTML/JS scraping or signatureCipher decoding.
+         * Must always be called without account cookies and with an anonymous visitorData.
+         */
+        val ANDROID_VR =
+            YouTubeClient(
+                clientName = "ANDROID_VR",
+                clientVersion = "1.65.10",
+                api_key = "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
+                userAgent =
+                    "com.google.android.apps.youtube.vr.oculus/1.65.10 " +
+                        "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+                deviceMake = "Oculus",
+                deviceModel = "Quest 3",
+                osName = "Android",
+                osVersion = "12L",
+                xClientName = 28,
+            )
+
         val WEB =
             YouTubeClient(
                 clientName = "WEB",
