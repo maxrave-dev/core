@@ -13,12 +13,39 @@ fun sha1(str: String): String = MessageDigest.getInstance("SHA-1").digest(str.to
 
 fun parseCookieString(cookie: String): Map<String, String> =
     cookie
-        .split("; ")
-        .filter { it.isNotEmpty() }
-        .associate {
-            val (key, value) = it.split("=")
-            key to value
+        .split(";")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && '=' in it }
+        .mapNotNull { part ->
+            val separatorIndex = part.indexOf('=')
+            val key = part.substring(0, separatorIndex).trim()
+            if (key.isEmpty()) {
+                null
+            } else {
+                key to part.substring(separatorIndex + 1).trim()
+            }
+        }.toMap()
+
+fun buildSapisidAuthorization(
+    cookieMap: Map<String, String>,
+    epochSeconds: Long,
+    origin: String = "https://music.youtube.com",
+): String? {
+    val sapisid = cookieMap["SAPISID"]?.takeIf { it.isNotEmpty() }
+    val sapisid1p = cookieMap["__Secure-1PAPISID"]?.takeIf { it.isNotEmpty() }
+    val sapisid3p = cookieMap["__Secure-3PAPISID"]?.takeIf { it.isNotEmpty() }
+    val primary = sapisid ?: sapisid3p ?: sapisid1p ?: return null
+
+    return buildList {
+        add("SAPISIDHASH ${epochSeconds}_${sha1("$epochSeconds $primary $origin")}")
+        if (sapisid1p != null) {
+            add("SAPISID1PHASH ${epochSeconds}_${sha1("$epochSeconds $sapisid1p $origin")}")
         }
+        if (sapisid3p != null) {
+            add("SAPISID3PHASH ${epochSeconds}_${sha1("$epochSeconds $sapisid3p $origin")}")
+        }
+    }.joinToString(" ")
+}
 
 fun String.parseTime(): Int? {
     try {

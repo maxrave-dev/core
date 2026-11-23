@@ -35,6 +35,7 @@ import com.maxrave.kotlinytmusicscraper.parser.getPlaylistContinuation
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistRadioEndpoint
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistShuffleEndpoint
 import com.maxrave.logger.Logger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
@@ -685,30 +686,7 @@ internal class PlaylistRepositoryImpl(
             youTube
                 .getMixedForYou()
                 .onSuccess { data ->
-                    val input =
-                        data.contents
-                            ?.singleColumnBrowseResultsRenderer
-                            ?.tabs
-                            ?.get(
-                                0,
-                            )?.tabRenderer
-                            ?.content
-                            ?.sectionListRenderer
-                            ?.contents
-                            ?.get(
-                                0,
-                            )?.gridRenderer
-                            ?.items
-                    val listItem = mutableListOf<PlaylistsResult>()
-                    if (input.isNullOrEmpty()) {
-                        Logger.w("Mixed For You", "No playlists found")
-                        emit(null)
-                        return@onSuccess
-                    }
-                    listItem.addAll(
-                        parseLibraryPlaylist(input),
-                    )
-                    var continuation =
+                    val sections =
                         data.contents
                             ?.singleColumnBrowseResultsRenderer
                             ?.tabs
@@ -717,33 +695,56 @@ internal class PlaylistRepositoryImpl(
                             ?.content
                             ?.sectionListRenderer
                             ?.contents
-                            ?.firstOrNull()
-                            ?.gridRenderer
-                            ?.continuations
-                            ?.firstOrNull()
-                            ?.nextContinuationData
-                            ?.continuation
-                    while (continuation != null) {
-                        youTube
-                            .nextYouTubePlaylists(continuation)
-                            .onSuccess { nextData ->
-                                continuation = nextData.second
-                                Logger.w("Mixed For You", "continuation: $continuation")
-                                val nextInput = nextData.first
-                                listItem.addAll(
-                                    parseNextLibraryPlaylist(nextInput),
-                                )
-                            }.onFailure { exception ->
-                                exception.printStackTrace()
-                                Logger.e("Mixed For You", "Error: ${exception.message}")
-                                continuation = null
+                            .orEmpty()
+                    val gridRenderer = sections.firstNotNullOfOrNull { it.gridRenderer }
+                    val listItem = mutableListOf<PlaylistsResult>()
+                    if (gridRenderer != null) {
+                        if (gridRenderer.items.isNotEmpty()) {
+                            listItem.addAll(parseLibraryPlaylist(gridRenderer.items))
+                        }
+                        val seenContinuations = mutableSetOf<String>()
+                        var continuation =
+                            gridRenderer.continuations
+                                ?.firstOrNull()
+                                ?.nextContinuationData
+                                ?.continuation
+                                ?.takeIf { it.isNotBlank() && seenContinuations.add(it) }
+                        while (continuation != null) {
+                            youTube
+                                .nextYouTubePlaylists(continuation)
+                                .onSuccess { nextData ->
+                                    continuation =
+                                        nextData.second?.takeIf { it.isNotBlank() && seenContinuations.add(it) }
+                                    Logger.w("Mixed For You", "continuation: $continuation")
+                                    listItem.addAll(parseNextLibraryPlaylist(nextData.first))
+                                }.onFailure { exception ->
+                                    if (exception is CancellationException) throw exception
+                                    Logger.e("Mixed For You", "Error: ${exception.message}")
+                                    continuation = null
+                                }
+                        }
+                    } else {
+                        val carouselItems =
+                            sections.flatMap { section ->
+                                section.musicCarouselShelfRenderer
+                                    ?.contents
+                                    ?.mapNotNull { it.musicTwoRowItemRenderer }
+                                    .orEmpty()
                             }
+                        if (carouselItems.isNotEmpty()) {
+                            listItem.addAll(parseNextLibraryPlaylist(carouselItems))
+                        }
                     }
                     if (listItem.isNotEmpty()) {
                         emit(listItem)
                     } else {
+                        Logger.w("Mixed For You", "No playlists found")
                         emit(null)
                     }
+                }.onFailure { exception ->
+                    if (exception is CancellationException) throw exception
+                    Logger.e("Mixed For You", "Error: ${exception.message}")
+                    emit(null)
                 }
         }.flowOn(Dispatchers.IO)
 

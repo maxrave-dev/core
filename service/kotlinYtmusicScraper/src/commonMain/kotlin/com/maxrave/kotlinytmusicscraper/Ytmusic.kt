@@ -28,8 +28,8 @@ import com.maxrave.kotlinytmusicscraper.models.body.PlayerBody
 import com.maxrave.kotlinytmusicscraper.models.body.SearchBody
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
 import com.maxrave.kotlinytmusicscraper.models.response.RemoteConfig
+import com.maxrave.kotlinytmusicscraper.utils.buildSapisidAuthorization
 import com.maxrave.kotlinytmusicscraper.utils.parseCookieString
-import com.maxrave.kotlinytmusicscraper.utils.sha1
 import com.maxrave.ktorext.curl.CurlLogger
 import com.maxrave.ktorext.encoding.brotli
 import com.maxrave.ktorext.getEngine
@@ -248,15 +248,15 @@ class Ytmusic {
                 append("Referer", client.referer)
             }
             if (setLogin) {
-                val cookie = customCookie ?: this@Ytmusic.cookie
-                cookie?.let { cookie ->
-                    append("Cookie", cookie)
-                    if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) return@let
-                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-                    val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
-                    val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
-                    Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
-                    append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
+                val activeCookie = customCookie ?: this@Ytmusic.cookie
+                if (!activeCookie.isNullOrBlank()) {
+                    append("Cookie", activeCookie)
+                    val activeCookieMap =
+                        if (customCookie != null) parseCookieString(customCookie) else cookieMap
+                    val currentEpochSeconds = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
+                    buildSapisidAuthorization(activeCookieMap, currentEpochSeconds)?.let { authHeader ->
+                        append("Authorization", authHeader)
+                    }
                 }
             }
         }
@@ -265,15 +265,11 @@ class Ytmusic {
     }
 
     @OptIn(ExperimentalTime::class)
-    internal fun getAuthorizationHeader(): String? =
-        cookie?.let { cookie ->
-            if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) null
-            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-            val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
-            val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
-            Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
-            "SAPISIDHASH ${currentTime}_$sapisidHash"
-        }
+    internal fun getAuthorizationHeader(): String? {
+        if (cookie.isNullOrBlank()) return null
+        val currentEpochSeconds = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
+        return buildSapisidAuthorization(cookieMap, currentEpochSeconds)
+    }
 
     fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
 
