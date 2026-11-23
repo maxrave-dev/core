@@ -7,9 +7,9 @@ import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID
-import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.ANDROID_VR
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.IOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.TVHTML5
+import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.VISIONOS
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient.Companion.WEB_REMIX
 import com.maxrave.kotlinytmusicscraper.models.YouTubeLocale
 import com.maxrave.kotlinytmusicscraper.models.body.AccountMenuBody
@@ -82,6 +82,10 @@ import kotlinx.datetime.toInstant
 import kotlinx.io.readByteArray
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import nl.adaptivity.xmlutil.XmlDeclMode
 import nl.adaptivity.xmlutil.serialization.XML
 import okio.FileSystem
@@ -91,6 +95,7 @@ import okio.Path.Companion.toPath
 import okio.SYSTEM
 import okio.buffer
 import okio.use
+import kotlin.random.Random
 import kotlin.time.ExperimentalTime
 
 private const val TAG = "YouTubeScraperClient"
@@ -467,32 +472,93 @@ class Ytmusic {
             parameter("prettyPrint", false)
         }
 
+    private fun buildVisionOsContext(anonymousVisitorData: String?): JsonObject =
+        buildJsonObject {
+            put(
+                "client",
+                buildJsonObject {
+                    put("clientName", VISIONOS.clientName)
+                    put("clientVersion", VISIONOS.clientVersion)
+                    put("clientScreen", "WATCH")
+                    put("platform", "MOBILE")
+                    if (!anonymousVisitorData.isNullOrBlank()) {
+                        put("visitorData", anonymousVisitorData)
+                    }
+                    put("deviceMake", VISIONOS.deviceMake)
+                    put("deviceModel", VISIONOS.deviceModel)
+                    put("osName", VISIONOS.osName)
+                    put("osVersion", VISIONOS.osVersion)
+                    put("hl", locale.hl)
+                    put("gl", locale.gl)
+                    put("utcOffsetMinutes", 0)
+                },
+            )
+            put(
+                "request",
+                buildJsonObject {
+                    put("internalExperimentFlags", buildJsonArray {})
+                    put("useSsl", true)
+                },
+            )
+            put(
+                "user",
+                buildJsonObject {
+                    put("lockedSafetyMode", false)
+                },
+            )
+        }
+
     /**
-     * Anonymous ANDROID_VR player request used as an audio-only fast path. Never carries account
-     * cookies or the signed-in session's visitorData (which triggers LOGIN_REQUIRED on ANDROID_VR).
+     * Fetches an anonymous `visitorData` token for [VISIONOS] from `youtubei/v1/visitor_id`
+     * without account cookies, matching BravePipeExtractor's `getVisitorDataFromInnertube`.
      */
-    suspend fun androidVrPlayer(
-        videoId: String,
-        anonymousVisitorData: String?,
-        cpn: String?,
-    ) = httpClient.post("https://www.youtube.com/youtubei/v1/player") {
+    suspend fun visionOsVisitorId() =
+        httpClient.post("https://www.youtube.com/youtubei/v1/visitor_id") {
             contentType(ContentType.Application.Json)
-            header(HttpHeaders.UserAgent, ANDROID_VR.userAgent)
-            header("X-YouTube-Client-Name", "${ANDROID_VR.xClientName}")
-            header("X-YouTube-Client-Version", ANDROID_VR.clientVersion)
-            if (!anonymousVisitorData.isNullOrBlank()) {
-                header("X-Goog-Visitor-Id", anonymousVisitorData)
-            }
+            header(HttpHeaders.UserAgent, YouTubeClient.visionOsUserAgent(locale.gl))
+            header("X-Goog-Api-Format-Version", "2")
             setBody(
-                PlayerBody(
-                    context = ANDROID_VR.toContext(locale, anonymousVisitorData),
-                    videoId = videoId,
-                    playlistId = null,
-                    cpn = cpn,
-                ),
+                buildJsonObject {
+                    put("context", buildVisionOsContext(anonymousVisitorData = null))
+                },
             )
             parameter("prettyPrint", false)
         }
+
+    /**
+     * Anonymous `VISIONOS 1.04` player request used as an audio-only fast path (1 HTTP POST
+     * instead of BravePipeExtractor's 4 serial calls). Never carries account cookies or the
+     * signed-in session's visitorData.
+     */
+    suspend fun visionOsPlayer(
+        videoId: String,
+        anonymousVisitorData: String,
+        cpn: String?,
+    ) = httpClient.post("https://youtubei.googleapis.com/youtubei/v1/player") {
+            contentType(ContentType.Application.Json)
+            header(HttpHeaders.UserAgent, YouTubeClient.visionOsUserAgent(locale.gl))
+            header("X-Goog-Api-Format-Version", "2")
+            setBody(
+                buildJsonObject {
+                    put("context", buildVisionOsContext(anonymousVisitorData = anonymousVisitorData))
+                    put("videoId", videoId)
+                    if (!cpn.isNullOrBlank()) {
+                        put("cpn", cpn)
+                    }
+                    put("contentCheckOk", true)
+                    put("racyCheckOk", true)
+                },
+            )
+            parameter("prettyPrint", false)
+            parameter("t", generateVisionOsTParam())
+            parameter("id", videoId)
+        }
+
+    private fun generateVisionOsTParam(): String =
+        (1..12)
+            .map {
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[Random.nextInt(0, 64)]
+            }.joinToString("")
 
     suspend fun noLogInPlayer(
         videoId: String,

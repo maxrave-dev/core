@@ -3030,13 +3030,18 @@ internal class MediaServiceHandlerImpl(
             PlayerConstants.STATE_READY -> {
                 Logger.d(TAG, "onPlaybackStateChanged: Ready")
                 val timingVideoId = playTimingVideoId
-                if (timingVideoId != null) {
+                val durMs = player.duration
+                val activeBaseId = player.currentMediaItem?.mediaId?.removePrefix(MERGING_DATA_TYPE.VIDEO)
+                if (timingVideoId != null &&
+                    activeBaseId == timingVideoId &&
+                    durMs > 0L &&
+                    (player.bufferedPosition > 0L || player.currentPosition > 0L)
+                ) {
                     Logger.i(
                         "PlayTiming",
                         "id=$timingVideoId ready=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
                     )
                 }
-                val durMs = player.duration
                 if (durMs > 0L) {
                     val durSec = (durMs / 1000L).toInt()
                     val curEntity = nowPlayingState.value.songEntity
@@ -3096,7 +3101,13 @@ internal class MediaServiceHandlerImpl(
             resumeWhenNetworkReturns = false
             audioTrackRecoveryMediaId = null
             val timingVideoId = playTimingVideoId
-            if (timingVideoId != null) {
+            val expectedVideoId = currentId?.removePrefix(MERGING_DATA_TYPE.VIDEO)
+            if (timingVideoId != null &&
+                expectedVideoId == timingVideoId &&
+                player.playbackState == PlayerConstants.STATE_READY &&
+                player.duration > 0L &&
+                (player.bufferedPosition > 0L || player.currentPosition > 0L)
+            ) {
                 Logger.i(
                     "PlayTiming",
                     "id=$timingVideoId playing=${SystemClock.elapsedRealtime() - playTimingStartMs}ms",
@@ -3104,7 +3115,6 @@ internal class MediaServiceHandlerImpl(
                 playTimingVideoId = null
             }
             startProgressUpdate()
-            val expectedVideoId = currentId?.removePrefix(MERGING_DATA_TYPE.VIDEO)
             nowPlayingState.value.songEntity?.takeIf { it.videoId == expectedVideoId }?.let {
                 updateDiscordRpc(it)
             }

@@ -95,6 +95,31 @@ data class YouTubeClient(
                 xClientName = 28,
             )
 
+        /**
+         * Anonymous YouTube VISIONOS 1.04 client — same InnerTube profile used by
+         * BravePipeExtractor to fetch direct audio stream URLs without web HTML/JS scraping
+         * or signatureCipher decoding. Must always be called without account cookies and with an
+         * anonymous `visitor_id` visitorData.
+         */
+        val VISIONOS =
+            YouTubeClient(
+                clientName = "VISIONOS",
+                clientVersion = "1.04",
+                api_key = "",
+                userAgent = "com.google.visionos.youtube/1.04(RealityDevice17,1; U; CPU visionOS 26_6_0 like Mac OS X; US)",
+                deviceMake = "Apple",
+                deviceModel = "RealityDevice17,1",
+                osName = "visionOS",
+                osVersion = "26.6.0.23O770",
+                utcOffsetMinutes = 0,
+                xClientName = 101,
+            )
+
+        fun visionOsUserAgent(countryCode: String?): String {
+            val cc = countryCode?.takeIf { it.isNotBlank() } ?: "US"
+            return "com.google.visionos.youtube/1.04(RealityDevice17,1; U; CPU visionOS 26_6_0 like Mac OS X; $cc)"
+        }
+
         val WEB =
             YouTubeClient(
                 clientName = "WEB",
