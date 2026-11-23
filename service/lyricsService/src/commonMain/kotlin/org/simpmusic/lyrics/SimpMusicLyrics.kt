@@ -14,6 +14,7 @@ import io.ktor.client.plugins.cookies.AcceptAllCookiesStorage
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.headers
@@ -25,6 +26,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import org.simpmusic.lyrics.am.AMTokenManager
+import org.simpmusic.lyrics.models.request.DeleteBody
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.request.VoteBody
@@ -144,6 +146,28 @@ class SimpMusicLyrics {
             hmac = hmacTimestamp.first,
         )
         setBody(translatedLyricsBody)
+    }
+
+    suspend fun deleteLyrics(
+        body: DeleteBody,
+        hmacTimestamp: Pair<String, String>,
+    ) = httpClient.delete {
+        buildDefaultHeaders(
+            timestamp = hmacTimestamp.second,
+            hmac = hmacTimestamp.first,
+        )
+        setBody(body)
+    }
+
+    suspend fun deleteTranslatedLyrics(
+        body: DeleteBody,
+        hmacTimestamp: Pair<String, String>,
+    ) = httpClient.delete(baseUrl + "translated") {
+        buildDefaultHeaders(
+            timestamp = hmacTimestamp.second,
+            hmac = hmacTimestamp.first,
+        )
+        setBody(body)
     }
 
     suspend fun voteLyrics(

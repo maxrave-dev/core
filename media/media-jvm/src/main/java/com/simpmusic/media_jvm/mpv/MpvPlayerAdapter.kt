@@ -17,6 +17,7 @@ import com.maxrave.domain.data.player.PlayerConstants
 import com.maxrave.domain.data.player.PlayerError
 import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.domain.mediaservice.player.BassEnvelope
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.StreamRepository
@@ -1383,6 +1384,33 @@ class MpvPlayerAdapter(
     ): FloatArray? {
         if (mediaId.isBlank() || LiveStreamRegistry.isLive(mediaId)) return null
         return MpvWaveformReader.read(mediaId, onProgress) { waveformSourceUrl(mediaId) }
+    }
+
+    // The lyrics background asks every frame, so the answer comes from memory and a missing envelope is
+    // loaded in the background: from disk, or by the waveform's own decode of the track.
+    private val bassEnvelopes = ConcurrentHashMap<String, BassEnvelope>()
+    private val bassAttempts = ConcurrentHashMap<String, Long>()
+
+    override fun bassPulse(
+        mediaId: String,
+        positionMs: Long,
+    ): Float {
+        if (mediaId.isBlank() || LiveStreamRegistry.isLive(mediaId)) return 0f
+        bassEnvelopes[mediaId]?.let { return it.pulseAt(positionMs) }
+        val now = System.currentTimeMillis()
+        val last = bassAttempts[mediaId]
+        // One load at a time per track, and a failed one (no URL yet, a slice without the filters) waits
+        // a little before the next frame starts another.
+        if (last == null || now - last >= BASS_RETRY_MS) {
+            bassAttempts[mediaId] = now
+            coroutineScope.launch(Dispatchers.IO) {
+                val bass = runCatching { MpvWaveformReader.bass(mediaId) { waveformSourceUrl(mediaId) } }.getOrNull() ?: return@launch
+                // Only the tracks around the current one are worth holding.
+                if (bassEnvelopes.size >= MAX_BASS_ENVELOPES) bassEnvelopes.clear()
+                bassEnvelopes[mediaId] = bass
+            }
+        }
+        return 0f
     }
 
     /**
@@ -3473,6 +3501,11 @@ class MpvPlayerAdapter(
 }
 
 private const val MPV_AUTO_DEVICE = "auto"
+
+// The lyrics background's bass: how long a failed load waits (a failed decode re-runs the whole
+// track), and how many tracks stay in memory.
+private const val BASS_RETRY_MS = 30_000L
+private const val MAX_BASS_ENVELOPES = 8
 
 /**
  * The outputs [driver] can route to, read off mpv's `audio-device-list`, with [activeDevice] marked.

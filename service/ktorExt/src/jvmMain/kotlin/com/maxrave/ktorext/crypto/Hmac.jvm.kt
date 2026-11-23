@@ -30,7 +30,10 @@ actual class Hmac actual constructor(algorithm: String, secretKey: String) {
      * @param data The data to generate HMAC for
      * @return Base64 encoded HMAC token
      */
-    actual fun generateHmac(data: String): String = Base64.getEncoder().encodeToString(mac.doFinal(data.toByteArray()))
+    // Mac is not thread-safe, and this one instance signs every request: two signed at once (deleting
+    // lyrics votes on the lyrics and the translation together) corrupt each other's digest, and the
+    // server answers both with "Invalid HMAC token".
+    actual fun generateHmac(data: String): String = Base64.getEncoder().encodeToString(synchronized(mac) { mac.doFinal(data.toByteArray()) })
 
     /**
      * Validate HMAC token for given data

@@ -13,6 +13,7 @@ import com.maxrave.domain.data.entities.ArtistMotionEntity
 import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
+import com.maxrave.domain.data.entities.DeletedLyricsEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
@@ -746,6 +747,22 @@ interface DatabaseDao {
 
     @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertLyrics(lyrics: LyricsEntity)
+
+    @Query("DELETE FROM lyrics WHERE videoId = :videoId")
+    suspend fun deleteLyrics(videoId: String)
+
+    @Query("DELETE FROM translated_lyrics WHERE videoId = :videoId")
+    suspend fun deleteTranslatedLyrics(videoId: String)
+
+    @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
+    suspend fun insertDeletedLyrics(deletedLyrics: DeletedLyricsEntity)
+
+    @Query("SELECT EXISTS(SELECT 1 FROM deleted_lyrics WHERE videoId = :videoId AND provider = :provider AND lyricsId = :lyricsId)")
+    suspend fun isLyricsDeleted(
+        videoId: String,
+        provider: String,
+        lyricsId: String,
+    ): Boolean
 
     @Query("SELECT * FROM lyrics WHERE videoId = :videoId")
     suspend fun getLyrics(videoId: String): LyricsEntity?

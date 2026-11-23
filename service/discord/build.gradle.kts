@@ -10,7 +10,9 @@ plugins {
 kotlin {
     android {
         namespace = "org.simpmusic.discord"
-        compileSdk = 37
+        compileSdk {
+            version = release(37) { minorApiLevel = 2 }
+        }
         minSdk = 26
     }
 

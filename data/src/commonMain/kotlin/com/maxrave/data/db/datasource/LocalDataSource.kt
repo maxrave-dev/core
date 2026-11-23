@@ -11,6 +11,7 @@ import com.maxrave.domain.data.entities.ArtistMotionEntity
 import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
+import com.maxrave.domain.data.entities.DeletedLyricsEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
@@ -520,6 +521,18 @@ internal class LocalDataSource(
     suspend fun getSavedLyrics(videoId: String) = databaseDao.getLyrics(videoId)
 
     suspend fun insertLyrics(lyrics: LyricsEntity) = databaseDao.insertLyrics(lyrics)
+
+    suspend fun deleteLyrics(videoId: String) = databaseDao.deleteLyrics(videoId)
+
+    suspend fun deleteTranslatedLyrics(videoId: String) = databaseDao.deleteTranslatedLyrics(videoId)
+
+    suspend fun insertDeletedLyrics(deletedLyrics: DeletedLyricsEntity) = databaseDao.insertDeletedLyrics(deletedLyrics)
+
+    suspend fun isLyricsDeleted(
+        videoId: String,
+        provider: String,
+        lyricsId: String,
+    ) = databaseDao.isLyricsDeleted(videoId, provider, lyricsId)
 
     suspend fun getPreparingSongs(
         limit: Int,

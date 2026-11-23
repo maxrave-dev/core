@@ -349,6 +349,11 @@ internal class CrossfadeExoPlayerAdapter(
         onProgress: (FloatArray) -> Unit,
     ): FloatArray? = waveformReader.read(mediaId, onProgress)
 
+    override fun bassPulse(
+        mediaId: String,
+        positionMs: Long,
+    ): Float = waveformReader.bassPulse(mediaId, positionMs)
+
     override fun refreshAudioOutputs() = outputRouter.refresh()
 
     private fun applyPreferredAudioDevice(device: AudioDeviceInfo?) {

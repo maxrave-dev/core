@@ -54,10 +54,17 @@ interface LyricsCanvasRepository {
         canvasThumbUrl: String,
     )
 
+    /**
+     * Lyrics of the Spotify track that is the song: [title] and [artists] are scored against each search
+     * result (see [com.maxrave.domain.utils.trackMatchScore]) together with [duration], and nothing found is
+     * an error rather than the top hit.
+     */
     fun getSpotifyLyrics(
         dataStoreManager: DataStoreManager,
         query: String,
         duration: Int?,
+        title: String?,
+        artists: List<String>,
     ): Flow<Resource<Lyrics>>
 
     fun getLrclibLyricsData(
@@ -102,6 +109,34 @@ interface LyricsCanvasRepository {
         translatedLyricsId: String,
         upvote: Boolean,
     ): Flow<Resource<String>>
+
+    /** Deletes SimpMusic lyrics [lyricsId]; allowed only under the [contributorEmail] they were contributed with. */
+    fun deleteSimpMusicLyrics(
+        lyricsId: String,
+        contributorEmail: String,
+    ): Flow<Resource<String>>
+
+    /** Deletes SimpMusic translation [translatedLyricsId]; the server allows it only for its [contributorEmail]. */
+    fun deleteSimpMusicTranslatedLyrics(
+        translatedLyricsId: String,
+        contributorEmail: String,
+    ): Flow<Resource<String>>
+
+    /**
+     * Removes the lyrics cached for [videoId] and their saved translation. [copies] names each copy a
+     * provider served, lyrics or translation, as provider name to id; [isLyricsDeleted] then reports them so
+     * they are skipped. Empty for the offline copy.
+     */
+    suspend fun deleteLyrics(
+        videoId: String,
+        copies: List<Pair<String, String>>,
+    )
+
+    suspend fun isLyricsDeleted(
+        videoId: String,
+        provider: String,
+        lyricsId: String,
+    ): Boolean
 
     fun insertSimpMusicLyrics(
         dataStoreManager: DataStoreManager,

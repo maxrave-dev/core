@@ -3,6 +3,7 @@ package com.maxrave.media3.waveform
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
+import com.maxrave.domain.mediaservice.player.BassEnvelope
 import com.maxrave.domain.mediaservice.player.WAVEFORM_BARS_PER_SECOND
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -27,6 +28,9 @@ internal class PlaybackWaveforms(
         var lastBar = -1
         var publishedBar = -1
         var publishedAt = Long.MIN_VALUE
+
+        // The lyrics background's pulse, from the same PCM and under the same lock.
+        val bass = BassEnvelope()
     }
 
     private val tracks = LinkedHashMap<String, Track>(8, 0.75f, true)
@@ -62,6 +66,13 @@ internal class PlaybackWaveforms(
     @Synchronized
     fun snapshot(mediaId: String): FloatArray? = tracks[mediaId]?.updates?.value
 
+    /** See [BassEnvelope.pulseAt]; 0 for a track this store has not heard. */
+    @Synchronized
+    fun bassPulse(
+        mediaId: String,
+        positionMs: Long,
+    ): Float = tracks[mediaId]?.bass?.pulseAt(positionMs) ?: 0f
+
     /** Does not change the caller's PCM bytes, position or limit. Zero slots mean not decoded yet. */
     @Synchronized
     fun append(
@@ -93,6 +104,7 @@ internal class PlaybackWaveforms(
             val bar = (timeUs / 1_000_000.0 * WAVEFORM_BARS_PER_SECOND).toInt()
             if (bar >= MAX_BARS) break
             var squares = 0.0
+            var mono = 0.0
             repeat(channels) {
                 val sample =
                     when (encoding) {
@@ -106,7 +118,9 @@ internal class PlaybackWaveforms(
                         else -> data.float.toDouble().takeIf { it.isFinite() } ?: 0.0
                     }
                 squares += sample * sample
+                mono += sample
             }
+            track.bass.add(timeUs, (mono / channels).toFloat(), sampleRate)
             track.sums[bar] += squares / channels
             track.counts[bar]++
             track.lastBar = maxOf(track.lastBar, bar)

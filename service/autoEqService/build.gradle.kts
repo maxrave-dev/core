@@ -9,7 +9,9 @@ plugins {
 kotlin {
     android {
         namespace = "org.simpmusic.autoeq"
-        compileSdk = 37
+        compileSdk {
+            version = release(37) { minorApiLevel = 2 }
+        }
         minSdk = 26
     }
 

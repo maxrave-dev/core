@@ -13,6 +13,7 @@ import com.maxrave.domain.data.entities.ArtistMotionEntity
 import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
+import com.maxrave.domain.data.entities.DeletedLyricsEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
@@ -42,9 +43,9 @@ import com.maxrave.domain.data.entities.sync.SyncChangeEntity
         NotificationEntity::class, TranslatedLyricsEntity::class, PodcastsEntity::class, EpisodeEntity::class,
         YourYouTubePlaylistList::class, PlaybackEventEntity::class, EventArtistEntity::class,
         AutoEqEntryEntity::class, AutoEqIndexMetaEntity::class, AutoEqCurveEntity::class,
-        ArtistMotionEntity::class, SyncChangeEntity::class,
+        ArtistMotionEntity::class, SyncChangeEntity::class, DeletedLyricsEntity::class,
     ],
-    version = 28,
+    version = 29,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3), AutoMigration(
@@ -105,6 +106,10 @@ import com.maxrave.domain.data.entities.sync.SyncChangeEntity
         AutoMigration(27, 28),
         AutoMigration(26, 28),
         AutoMigration(25, 28),
+        // 29 adds deleted_lyrics, the lyrics the user deleted. One new table and nothing else.
+        AutoMigration(28, 29),
+        AutoMigration(27, 29),
+        AutoMigration(26, 29),
     ],
 )
 @TypeConverters(Converters::class)

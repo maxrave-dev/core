@@ -12,6 +12,7 @@ import org.simpmusic.lyrics.am.parseAMHlsVariants
 import org.simpmusic.lyrics.am.pickAMRendition
 import org.simpmusic.lyrics.am.AMArtistResource
 import org.simpmusic.lyrics.am.AMSearchResponse
+import org.simpmusic.lyrics.models.request.DeleteBody
 import org.simpmusic.lyrics.models.request.LyricsBody
 import org.simpmusic.lyrics.models.request.TranslatedLyricsBody
 import org.simpmusic.lyrics.models.response.BaseResponse
@@ -20,6 +21,7 @@ import org.simpmusic.lyrics.models.response.LrclibObject
 import org.simpmusic.lyrics.models.response.LyricsResponse
 import org.simpmusic.lyrics.models.response.TranslatedLyricsResponse
 import org.simpmusic.lyrics.parser.parseLrclibLyrics
+import com.maxrave.domain.utils.trackMatchScore
 import kotlin.math.abs
 
 private const val TAG = "SimpMusicLyricsClient"
@@ -117,6 +119,26 @@ class SimpMusicLyricsClient {
             lyricsService.voteTranslatedLyrics(translatedLyricsId, upvote, hmacTimestamp).bodyOrThrow<TranslatedLyricsResponse>()
         }
 
+    /** Deletes lyrics [id] contributed under [contributorEmail]; the server answers 403 when they are someone else's. */
+    suspend fun deleteLyrics(
+        id: String,
+        contributorEmail: String,
+    ): Result<LyricsResponse> =
+        runCatching {
+            val hmacTimestamp = hmacService.getMacTimestampPair(HmacUri.BASE_HMAC_URI)
+            lyricsService.deleteLyrics(DeleteBody(id, contributorEmail), hmacTimestamp).bodyOrThrow<LyricsResponse>()
+        }
+
+    /** Deletes translation [id] contributed under [contributorEmail]; the server answers 403 when it is someone else's. */
+    suspend fun deleteTranslatedLyrics(
+        id: String,
+        contributorEmail: String,
+    ): Result<TranslatedLyricsResponse> =
+        runCatching {
+            val hmacTimestamp = hmacService.getMacTimestampPair(HmacUri.TRANSLATED_HMAC_URI)
+            lyricsService.deleteTranslatedLyrics(DeleteBody(id, contributorEmail), hmacTimestamp).bodyOrThrow<TranslatedLyricsResponse>()
+        }
+
     suspend fun searchLrclibLyrics(
         q_track: String,
         q_artist: String,
@@ -128,8 +150,8 @@ class SimpMusicLyricsClient {
                     q_track = q_track,
                     q_artist = q_artist,
                 ).body<List<LrclibObject>>()
-        val lrclibObject = selectLrclibLyricsRecord(rs, duration)
-        lrclibObject?.let { parseLrclibLyrics(it) }
+        val lrclibObject = selectLrclibLyricsRecord(rs, duration, q_track, q_artist)
+        lrclibObject?.let { record -> parseLrclibLyrics(record)?.copy(id = record.id.toString()) }
     }
 
     suspend fun searchBetterLyrics(
@@ -296,15 +318,29 @@ class SimpMusicLyricsClient {
     }
 }
 
+/**
+ * The record for the song: within 3 s of [duration], and, when [title] is known, the same song and recording
+ * by [trackMatchScore] against its track and artist names. Word-synced lyrics first, then LRCLIB's own order.
+ */
 internal fun selectLrclibLyricsRecord(
     records: List<LrclibObject>,
     duration: Int?,
+    title: String? = null,
+    artist: String? = null,
 ): LrclibObject? {
+    val artists = listOfNotNull(artist?.takeIf { it.isNotBlank() })
     val candidates =
-        if (duration != null) {
-            records.filter { abs(it.duration.toInt() - duration) <= 10 }
-        } else {
-            records
+        records.filter { record ->
+            (duration == null || abs(record.duration.toInt() - duration) <= 3) &&
+                (
+                    title.isNullOrBlank() ||
+                        trackMatchScore(
+                            title,
+                            artists,
+                            record.trackName ?: record.name,
+                            record.artistName?.split(',', '&')?.map { it.trim() }.orEmpty(),
+                        ) > 0f
+                )
         }
     return candidates.firstOrNull { it.hasWordSync } ?: candidates.firstOrNull()
 }

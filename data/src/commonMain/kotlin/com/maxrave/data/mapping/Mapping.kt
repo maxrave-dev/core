@@ -11,6 +11,7 @@ import com.maxrave.domain.data.model.home.Content
 import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
 import com.maxrave.domain.data.model.metadata.Line
 import com.maxrave.domain.data.model.metadata.Lyrics
+import com.maxrave.domain.data.model.metadata.lyricsContentId
 import com.maxrave.domain.data.model.searchResult.albums.AlbumsResult
 import com.maxrave.domain.data.model.searchResult.artists.ArtistsResult
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
@@ -132,6 +133,7 @@ internal fun org.simpmusic.lyrics.domain.Lyrics.toLyrics(): Lyrics {
             error = false,
             lines = lines,
             syncType = this.lyrics!!.syncType,
+            id = this.id ?: lyricsContentId(lines),
         )
     } else {
         return Lyrics(
@@ -175,6 +177,7 @@ internal fun SpotifyLyricsResponse.toLyrics(): Lyrics {
         error = false,
         lines = lines,
         syncType = this.lyrics.syncType,
+        id = lyricsContentId(lines),
     )
 }
 
@@ -260,6 +263,7 @@ internal fun Transcript.toLyrics(): Lyrics {
         error = false,
         lines = sortedLine,
         syncType = "LINE_SYNCED",
+        id = lyricsContentId(sortedLine),
     )
 }
 
@@ -304,7 +308,7 @@ internal fun LyricsResponse.toLyrics(): Lyrics? =
                     null
                 }
             )
-    )?.toLyrics()
+    )?.toLyrics()?.copy(id = this.id)
 
 internal fun TranslatedLyricsResponse.toLyrics(): Lyrics = parseSyncedLyrics(this.translatedLyric).toLyrics()
 

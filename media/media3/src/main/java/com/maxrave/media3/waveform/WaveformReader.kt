@@ -61,6 +61,12 @@ internal class WaveformReader(
             storedBars(name) ?: playbackWaveforms.observe(mediaId, onProgress)
         }
 
+    /** Measured from the same PCM as the waveform, so it exists for whatever has played or buffered. */
+    fun bassPulse(
+        mediaId: String,
+        positionMs: Long,
+    ): Float = playbackWaveforms.bassPulse(mediaId.removePrefix(MERGING_DATA_TYPE.VIDEO), positionMs)
+
     fun playbackSink(delegate: AudioSink, mediaId: String?): AudioSink =
         if (mediaId.isNullOrBlank()) {
             delegate

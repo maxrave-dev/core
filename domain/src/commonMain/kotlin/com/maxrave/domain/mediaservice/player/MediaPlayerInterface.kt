@@ -246,6 +246,16 @@ interface MediaPlayerInterface {
     fun refreshAudioOutputs() = Unit
 
     /**
+     * How hard [mediaId]'s bass hits at [positionMs], 0..1, for the lyrics background's pulse (see
+     * [BassEnvelope]). 0 when this backend measures nothing (the default), or has not reached that part of
+     * the track yet. Cheap enough to ask every frame, and never starts work the caller waits on.
+     */
+    fun bassPulse(
+        mediaId: String,
+        positionMs: Long,
+    ): Float = 0f
+
+    /**
      * The loudness outline of [mediaId]'s audio for the SoundCloud style's waveform: one value per
      * 1 / [WAVEFORM_BARS_PER_SECOND] seconds of the track, each 0..1 against the track's loudest
      * moment. Null when this backend cannot produce one (the default) or the audio could not be read.

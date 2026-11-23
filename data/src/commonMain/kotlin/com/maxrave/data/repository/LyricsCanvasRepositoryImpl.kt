@@ -5,6 +5,7 @@ package com.maxrave.data.repository
 import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.data.mapping.toCanvasResult
 import com.maxrave.data.mapping.toLyrics
+import com.maxrave.domain.data.entities.DeletedLyricsEntity
 import com.maxrave.domain.data.entities.LyricsEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.model.browse.album.Track
@@ -27,6 +28,8 @@ import com.maxrave.domain.utils.toSyncedLyrics
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.logger.Logger
 import com.maxrave.spotify.Spotify
+import com.maxrave.spotify.model.response.spotify.search.SpotifySearchResponse
+import com.maxrave.domain.utils.trackMatchScore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.flow.Flow
@@ -179,34 +182,7 @@ internal class LyricsCanvasRepositoryImpl(
                             .searchSpotifyTrack(q, authToken, spotifyClientToken)
                             .onSuccess { searchResponse ->
                                 Logger.d("Canvas", "Spotify search: ${searchResponse.data?.searchV2?.tracksV2?.items?.size ?: 0} tracks")
-                                val track =
-                                    if (duration != 0) {
-                                        searchResponse.data?.searchV2?.tracksV2?.items?.find {
-                                            abs(
-                                                (
-                                                    (
-                                                        (
-                                                            it.item
-                                                                ?.data
-                                                                ?.duration
-                                                                ?.totalMilliseconds ?: (0 / 1000)
-                                                        ) - duration
-                                                    )
-                                                ),
-                                            ) < 1
-                                        }
-                                            ?: searchResponse.data
-                                                ?.searchV2
-                                                ?.tracksV2
-                                                ?.items
-                                                ?.firstOrNull()
-                                    } else {
-                                        searchResponse.data
-                                            ?.searchV2
-                                            ?.tracksV2
-                                            ?.items
-                                            ?.firstOrNull()
-                                    }
+                                val track = searchResponse.trackMatching(duration, song?.title, song?.artistName.orEmpty())
                                 if (track != null) {
                                     Logger.d("Canvas", "Spotify track: ${track.item?.data?.id}")
                                     spotify
@@ -391,6 +367,8 @@ internal class LyricsCanvasRepositoryImpl(
         dataStoreManager: DataStoreManager,
         query: String,
         duration: Int?,
+        title: String?,
+        artists: List<String>,
     ): Flow<Resource<Lyrics>> =
         flow {
             runCatching {
@@ -456,34 +434,7 @@ internal class LyricsCanvasRepositoryImpl(
                     spotify
                         .searchSpotifyTrack(q, authToken, spotifyClientToken)
                         .onSuccess { searchResponse ->
-                            val track =
-                                if (duration != 0 && duration != null) {
-                                    searchResponse.data?.searchV2?.tracksV2?.items?.find {
-                                        abs(
-                                            (
-                                                (
-                                                    (
-                                                        it.item
-                                                            ?.data
-                                                            ?.duration
-                                                            ?.totalMilliseconds ?: (0 / 1000)
-                                                    ) - duration
-                                                )
-                                            ),
-                                        ) < 1
-                                    }
-                                        ?: searchResponse.data
-                                            ?.searchV2
-                                            ?.tracksV2
-                                            ?.items
-                                            ?.firstOrNull()
-                                } else {
-                                    searchResponse.data
-                                        ?.searchV2
-                                        ?.tracksV2
-                                        ?.items
-                                        ?.firstOrNull()
-                                }
+                            val track = searchResponse.trackMatching(duration, title, artists)
                             Logger.d("Lyrics", "track: $track")
                             if (track != null) {
                                 spotify
@@ -751,6 +702,7 @@ internal class LyricsCanvasRepositoryImpl(
                             lyrics
                                 .toLyrics()
                                 .copy(
+                                    id = lyrics.id,
                                     simpMusicLyrics =
                                         SimpMusicLyrics(
                                             id = lyrics.id,
@@ -794,6 +746,49 @@ internal class LyricsCanvasRepositoryImpl(
                 }.onFailure {
                     Logger.e(simpMusicLyricsTag, "Vote Translated Lyrics Error: ${it.message}")
                     emit(Resource.Error<String>(it.message ?: "Failed to vote translated lyrics"))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override suspend fun deleteLyrics(
+        videoId: String,
+        copies: List<Pair<String, String>>,
+    ) {
+        localDataSource.deleteLyrics(videoId)
+        localDataSource.deleteTranslatedLyrics(videoId)
+        copies.forEach { (provider, id) -> localDataSource.insertDeletedLyrics(DeletedLyricsEntity(videoId, provider, id)) }
+    }
+
+    override suspend fun isLyricsDeleted(
+        videoId: String,
+        provider: String,
+        lyricsId: String,
+    ): Boolean = localDataSource.isLyricsDeleted(videoId, provider, lyricsId)
+
+    override fun deleteSimpMusicLyrics(
+        lyricsId: String,
+        contributorEmail: String,
+    ): Flow<Resource<String>> =
+        flow {
+            simpMusicLyrics
+                .deleteLyrics(lyricsId, contributorEmail)
+                .onSuccess { emit(Resource.Success(it.id)) }
+                .onFailure {
+                    logSimpMusicLyricsFailure("Delete Lyrics Error", it)
+                    emit(Resource.Error<String>(it.message ?: "Failed to delete lyrics"))
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun deleteSimpMusicTranslatedLyrics(
+        translatedLyricsId: String,
+        contributorEmail: String,
+    ): Flow<Resource<String>> =
+        flow {
+            simpMusicLyrics
+                .deleteTranslatedLyrics(translatedLyricsId, contributorEmail)
+                .onSuccess { emit(Resource.Success(it.id)) }
+                .onFailure {
+                    logSimpMusicLyricsFailure("Delete Translated Lyrics Error", it)
+                    emit(Resource.Error<String>(it.message ?: "Failed to delete translated lyrics"))
                 }
         }.flowOn(Dispatchers.IO)
 
@@ -1090,6 +1085,44 @@ private fun AMSongWithAlbum.matchesDuration(durationSeconds: Int): Boolean {
     if (durationSeconds <= 0) return true
     return abs(theirs / 1000L - durationSeconds) <= AM_DURATION_TOLERANCE_SECONDS
 }
+
+private const val SPOTIFY_DURATION_TOLERANCE_SECONDS = 3
+
+/**
+ * The Spotify search result that is the song being played: the best [trackMatchScore] of its name and
+ * artists against [title] and [artists], among results as long as the song within
+ * [SPOTIFY_DURATION_TOLERANCE_SECONDS]. A known title or length that nothing matches gives none at all:
+ * the top hit is then another song or another cut, whose lyrics or canvas would not fit. Length alone let
+ * "Told You So" (187 s) stand in for "Told You So (Brooks Remix)" (184 s); the old Levenshtein matcher
+ * (distance 15, under its limit of 20) would have taken it too.
+ */
+private fun SpotifySearchResponse.trackMatching(
+    durationSeconds: Int?,
+    title: String?,
+    artists: List<String>,
+): SpotifySearchResponse.Data.Search.TracksV2.Items? =
+    data
+        ?.searchV2
+        ?.tracksV2
+        ?.items
+        .orEmpty()
+        .mapNotNull { result ->
+            val track = result.item?.data ?: return@mapNotNull null
+            val score =
+                if (title.isNullOrBlank()) {
+                    1f
+                } else {
+                    trackMatchScore(title, artists, track.name.orEmpty(), track.artists?.items?.mapNotNull { it.profile?.name }.orEmpty())
+                }
+            val lengthMatches =
+                durationSeconds == null ||
+                    durationSeconds <= 0 ||
+                    track.duration?.totalMilliseconds?.let { abs(it - durationSeconds * 1000) <= SPOTIFY_DURATION_TOLERANCE_SECONDS * 1000 } == true
+            if (score > 0f && lengthMatches) result to score else null
+        }
+        // The first of the best, so Spotify's own order breaks a tie.
+        .maxByOrNull { it.second }
+        ?.first
 
 /**
  * Whether a credited name is the artist being played. Blank means the row carried no artist at all,

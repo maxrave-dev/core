@@ -16,17 +16,26 @@ class LrclibSelectionTest {
 
     @Test
     fun wordSyncNeverBypassesDurationTolerance() {
-        val outside = record(1, 148f, hasWordSync = true)
+        val outside = record(1, 141f, hasWordSync = true)
         val matching = record(2, 137f)
         assertEquals(matching, selectLrclibLyricsRecord(listOf(outside, matching), 137))
         assertNull(selectLrclibLyricsRecord(listOf(outside), 137))
     }
 
     @Test
-    fun preservesInclusiveTenSecondBoundary() {
+    fun preservesInclusiveThreeSecondBoundary() {
         val plain = record(1, 137f)
-        val boundary = record(2, 147f, hasWordSync = true)
+        val boundary = record(2, 140f, hasWordSync = true)
         assertEquals(boundary, selectLrclibLyricsRecord(listOf(plain, boundary), 137))
+    }
+
+    @Test
+    fun remixTitleSkipsTheOriginalOfTheSameLength() {
+        // Three seconds apart, inside the length tolerance: only the title tells them apart.
+        val original = record(1, 187f).copy(trackName = "Told You So", artistName = "Martin Garrix, Jex")
+        val remix = record(2, 185f).copy(trackName = "Told You So (Brooks Remix)", artistName = "Martin Garrix, Jex & Brooks")
+        assertEquals(remix, selectLrclibLyricsRecord(listOf(original, remix), 184, "Told You So Brooks Remix", "Martin Garrix"))
+        assertNull(selectLrclibLyricsRecord(listOf(original), 184, "Told You So Brooks Remix", "Martin Garrix"))
     }
 
     @Test

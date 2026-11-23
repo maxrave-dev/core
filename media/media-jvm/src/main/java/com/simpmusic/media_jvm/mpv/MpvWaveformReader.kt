@@ -2,6 +2,7 @@ package com.simpmusic.media_jvm.mpv
 
 import com.maxrave.domain.mediaservice.automix.TrackStructure
 import com.maxrave.domain.mediaservice.automix.TrackStructureAnalyzer
+import com.maxrave.domain.mediaservice.player.BassEnvelope
 import com.maxrave.domain.mediaservice.player.WAVEFORM_BARS_PER_SECOND
 import com.maxrave.domain.mediaservice.player.WaveformProgress
 import com.maxrave.logger.Logger
@@ -99,9 +100,33 @@ internal object MpvWaveformReader {
         return FloatArray(bytes.size) { (bytes[it].toInt() and 0xFF) / 255f }
     }
 
+    /**
+     * The lyrics background's bass levels for [mediaId], stored or measured by the same decode as the
+     * waveform. A track measured before bass was, has a `.wf` but no `.bass`, and is decoded once more.
+     */
+    suspend fun bass(
+        mediaId: String,
+        sourceUrl: suspend () -> String?,
+    ): BassEnvelope? =
+        withContext(Dispatchers.IO) {
+            val name = mediaId.replace(UNSAFE_FILE_CHARS, "_")
+            val stored = File(dir, "$name.bass")
+            if (stored.isFile) return@withContext storedBass(stored)
+            decodeLock.withLock {
+                if (stored.isFile) storedBass(stored) else measure(mediaId, name, sourceUrl)?.bass
+            }
+        }
+
+    /** Empty means measured and found unusable (too long, unreadable), so it is not decoded again. */
+    private fun storedBass(stored: File): BassEnvelope? {
+        val bytes = stored.readBytes().takeIf { it.isNotEmpty() } ?: return null
+        return BassEnvelope.fromLevels(FloatArray(bytes.size) { (bytes[it].toInt() and 0xFF) / 255f })
+    }
+
     private class Measured(
         val bars: FloatArray,
         val structure: TrackStructure?,
+        val bass: BassEnvelope?,
     )
 
     private suspend fun measure(
@@ -127,24 +152,39 @@ internal object MpvWaveformReader {
             }
             progress.publish(mediaId, bars)
             File(dir, "$name.wf").writeBytes(ByteArray(bars.size) { (bars[it] * 255f).toInt().coerceIn(0, 255).toByte() })
-            val structure =
+            val samples =
                 pcm
                     .takeIf { it.isFile && it.length() in 2..MAX_ANALYSIS_BYTES }
-                    // Kept apart from the waveform: a failure here must not cost the bars already measured.
-                    ?.let { runCatching { TrackStructureAnalyzer.analyze(readPcm(it)) }.getOrNull() }
+                    ?.let { runCatching { readPcm(it) }.getOrNull() }
+            // Kept apart from the waveform: a failure here must not cost the bars already measured.
+            val structure = samples?.let { runCatching { TrackStructureAnalyzer.analyze(it) }.getOrNull() }
+            val bass = samples?.let { runCatching { bassOf(it) }.getOrNull() }
             // Written even when empty, so a track found unusable is not decoded again for AutoMix.
             File(dir, "$name.mix").writeText(structure?.encode().orEmpty())
+            File(dir, "$name.bass").writeBytes(bass?.let(::encodeBass) ?: ByteArray(0))
             Logger.d(
                 TAG,
                 "AutoMix measured $mediaId: " +
                     (structure?.let { "${it.bpm} BPM, intro ends ${it.introEndMs} ms, last chorus ends ${it.lastChorusEndMs} ms, music ends ${it.musicEndMs} ms" } ?: "nothing usable"),
             )
-            return Measured(bars, structure)
+            return Measured(bars, structure, bass)
         } finally {
             progress.clear(mediaId)
             levels.delete()
             pcm.delete()
         }
+    }
+
+    private fun bassOf(samples: ShortArray): BassEnvelope =
+        BassEnvelope().apply {
+            samples.forEachIndexed { index, sample -> add(index * 1_000_000L / SAMPLE_RATE, sample / 32768f, SAMPLE_RATE) }
+        }
+
+    /** One byte per slot against the loudest; the pulse only compares slots with each other. */
+    private fun encodeBass(bass: BassEnvelope): ByteArray {
+        val levels = bass.levels()
+        val peak = levels.maxOrNull()?.takeIf { it > 0f } ?: return ByteArray(0)
+        return ByteArray(levels.size) { (levels[it] / peak * 255f).toInt().coerceIn(0, 255).toByte() }
     }
 
     /** ao_pcm's output: raw 16-bit little-endian samples, no header (`ao-pcm-waveheader=no`). */
