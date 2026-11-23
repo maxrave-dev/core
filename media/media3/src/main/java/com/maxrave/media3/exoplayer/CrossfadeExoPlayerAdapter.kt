@@ -71,6 +71,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
 
@@ -2753,12 +2754,20 @@ internal class CrossfadeExoPlayerAdapter(
      * 3. Key gap factor: larger Camelot distance → longer crossfade to mask harmonic clash
      * 4. Quantize to beat boundaries, clamp to safe range
      */
+    /**
+     * The BPM a fade's length is worked out from: Tidal's, else the one measured from the waveform. The
+     * measured one sets only the length (7 of 177 tracks measured off by far more than a rounding), never the
+     * tempo match, which stays on Tidal's alone in [calculateBpmSpeedRatio].
+     */
+    private fun bpmForFadeLength(videoId: String): Int? =
+        audioMetaCache[videoId]?.bpm ?: trackStructures[videoId]?.bpm?.roundToInt()
+
     private fun resolveAutoCrossfadeDurationMs(
         currentVideoId: String,
         nextVideoId: String,
     ): Int {
-        val currentBpm = audioMetaCache[currentVideoId]?.bpm
-        val nextBpm = audioMetaCache[nextVideoId]?.bpm
+        val currentBpm = bpmForFadeLength(currentVideoId)
+        val nextBpm = bpmForFadeLength(nextVideoId)
         if (currentBpm == null || nextBpm == null) return AUTO_FALLBACK_DURATION_MS
         if (currentBpm <= 0 || nextBpm <= 0) return AUTO_FALLBACK_DURATION_MS
 
@@ -3063,10 +3072,10 @@ internal class CrossfadeExoPlayerAdapter(
         private const val HPF_END_HZ = 20f // High-pass ends wide open
 
         // AutoMix constants
-        private const val AUTO_FALLBACK_DURATION_MS = 30000 // Default when no BPM data
+        private const val AUTO_FALLBACK_DURATION_MS = 24000 // Default when no BPM data
         private const val STRUCTURE_RETRY_MS = 30_000L
         private const val STRUCTURE_MAX_ATTEMPTS = 3
-        private const val AUTO_MIN_DURATION_MS = 20000
+        private const val AUTO_MIN_DURATION_MS = 15000
         private const val AUTO_MAX_DURATION_MS = 45000
         private val BEAT_COUNT_OPTIONS = intArrayOf(8, 16, 24, 32, 40, 48, 64, 80, 96)
         private const val DEFAULT_BEAT_COUNT = 32

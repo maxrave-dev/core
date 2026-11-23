@@ -60,6 +60,9 @@ class TrackStructureAnalyzerTest {
         val introEnd = assertNotNull(structure.introEndMs)
         assertTrue(abs(introEnd - introEndMs) <= 100, "intro ends $introEnd, expected $introEndMs")
         assertTrue(structure.downbeatsMs.any { abs(it - introEndMs) <= 100 }, "no bar line where the intro ends")
+        // The loud half is the last drop: it starts where the intro ends and runs to the end.
+        val dropStart = assertNotNull(structure.lastChorusStartMs)
+        assertTrue(abs(dropStart - introEndMs) <= 100, "last drop starts $dropStart, expected $introEndMs")
         assertNull(structure.lastChorusEndMs)
     }
 

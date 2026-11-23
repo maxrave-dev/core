@@ -30,8 +30,13 @@ data class TrackStructure(
      */
     val introEndMs: Long? = null,
     /**
-     * Where the last chorus (the parts within 2 dB of the loudest) ends, when a quieter outro of at
-     * most 30 s follows it. Null when the song ends on its chorus or loudness does not separate them.
+     * Where the last chorus (the last run of parts within 2 dB of the loudest: in dance music, the
+     * last drop) starts. Null when loudness does not separate the parts.
+     */
+    val lastChorusStartMs: Long? = null,
+    /**
+     * Where that last chorus ends, when a quieter part (an outro) follows it, however long. Null when
+     * the song ends on its chorus or loudness does not separate the parts.
      */
     val lastChorusEndMs: Long? = null,
 ) {
@@ -39,7 +44,7 @@ data class TrackStructure(
 
     companion object {
         /** Bump whenever the analysis changes, so results stored by an older build are measured again. */
-        const val VERSION = 2
+        const val VERSION = 3
 
         private val json =
             Json {

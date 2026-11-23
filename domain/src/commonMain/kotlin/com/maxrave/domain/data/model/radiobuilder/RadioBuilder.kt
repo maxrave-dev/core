@@ -16,6 +16,11 @@ data class RadioBuilder(
     val seeds: List<RadioSeed>,
     /** In the order YouTube lists them; [com.maxrave.domain.repository.HomeRepository.radioId] relies on it. */
     val sections: List<RadioTuningSection>,
+    /**
+     * The related artists picking a seed brings in, keyed by that seed's token: the taste builder's
+     * lists, which show only their first artist until it is picked.
+     */
+    val related: Map<String, List<RadioSeed>> = emptyMap(),
 )
 
 /**

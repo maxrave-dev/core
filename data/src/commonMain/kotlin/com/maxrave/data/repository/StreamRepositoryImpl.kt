@@ -199,11 +199,18 @@ internal class StreamRepositoryImpl(
                             ", expires in ${response.streamingData?.expiresInSeconds}s",
                     )
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
-                    // AutoMix metadata from Tidal official API
-                    var tidalBpm: Int? = null
-                    var tidalMusicKey: String? = null
-                    var tidalKeyScale: String? = null
-                    if (!isVideo && durationSecond != null && data.third == MediaType.Song) {
+                    // AutoMix metadata from Tidal. What an earlier lookup found is kept: it is never asked
+                    // for again and never wiped by a failed lookup, which is what a 429 used to do on every
+                    // re-resolution. Asked only while AutoMix (crossfade on Auto) is on, the one thing that
+                    // uses it.
+                    val stored = if (isVideo) null else localDataSource.getNewFormat(videoId)
+                    var tidalBpm: Int? = stored?.bpm
+                    var tidalMusicKey: String? = stored?.musicKey
+                    var tidalKeyScale: String? = stored?.keyScale
+                    val autoMixOn =
+                        dataStoreManager.crossfadeEnabled.first() == DataStoreManager.TRUE &&
+                            dataStoreManager.crossfadeDuration.first() == DataStoreManager.CROSSFADE_DURATION_AUTO
+                    if (tidalBpm == null && autoMixOn && !isVideo && durationSecond != null && data.third == MediaType.Song) {
                         val title = response.videoDetails?.title ?: ""
                         val author = response.videoDetails?.author ?: ""
                         val q =

@@ -2651,12 +2651,20 @@ class MpvPlayerAdapter(
         return 30000.0 - (clampedBpm - 70) * 230.0
     }
 
+    /**
+     * The BPM a fade's length is worked out from: Tidal's, else the one measured from the waveform. The
+     * measured one sets only the length (7 of 177 tracks measured off by far more than a rounding), never the
+     * tempo match, which stays on Tidal's alone in [calculateBpmSpeedRatio].
+     */
+    private fun bpmForFadeLength(videoId: String): Int? =
+        audioMetaCache[videoId]?.bpm ?: trackStructures[videoId]?.bpm?.roundToInt()
+
     private fun resolveAutoCrossfadeDurationMs(
         currentVideoId: String,
         nextVideoId: String,
     ): Int {
-        val currentBpm = audioMetaCache[currentVideoId]?.bpm
-        val nextBpm = audioMetaCache[nextVideoId]?.bpm
+        val currentBpm = bpmForFadeLength(currentVideoId)
+        val nextBpm = bpmForFadeLength(nextVideoId)
         if (currentBpm == null || nextBpm == null) return AUTO_FALLBACK_DURATION_MS
         if (currentBpm <= 0 || nextBpm <= 0) return AUTO_FALLBACK_DURATION_MS
 
@@ -2767,10 +2775,10 @@ class MpvPlayerAdapter(
         /** Floor for the shortest track worth crossfading, in ms. */
         private const val MIN_CROSSFADE_TRACK_MS = 20_000L
 
-        private const val AUTO_FALLBACK_DURATION_MS = 30000
+        private const val AUTO_FALLBACK_DURATION_MS = 24000
         private const val STRUCTURE_RETRY_MS = 30_000L
         private const val STRUCTURE_MAX_ATTEMPTS = 3
-        private const val AUTO_MIN_DURATION_MS = 20000
+        private const val AUTO_MIN_DURATION_MS = 15000
         private const val AUTO_MAX_DURATION_MS = 45000
         private val BEAT_COUNT_OPTIONS = intArrayOf(8, 16, 24, 32, 40, 48, 64, 80, 96)
         private const val DEFAULT_BEAT_COUNT = 32

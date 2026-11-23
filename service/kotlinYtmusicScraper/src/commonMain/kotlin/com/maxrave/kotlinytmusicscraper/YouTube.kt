@@ -1330,21 +1330,21 @@ class YouTube {
                 }
             // The taste builder pads the account's own lists with lists headed by the very region list
             // the signed-out page gives (all 100 of them on the owner's account, from the 22nd list
-            // on). Those lists go whole; the account's own go whole too, the related artists they
-            // reveal included, minus any region artist among them.
+            // on). Those lists go whole. The account's own show their first artist, as the web page
+            // does, and the rest come in once it is picked, minus any region artist among them.
             val regional = page.seeds.mapTo(HashSet()) { it.token.removeSuffix("z") }
             val ownLists = tasteLists.filterNot { it.first().token.removeSuffix("z") in regional }
-            val ownArtists =
-                ownLists
-                    .flatten()
-                    .filterNot { it.token.removeSuffix("z") in regional }
-                    .distinctBy { it.token }
+            val heads = ownLists.map { it.first() }.distinctBy { it.token }
+            val related =
+                ownLists.associate { list ->
+                    list.first().token to list.drop(1).filterNot { it.token.removeSuffix("z") in regional }
+                }
             Logger.i(
                 TAG,
                 "Radio builder: ${page.seeds.size} signed-out seeds, ${tasteLists.size} taste builder lists, " +
-                    "${ownLists.size} of them the account's own with ${ownArtists.size} artists",
+                    "${heads.size} of them the account's own with ${related.values.sumOf { it.size }} related artists",
             )
-            page.copy(seeds = ownArtists.ifEmpty { page.seeds })
+            if (heads.isEmpty()) page else page.copy(seeds = heads, related = related)
         }
 
     /**

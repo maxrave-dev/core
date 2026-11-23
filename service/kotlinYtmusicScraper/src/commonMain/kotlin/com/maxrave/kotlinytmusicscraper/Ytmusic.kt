@@ -41,6 +41,7 @@ import io.ktor.client.plugins.HttpRedirect
 import io.ktor.client.plugins.HttpResponseValidator
 import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.contentnegotiation.exclude
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.plugins.logging.DEFAULT
 import io.ktor.client.plugins.logging.LogLevel
@@ -1397,18 +1398,30 @@ class Ytmusic {
         token: String,
         query: String,
     ) = httpClient.get(TIDAL_SEARCH_URL) {
-        header("Authorization", "Bearer $token")
+        // The web player's headers, as in the owner's working curl. Accept-Encoding is left to the
+        // ContentEncoding plugin (br, gzip, deflate): asking for zstd by hand would get a body it cannot decode.
+        // ContentNegotiation adds an Accept for every converter it has (protobuf, xml); this asks for JSON only.
+        exclude(ContentType.Application.ProtoBuf, ContentType.Text.Xml)
         header("Accept", "application/json")
-        header("Referer", "https://tidal.com/")
-        userAgent("Mozilla/5.0 (X11; Linux x86_64; rv:144.0) Gecko/20100101 Firefox/144.0")
+        header("Accept-Language", "vi,en-US;q=0.9,en;q=0.8")
+        userAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:160.0) Gecko/20100101 Firefox/160.0")
+        header("Authorization", "Bearer $token")
+        header("x-tidal-client-version", "2026.11.19")
+        header("x-tidal-token", tidalClientId)
+        // The web player's own parameters, in its order. Since about 2026-11-20 Tidal answers the old set
+        // (query, types=TRACKS, limit=5, countryCode, ...) with an empty 429 from CloudFront whatever the
+        // headers or token, while this set answers 200 with the same audioAnalysisAttributes.
+        parameter("includeContributors", true)
+        parameter("includeDidYouMean", true)
+        parameter("includeUserPlaylists", true)
+        // Picked at random each time: one fixed query string is what started getting 429s.
+        parameter("limit", listOf(4, 6, 8, 10).random())
         parameter("query", query)
+        parameter("supportsUserData", true)
         parameter("types", "TRACKS")
-        parameter("limit", 5)
         parameter("countryCode", "US")
         parameter("locale", "en_US")
         parameter("deviceType", "BROWSER")
-        parameter("includeContributors", true)
-        parameter("supportsUserData", true)
     }
 
     /**
