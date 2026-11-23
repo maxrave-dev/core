@@ -183,7 +183,7 @@ internal class DownloadUtils(
             dataSourceFactory,
             Executor(Runnable::run),
         ).apply {
-            maxParallelDownloads = 20
+            maxParallelDownloads = 4
             minRetryCount = 3
             addListener(
                 MusicDownloadService.TerminalStateNotificationHelper(
