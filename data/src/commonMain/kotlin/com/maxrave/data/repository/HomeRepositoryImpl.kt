@@ -9,6 +9,8 @@ import com.maxrave.data.parser.parseNewRelease
 import com.maxrave.domain.data.model.home.BrowsePage
 import com.maxrave.domain.data.model.home.HomeItem
 import com.maxrave.domain.data.model.home.chart.Chart
+import com.maxrave.domain.data.model.home.isQuickPicksTitle
+import com.maxrave.domain.data.model.home.prioritizeQuickPicksFirst
 import com.maxrave.domain.data.model.mood.Mood
 import com.maxrave.domain.data.model.mood.MoodItem
 import com.maxrave.domain.data.model.mood.MoodSection
@@ -142,7 +144,7 @@ internal class HomeRepositoryImpl(
                                 dataStoreManager.putString("AccountThumbUrl", accountThumbUrl)
                             }
                         }
-                        val continueParam =
+                        var continueParam =
                             result.contents
                                 ?.singleColumnBrowseResultsRenderer
                                 ?.tabs
@@ -170,39 +172,46 @@ internal class HomeRepositoryImpl(
                                 songString,
                             ),
                         )
-//                        var count = 0
-//                        while (count < limit && continueParam != null) {
-//                            youTube
-//                                .customQuery(browseId = "", continuation = continueParam)
-//                                .onSuccess { response ->
-//                                    continueParam =
-//                                        response.continuationContents
-//                                            ?.sectionListContinuation
-//                                            ?.continuations
-//                                            ?.get(
-//                                                0,
-//                                            )?.nextContinuationData
-//                                            ?.continuation
-//                                    Logger.d("Repository", "continueParam: $continueParam")
-//                                    val dataContinue =
-//                                        response.continuationContents?.sectionListContinuation?.contents
-//                                    list.addAll(
-//                                        parseMixedContent(
-//                                            dataContinue,
-//                                            viewString,
-//                                            songString,
-//                                        ),
-//                                    )
-//                                    count++
-//                                    Logger.d("Repository", "count: $count")
-//                                }.onFailure {
-//                                    Logger.e("Repository", "Error: ${it.message}")
-//                                    count++
-//                                }
-//                        }
-                        Logger.d("Repository", "List size: ${list.size}")
+                        // YouTube frequently places Quick picks ("Escolha a dedo" / "Escolhas rápidas")
+                        // on a continuation page rather than page 1. On the main Home feed (params == null),
+                        // prefetch up to MAX_QUICK_PICKS_PREFETCH_PAGES until Quick picks arrives so it loads
+                        // and renders first while the QuickPicks shimmer is still visible.
+                        if (params == null && list.none { isQuickPicksTitle(it.title) }) {
+                            var prefetchPages = 0
+                            while (continueParam != null &&
+                                prefetchPages < MAX_QUICK_PICKS_PREFETCH_PAGES &&
+                                list.none { isQuickPicksTitle(it.title) }
+                            ) {
+                                prefetchPages++
+                                var fetchedContinue = false
+                                youTube
+                                    .customQuery(browseId = "", continuation = continueParam)
+                                    .onSuccess { response ->
+                                        fetchedContinue = true
+                                        continueParam =
+                                            response.continuationContents
+                                                ?.sectionListContinuation
+                                                ?.continuations
+                                                ?.firstOrNull()
+                                                ?.nextContinuationData
+                                                ?.continuation
+                                        val dataContinue =
+                                            response.continuationContents?.sectionListContinuation?.contents
+                                        list.addAll(
+                                            parseMixedContent(
+                                                dataContinue,
+                                                viewString,
+                                                songString,
+                                            ),
+                                        )
+                                    }
+                                if (!fetchedContinue) break
+                            }
+                        }
+                        val prioritized = list.prioritizeQuickPicksFirst()
+                        Logger.d("Repository", "List size: ${prioritized.size}")
                         val background = result.background?.musicThumbnailRenderer?.getThumbnailUrl()
-                        emit(Resource.Success(Triple(continueParam, list.toList(), background)))
+                        emit(Resource.Success(Triple(continueParam, prioritized, background)))
                     }.onFailure { error ->
                         emit(Resource.Error<Triple<String?, List<HomeItem>, String?>>(error.message.toString()))
                     }
@@ -211,6 +220,10 @@ internal class HomeRepositoryImpl(
                 emit(Resource.Error<Triple<String?, List<HomeItem>, String?>>(error.message.toString()))
             }
         }.flowOn(Dispatchers.IO)
+
+    private companion object {
+        const val MAX_QUICK_PICKS_PREFETCH_PAGES = 3
+    }
 
     override fun getHomeDataContinue(
         continueParam: String,

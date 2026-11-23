@@ -45,3 +45,30 @@ data class HomeItem(
         }
     }
 }
+
+fun isQuickPicksTitle(
+    title: String,
+    localizedQuickPicksTitle: String? = null,
+): Boolean =
+    (!localizedQuickPicksTitle.isNullOrBlank() && title.equals(localizedQuickPicksTitle, ignoreCase = true)) ||
+        title.contains("quick pick", ignoreCase = true) ||
+        title.contains("escolha", ignoreCase = true) ||
+        title.contains("selecciones r", ignoreCase = true) ||
+        title.contains("selección r", ignoreCase = true) ||
+        title.contains("sélection r", ignoreCase = true) ||
+        title.contains("schnellauswahl", ignoreCase = true) ||
+        title.contains("scelte rapide", ignoreCase = true) ||
+        title.contains("pilihan cepat", ignoreCase = true)
+
+fun List<HomeItem>.prioritizeQuickPicksFirst(
+    localizedQuickPicksTitle: String? = null,
+): List<HomeItem> {
+    val idx = indexOfFirst { isQuickPicksTitle(it.title, localizedQuickPicksTitle) }
+    if (idx <= 0) return this
+    return buildList(size) {
+        add(this@prioritizeQuickPicksFirst[idx])
+        for (i in this@prioritizeQuickPicksFirst.indices) {
+            if (i != idx) add(this@prioritizeQuickPicksFirst[i])
+        }
+    }
+}
