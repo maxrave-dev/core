@@ -587,4 +587,143 @@ class LyricsResolverTest {
             assertEquals(LyricsSource.LRCLIB, found.resolution.source)
             assertFalse(found.resolution.fromCache)
         }
+
+    @Test
+    fun rejectsWrongBetterLyricsWhenLrclibIsNotFoundAndLetrasJudgeDisagrees() =
+        runBlocking {
+            val wrongBetter =
+                Lyrics(
+                    error = false,
+                    syncType = "RICH_SYNCED",
+                    lines =
+                        listOf(
+                            Line("0", "4000", words = "<00:01.00>Totally <00:01.50>unrelated <00:02.00>chorus <00:02.50>about <00:03.00>midnight"),
+                            Line("4000", "8000", words = "<00:04.00>Dancing <00:04.50>through <00:05.00>tokyo <00:05.50>neon <00:06.00>streets"),
+                        ),
+                )
+            val verifiedLetras =
+                Lyrics(
+                    error = false,
+                    syncType = "UNSYNCED",
+                    lines =
+                        listOf(
+                            Line("0", "0", words = "E por falar em saudade onde anda você"),
+                            Line("0", "0", words = "Onde andam os seus olhos que a gente não vê"),
+                            Line("0", "0", words = "Onde anda esse corpo que me deixou morto"),
+                        ),
+                )
+
+            val resolver =
+                LyricsResolver(
+                    readCache = { null },
+                    fetchSource = { source, _ ->
+                        when (source) {
+                            LyricsSource.BETTER_LYRICS -> ProviderFetchOutcome.Success(wrongBetter)
+                            LyricsSource.LETRAS -> ProviderFetchOutcome.Success(verifiedLetras)
+                            else -> ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                    },
+                    providerTimeoutMs = 500L,
+                    hedgeDelayMs = 10L,
+                )
+
+            val events =
+                withTimeout(2_000L) {
+                    resolver
+                        .resolve(
+                            request().copy(
+                                title = "Onde Anda Você",
+                                artist = "Toquinho, Vinícius de Moraes",
+                                durationSeconds = 167,
+                            ),
+                        ).toList()
+                }.filterIsInstance<LyricsResolutionEvent.Found>()
+
+            val found = events.single()
+            assertEquals(LyricsSource.LETRAS, found.resolution.source)
+            assertEquals("E por falar em saudade onde anda você", found.resolution.lyrics.lines?.first()?.words)
+        }
+
+    @Test
+    fun acceptsBetterLyricsWhenLrclibMissingAndLetrasConfirmsOrAlsoMissing() =
+        runBlocking {
+            val matchingBetter =
+                Lyrics(
+                    error = false,
+                    syncType = "RICH_SYNCED",
+                    lines =
+                        listOf(
+                            Line("1000", "4000", words = "<00:01.00>She <00:01.50>gets <00:02.00>lonely <00:02.50>and <00:03.00>wants <00:03.50>to <00:03.80>hold <00:04.00>me"),
+                            Line("4000", "8000", words = "<00:04.50>Call <00:05.00>my <00:05.50>name <00:06.00>when <00:06.50>you <00:07.00>miss <00:07.50>me"),
+                        ),
+                )
+            val resolverLetras404 =
+                LyricsResolver(
+                    readCache = { null },
+                    fetchSource = { source, _ ->
+                        if (source == LyricsSource.BETTER_LYRICS) {
+                            ProviderFetchOutcome.Success(matchingBetter)
+                        } else {
+                            ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                    },
+                    providerTimeoutMs = 500L,
+                    hedgeDelayMs = 10L,
+                )
+
+            val events =
+                withTimeout(2_000L) {
+                    resolverLetras404.resolve(request()).toList()
+                }.filterIsInstance<LyricsResolutionEvent.Found>()
+            assertEquals(LyricsSource.BETTER_LYRICS, events.single().resolution.source)
+        }
+
+    @Test
+    fun verifiedLrclibReplacesWrongSimpMusicSubmissionAtSameQualityTier() =
+        runBlocking {
+            val wrongSimpMusic =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            Line("1000", "4000", words = "Completamente outra letra de amor antigo"),
+                            Line("4000", "8000", words = "Versos trocados que não pertencem a essa música"),
+                        ),
+                )
+            val rightLrclib =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            Line("1500", "5000", words = "E por falar em saudade onde anda você"),
+                            Line("5000", "9000", words = "Onde andam os seus olhos que a gente não vê"),
+                        ),
+                )
+            val resolver =
+                LyricsResolver(
+                    readCache = { null },
+                    fetchSource = { source, _ ->
+                        when (source) {
+                            LyricsSource.SIMPMUSIC -> ProviderFetchOutcome.Success(wrongSimpMusic)
+                            LyricsSource.LRCLIB -> {
+                                delay(25L)
+                                ProviderFetchOutcome.Success(rightLrclib)
+                            }
+                            else -> ProviderFetchOutcome.DefinitiveNotFound
+                        }
+                    },
+                    providerTimeoutMs = 500L,
+                    hedgeDelayMs = 10L,
+                )
+
+            val events =
+                withTimeout(2_000L) {
+                    resolver.resolve(request()).toList()
+                }.filterIsInstance<LyricsResolutionEvent.Found>()
+
+            assertEquals(listOf(LyricsSource.SIMPMUSIC, LyricsSource.LRCLIB), events.map { it.resolution.source })
+            assertEquals("E por falar em saudade onde anda você", events.last().resolution.lyrics.lines?.first()?.words)
+        }
 }

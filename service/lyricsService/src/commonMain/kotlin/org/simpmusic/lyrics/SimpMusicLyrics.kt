@@ -34,6 +34,7 @@ import org.simpmusic.lyrics.models.request.VoteBody
 import org.simpmusic.lyrics.translation.FreeLyricsTranslator
 import org.simpmusic.lyrics.translation.LetrasTranslationFetcher
 import org.simpmusic.lyrics.translation.VagalumeTranslationFetcher
+import org.simpmusic.lyrics.translation.fillMissingTranslatedLines
 
 class SimpMusicLyrics {
     private var httpClient = createClient()
@@ -380,26 +381,48 @@ class SimpMusicLyrics {
         artistName: String,
         lyrics: Lyrics,
         targetLanguage: String,
-    ): LyricsTranslationResult.Translated? =
-        letrasTranslationFetcher.fetchTranslation(
-            httpClient = httpClient,
-            songTitle = songTitle,
-            artistName = artistName,
-            originalLyrics = lyrics,
-            targetLanguage = targetLanguage,
-        )
+    ): LyricsTranslationResult.Translated? {
+        val result =
+            letrasTranslationFetcher.fetchTranslation(
+                httpClient = httpClient,
+                songTitle = songTitle,
+                artistName = artistName,
+                originalLyrics = lyrics,
+                targetLanguage = targetLanguage,
+            ) ?: return null
+        val filled =
+            fillMissingTranslatedLines(
+                httpClient = httpClient,
+                originalLyrics = lyrics,
+                humanTranslatedLyrics = result.lyrics,
+                targetLanguage = targetLanguage,
+                freeLyricsTranslator = freeLyricsTranslator,
+            )
+        return if (filled === result.lyrics) result else result.copy(lyrics = filled)
+    }
 
     suspend fun fetchVagalumeTranslation(
         songTitle: String,
         artistName: String,
         lyrics: Lyrics,
         targetLanguage: String,
-    ): LyricsTranslationResult.Translated? =
-        vagalumeTranslationFetcher.fetchTranslation(
-            httpClient = httpClient,
-            songTitle = songTitle,
-            artistName = artistName,
-            originalLyrics = lyrics,
-            targetLanguage = targetLanguage,
-        )
+    ): LyricsTranslationResult.Translated? {
+        val result =
+            vagalumeTranslationFetcher.fetchTranslation(
+                httpClient = httpClient,
+                songTitle = songTitle,
+                artistName = artistName,
+                originalLyrics = lyrics,
+                targetLanguage = targetLanguage,
+            ) ?: return null
+        val filled =
+            fillMissingTranslatedLines(
+                httpClient = httpClient,
+                originalLyrics = lyrics,
+                humanTranslatedLyrics = result.lyrics,
+                targetLanguage = targetLanguage,
+                freeLyricsTranslator = freeLyricsTranslator,
+            )
+        return if (filled === result.lyrics) result else result.copy(lyrics = filled)
+    }
 }

@@ -283,8 +283,11 @@ internal class LetrasTranslationFetcher {
 
         val cleanedLines =
             parsed.lines
+                .asSequence()
+                .filterNot(::isLetrasSectionHeaderLine)
                 .map { LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(it) }
                 .filter { it.isNotEmpty() }
+                .toList()
         if (cleanedLines.isEmpty()) return null
 
         return Lyrics(
@@ -382,17 +385,37 @@ internal class LetrasTranslationFetcher {
         }
 }
 
+private val LETRAS_ARTIST_SPLIT_REGEX = Regex("""\s*(?:[,&•/]|feat\.?|ft\.?|featuring|part\.?)\s*""", RegexOption.IGNORE_CASE)
+private val LETRAS_SECTION_HEADER_REGEX =
+    Regex(
+        """^\[\s*(?:(?:pr[eé])[-\s]?)?(?:refr[ãa]o|verso|estrofe|ponte|intro(?:du[çc][ãa]o)?|outro|final|solo|interl[úu]dio|interlude|chorus|verse|bridge|hook|instrumental|breakdown|drop)(?:\s+(?:\d+|[ivx]+|final|principal))?\s*:?\s*\]$""",
+        RegexOption.IGNORE_CASE,
+    )
+
+internal fun isLetrasSectionHeaderLine(line: String): Boolean =
+    LETRAS_SECTION_HEADER_REGEX.matches(line.trim())
+
 internal fun buildLetrasArtistSlugs(artistName: String): List<String> {
-    val cleanArtist =
+    val primaryClean =
         artistName
             .let { FEAT_TAIL_REGEX.replace(it, "") }
             .split(',', '&', '•', '/')
             .firstOrNull()
             .orEmpty()
             .trim()
-    return listOf(toLetrasSlug(cleanArtist), toLetrasSlug(artistName))
-        .filter { it.isNotEmpty() }
-        .distinct()
+    val individualArtists =
+        LETRAS_ARTIST_SPLIT_REGEX
+            .split(artistName)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .take(3)
+    return buildList {
+        add(toLetrasSlug(primaryClean))
+        for (artist in individualArtists) {
+            add(toLetrasSlug(artist))
+        }
+        add(toLetrasSlug(artistName))
+    }.filter { it.isNotEmpty() }.distinct()
 }
 
 internal fun buildLetrasTitleVariants(songTitle: String): List<String> {

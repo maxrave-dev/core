@@ -249,16 +249,23 @@ internal fun alignHumanPairsToLyrics(
                 }
             }
         }
+        val bestSingleTokensMatched =
+            if (bestIdx >= 0) {
+                tokensOrig.count { it in pairTokens[bestIdx] }
+            } else {
+                0
+            }
 
-        // 3. Check whether 2 (or 3) consecutive human pairs combine into this single original line
-        // (common when Letras breaks one synced verse into two short visual lines, e.g. Remi Wolf's Liz).
+        // 3. Check whether 2..4 consecutive human pairs combine into this single original line
+        // (common when Letras breaks one synced verse into multiple short visual lines, e.g. Remi Wolf's Liz).
         if (bestScore < 0.94f) {
             var bestSpanStart = -1
             var bestSpanLen = 0
             var bestSpanScore = bestScore
+            var bestSpanTokensMatched = bestSingleTokensMatched
 
             fun scanMultiSpan(rangeStart: Int, rangeEndExclusive: Int) {
-                for (span in 2..3) {
+                for (span in 2..4) {
                     val lastStart = rangeEndExclusive - span
                     if (lastStart < rangeStart) continue
                     for (p in rangeStart..lastStart) {
@@ -278,17 +285,23 @@ internal fun alignHumanPairsToLyrics(
                             bestSpanScore = score
                             bestSpanStart = p
                             bestSpanLen = span
+                            bestSpanTokensMatched = tokensOrig.count { it in combinedPairTokens }
                         }
                     }
                 }
             }
 
-            scanMultiSpan(cursor, min(pairs.size, forwardEnd + 3))
+            scanMultiSpan(cursor, min(pairs.size, forwardEnd + 4))
             if (bestSpanScore < 0.85f) {
                 scanMultiSpan(0, pairs.size)
             }
 
-            if (bestSpanStart >= 0 && bestSpanScore >= 0.78f && bestSpanScore > bestScore + 0.08f) {
+            val clearGain = bestSpanScore > bestScore + 0.08f
+            val highConfidenceCoverageGain =
+                bestSpanScore >= 0.88f &&
+                    bestSpanScore > bestScore + 0.02f &&
+                    bestSpanTokensMatched > bestSingleTokensMatched
+            if (bestSpanStart >= 0 && bestSpanScore >= 0.78f && (clearGain || highConfidenceCoverageGain)) {
                 val parts =
                     (0 until bestSpanLen).map { offset ->
                         pairs[bestSpanStart + offset].translated
@@ -504,3 +517,117 @@ private fun foldVagalumeAccent(ch: Char): Char =
         'ý', 'ÿ' -> 'y'
         else -> ch
     }
+
+private const val GAP_FILL_STANZA_SEPARATION_MS = 10_000L
+
+internal suspend fun fillMissingTranslatedLines(
+    httpClient: HttpClient,
+    originalLyrics: Lyrics,
+    humanTranslatedLyrics: Lyrics,
+    targetLanguage: String,
+    freeLyricsTranslator: FreeLyricsTranslator,
+): Lyrics =
+    fillMissingTranslatedLinesInternal(
+        originalLyrics = originalLyrics,
+        humanTranslatedLyrics = humanTranslatedLyrics,
+    ) { missingSlice ->
+        freeLyricsTranslator.translate(httpClient, missingSlice, targetLanguage)
+    }
+
+internal suspend fun fillMissingTranslatedLinesWithTransport(
+    transport: FreeTranslationTransport,
+    originalLyrics: Lyrics,
+    humanTranslatedLyrics: Lyrics,
+    targetLanguage: String,
+    freeLyricsTranslator: FreeLyricsTranslator,
+): Lyrics =
+    fillMissingTranslatedLinesInternal(
+        originalLyrics = originalLyrics,
+        humanTranslatedLyrics = humanTranslatedLyrics,
+    ) { missingSlice ->
+        freeLyricsTranslator.translateWithTransport(transport, missingSlice, targetLanguage)
+    }
+
+private suspend fun fillMissingTranslatedLinesInternal(
+    originalLyrics: Lyrics,
+    humanTranslatedLyrics: Lyrics,
+    translateSlice: suspend (Lyrics) -> LyricsTranslationResult,
+): Lyrics {
+    val origLines = originalLyrics.lines ?: return humanTranslatedLyrics
+    val transLines = humanTranslatedLyrics.lines ?: return humanTranslatedLyrics
+    if (origLines.size != transLines.size || origLines.isEmpty()) return humanTranslatedLyrics
+
+    val missingIndices = ArrayList<Int>()
+    for (i in origLines.indices) {
+        if (transLines[i].words.isBlank()) {
+            val cleanOrig = stripRichSyncMarkers(origLines[i].words)
+            if (isTranslatableLyricLine(cleanOrig)) {
+                missingIndices.add(i)
+            }
+        }
+    }
+    if (missingIndices.isEmpty()) return humanTranslatedLyrics
+
+    // Assign monotonic timestamps spaced >= 10s apart whenever missing indices are non-adjacent
+    // so FreeLyricsTranslator never treats separated lines as an enjambment across an already
+    // translated verse, while keeping adjacent missing lines in the same stanza context.
+    var syntheticTimeMs = 10_000L
+    val missingSliceLines = ArrayList<Line>(missingIndices.size)
+    missingIndices.forEachIndexed { pos, lineIdx ->
+        if (pos > 0) {
+            syntheticTimeMs +=
+                if (lineIdx == missingIndices[pos - 1] + 1) {
+                    1_000L
+                } else {
+                    GAP_FILL_STANZA_SEPARATION_MS
+                }
+        }
+        val cleanOrig = stripRichSyncMarkers(origLines[lineIdx].words)
+        missingSliceLines.add(
+            Line(
+                startTimeMs = syntheticTimeMs.toString(),
+                endTimeMs = (syntheticTimeMs + 900L).toString(),
+                syllables = null,
+                words = cleanOrig,
+            ),
+        )
+    }
+
+    val sliceLyrics =
+        Lyrics(
+            error = false,
+            lines = missingSliceLines,
+            syncType = "LINE_SYNCED",
+        )
+
+    val result =
+        try {
+            translateSlice(sliceLyrics)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Logger.d(TAG, "Gap-fill translation skipped: ${t.message}")
+            return humanTranslatedLyrics
+        }
+
+    val filledLines =
+        when (result) {
+            is LyricsTranslationResult.Translated -> result.lyrics.lines.orEmpty()
+            is LyricsTranslationResult.AlreadyInTargetLanguage -> missingSliceLines
+        }
+    if (filledLines.size != missingIndices.size) return humanTranslatedLyrics
+
+    val merged = transLines.toMutableList()
+    var changed = false
+    missingIndices.forEachIndexed { pos, targetIdx ->
+        val rawFill = filledLines[pos].words.trim()
+        if (rawFill.isNotEmpty()) {
+            val cleanFill = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(rawFill)
+            if (cleanFill.isNotEmpty()) {
+                merged[targetIdx] = merged[targetIdx].copy(words = cleanFill)
+                changed = true
+            }
+        }
+    }
+    return if (changed) humanTranslatedLyrics.copy(lines = merged) else humanTranslatedLyrics
+}

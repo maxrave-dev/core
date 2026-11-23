@@ -1,11 +1,16 @@
 package org.simpmusic.lyrics.parser
 
 import kotlinx.serialization.json.Json
+import org.simpmusic.lyrics.isLrclibSyncedLikelyTruncated
+import org.simpmusic.lyrics.lrclibSyncedOverflowMs
 import org.simpmusic.lyrics.models.response.LrclibObject
+import org.simpmusic.lyrics.selectLrclibLyricsRecord
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class LrclibLyricsParsingTest {
     @Test
@@ -105,4 +110,47 @@ class LrclibLyricsParsingTest {
         )
 
     private fun yaml(body: String): String = "version: '1.0'\nmetadata:\n  title: Example\n  artist: Example\n$body"
+
+    @Test
+    fun detectsLikelyTruncatedSyncedLrcAndPrefersCompleteCandidate() {
+        val truncated =
+            LrclibObject(
+                id = 10,
+                name = "Example",
+                trackName = "Example",
+                artistName = "Artist",
+                albumName = null,
+                duration = 200f,
+                instrumental = false,
+                plainLyrics = null,
+                syncedLyrics = "[00:10.00]Verse 1\n[01:15.00]Halfway stopped",
+                hasWordSync = false,
+            )
+        val complete =
+            LrclibObject(
+                id = 11,
+                name = "Example",
+                trackName = "Example",
+                artistName = "Artist",
+                albumName = null,
+                duration = 200f,
+                instrumental = false,
+                plainLyrics = null,
+                syncedLyrics = "[00:10.00]Verse 1\n[01:15.00]Middle\n[03:10.00]Final chorus",
+                hasWordSync = false,
+            )
+
+        assertTrue(isLrclibSyncedLikelyTruncated(truncated, 200))
+        assertFalse(isLrclibSyncedLikelyTruncated(complete, 200))
+        assertEquals(0L, lrclibSyncedOverflowMs(truncated, 200))
+
+        val picked =
+            selectLrclibLyricsRecord(
+                records = listOf(truncated, complete),
+                duration = 200,
+                expectedTrack = "Example",
+                expectedArtist = "Artist",
+            )
+        assertEquals(11, picked?.id)
+    }
 }

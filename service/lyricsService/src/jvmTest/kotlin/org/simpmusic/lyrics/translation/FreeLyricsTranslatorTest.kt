@@ -342,4 +342,169 @@ class FreeLyricsTranslatorTest {
             texts: List<String>,
         ): Pair<Int, String> = googleClients5Handler(texts, targetLanguage)
     }
+
+    @Test
+    fun combinesUpToFourHumanPairsIntoSingleLongSyncedLine() {
+        val pairs =
+            listOf(
+                BilingualLinePair("Oh yeah", "Oh sim"),
+                BilingualLinePair("She gets lonely", "Ela fica sozinha"),
+                BilingualLinePair("and she wants", "e quer"),
+                BilingualLinePair("to hold me close", "me abraçar forte"),
+                BilingualLinePair("Every single night", "Todas as noites"),
+            )
+        val original =
+            Lyrics(
+                error = false,
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        line("1000", "Oh yeah she gets lonely and she wants to hold me close"),
+                        line("5000", "Every single night"),
+                    ),
+            )
+
+        val aligned = alignHumanPairsToLyrics(original, pairs)
+        val lines = aligned?.lines
+        assertEquals(2, lines?.size)
+        assertEquals("Oh sim, ela fica sozinha e quer, me abraçar forte", lines!![0].words)
+        assertEquals("Todas as noites", lines[1].words)
+
+        // High-confidence token coverage gain (+0.03..+0.07 score lift where span adds tail tokens)
+        val subtlePairs =
+            listOf(
+                BilingualLinePair(
+                    original = "She gets lonely inside her empty room all night",
+                    translated = "Ela fica sozinha no quarto vazio a noite toda",
+                ),
+                BilingualLinePair(
+                    original = "and cries",
+                    translated = "e chora",
+                ),
+            )
+        val subtleOrig =
+            Lyrics(
+                error = false,
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        line("1000", "She gets lonely inside her empty room all night and cries"),
+                    ),
+            )
+        val subtleAligned = alignHumanPairsToLyrics(subtleOrig, subtlePairs)
+        assertEquals(
+            "Ela fica sozinha no quarto vazio a noite toda e chora",
+            subtleAligned?.lines?.single()?.words,
+        )
+    }
+
+    @Test
+    fun fillMissingTranslatedLinesTranslatesOnlyBlankGapsAndSkipsNetworkWhenComplete() {
+        runBlocking {
+            val original =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            line("1000", "First matched line"),
+                            line("3000", "Missing middle verse"),
+                            line("5000", "Last matched line"),
+                        ),
+                )
+            val completeHuman =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            line("1000", "Primeira linha"),
+                            line("3000", "Verso do meio"),
+                            line("5000", "Última linha"),
+                        ),
+                )
+
+            val translator = FreeLyricsTranslator()
+            val noOpTransport = FakeTransport()
+            val unchanged =
+                fillMissingTranslatedLinesWithTransport(
+                    transport = noOpTransport,
+                    originalLyrics = original,
+                    humanTranslatedLyrics = completeHuman,
+                    targetLanguage = "pt",
+                    freeLyricsTranslator = translator,
+                )
+            assertEquals(0, noOpTransport.edgeCalls)
+            assertEquals(completeHuman.lines, unchanged.lines)
+
+            val partialHuman =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            line("1000", "Primeira linha"),
+                            line("3000", ""),
+                            line("5000", "Última linha"),
+                        ),
+                )
+            val fillTransport =
+                FakeTransport().apply {
+                    edgeHandler = { texts, _ ->
+                        assertEquals(listOf("Missing middle verse"), texts)
+                        200 to """[{"detectedLanguage":{"language":"en","score":1.0},"translations":[{"text":"Verso perdido do meio.","to":"pt"}]}]"""
+                    }
+                }
+            val filled =
+                fillMissingTranslatedLinesWithTransport(
+                    transport = fillTransport,
+                    originalLyrics = original,
+                    humanTranslatedLyrics = partialHuman,
+                    targetLanguage = "pt",
+                    freeLyricsTranslator = translator,
+                )
+            assertEquals(1, fillTransport.edgeCalls)
+            assertEquals(
+                listOf("Primeira linha", "Verso perdido do meio", "Última linha"),
+                filled.lines!!.map { it.words },
+            )
+        }
+    }
+
+    @Test
+    fun buildsMultiArtistLetrasSlugsAndStripsSectionHeadersFromOriginalLyrics() {
+        runBlocking {
+            val slugs = buildLetrasArtistSlugs("Remi Wolf, Dominic Fike")
+            assertEquals(listOf("remi-wolf", "dominic-fike", "remi-wolf-dominic-fike"), slugs)
+
+            val fetcher = LetrasTranslationFetcher()
+            val transport =
+                LetrasTransport { url ->
+                    if (url.endsWith("/artist-b/duet-song/")) {
+                        LetrasPageFetchResult.Ok(
+                            finalPath = "/artist-b/duet-song/",
+                            html =
+                                """
+                                <html>
+                                <head><link rel="canonical" href="https://www.letras.mus.br/artist-b/duet-song/" /></head>
+                                <body>
+                                  <h1>Duet Song</h1>
+                                  <div class="lyric-original">
+                                    <p>[Refrão]<br>First sung line,<br>(Ooh yeah)<br>[Outro]<br>Final line.</p>
+                                  </div>
+                                </body>
+                                </html>
+                                """.trimIndent(),
+                        )
+                    } else {
+                        LetrasPageFetchResult.NotFound
+                    }
+                }
+            val lyrics = fetcher.fetchOriginalLyrics(transport, "Duet Song", "Artist A, Artist B")
+            assertEquals(
+                listOf("First sung line", "(Ooh yeah)", "Final line"),
+                lyrics?.lines?.map { it.words },
+            )
+        }
+    }
 }

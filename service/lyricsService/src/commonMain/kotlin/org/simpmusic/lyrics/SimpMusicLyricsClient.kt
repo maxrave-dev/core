@@ -260,7 +260,7 @@ class SimpMusicLyricsClient(
         suspendRunCatching {
             val validDuration = duration?.takeIf { it > 0 }
             val candidates = LyricsQueryNormalizer.buildQueryCandidates(q_track, q_artist)
-            var overflowSyncedFallbackRecord: LrclibObject? = null
+            val deferredSyncedRecords = ArrayList<LrclibObject>(3)
             var plainFallbackRecord: LrclibObject? = null
             var confirmedInstrumental = false
 
@@ -280,13 +280,14 @@ class SimpMusicLyricsClient(
                         }
                         if (metaOk && !exact.instrumental) {
                             if (exact.hasWordSync || !exact.syncedLyrics.isNullOrBlank()) {
-                                if (lrclibSyncedOverflowMs(exact, validDuration) == 0L) {
+                                val overflowMs = lrclibSyncedOverflowMs(exact, validDuration)
+                                val truncated = isLrclibSyncedLikelyTruncated(exact, validDuration)
+                                if (overflowMs == 0L && !truncated) {
                                     parseLrclibLyrics(exact)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
-                                } else if (overflowSyncedFallbackRecord == null) {
-                                    // Timestamps extend past track duration (e.g., music-video cut
-                                    // LRC uploaded to a shorter audio release); keep as fallback
-                                    // and continue to /api/search for a properly timed record.
-                                    overflowSyncedFallbackRecord = exact
+                                } else {
+                                    // Defer overflowing (wrong video cut) or likely truncated LRC
+                                    // so /api/search can surface a more complete timed record.
+                                    deferredSyncedRecords.add(exact)
                                 }
                             }
                             if (!exact.plainLyrics.isNullOrBlank() && plainFallbackRecord == null) {
@@ -314,29 +315,43 @@ class SimpMusicLyricsClient(
                             )
                         if (best != null) {
                             val bestHasSync = best.hasWordSync || !best.syncedLyrics.isNullOrBlank()
-                            if (!bestHasSync || lrclibSyncedOverflowMs(best, validDuration) == 0L) {
+                            if (!bestHasSync) {
                                 parseLrclibLyrics(best)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
-                            } else if (overflowSyncedFallbackRecord == null ||
-                                lrclibSyncedOverflowMs(best, validDuration) <
-                                lrclibSyncedOverflowMs(overflowSyncedFallbackRecord, validDuration)
-                            ) {
-                                overflowSyncedFallbackRecord = best
+                            } else {
+                                val overflowMs = lrclibSyncedOverflowMs(best, validDuration)
+                                val truncated = isLrclibSyncedLikelyTruncated(best, validDuration)
+                                if (overflowMs == 0L && !truncated) {
+                                    parseLrclibLyrics(best)?.let { return@suspendRunCatching LrclibSearchResult.Found(it) }
+                                } else {
+                                    deferredSyncedRecords.add(best)
+                                }
                             }
                         } else if (hasMatchingInstrumentalRecord(rs, validDuration, q_track, q_artist)) {
                             confirmedInstrumental = true
                         }
                     }
                     else ->
-                        if (overflowSyncedFallbackRecord == null && plainFallbackRecord == null && !confirmedInstrumental) {
+                        if (deferredSyncedRecords.isEmpty() && plainFallbackRecord == null && !confirmedInstrumental) {
                             throw SimpMusicLyricsApiException(response.status.value, "LRCLIB failed: ${response.status.value}")
                         }
                 }
             }
 
-            if (confirmedInstrumental && overflowSyncedFallbackRecord == null && plainFallbackRecord == null) {
+            if (confirmedInstrumental && deferredSyncedRecords.isEmpty() && plainFallbackRecord == null) {
                 return@suspendRunCatching LrclibSearchResult.ConfirmedInstrumental
             }
-            (overflowSyncedFallbackRecord ?: plainFallbackRecord)
+            val bestDeferred =
+                if (deferredSyncedRecords.isNotEmpty()) {
+                    selectLrclibLyricsRecord(
+                        records = deferredSyncedRecords,
+                        duration = duration,
+                        expectedTrack = q_track,
+                        expectedArtist = q_artist,
+                    ) ?: deferredSyncedRecords.firstOrNull()
+                } else {
+                    null
+                }
+            (bestDeferred ?: plainFallbackRecord)
                 ?.let { parseLrclibLyrics(it) }
                 ?.let { LrclibSearchResult.Found(it) }
                 ?: LrclibSearchResult.NotFound
@@ -577,21 +592,22 @@ internal fun hasMatchingInstrumentalRecord(
 private val LRCLIB_LINE_TS_REGEX = Regex("""^\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.*)$""")
 private const val LRCLIB_SUNG_OVERFLOW_TOLERANCE_MS = 300L
 private const val LRCLIB_ANY_OVERFLOW_TOLERANCE_MS = 1_500L
+private const val LRCLIB_TRUNCATED_MIN_DURATION_SEC = 90
+private const val LRCLIB_TRUNCATED_COVERAGE_THRESHOLD = 0.60
 
-/**
- * Returns `0L` when the LRCLIB record's synced timestamps fit cleanly inside [durationSeconds],
- * or a positive overflow magnitude in milliseconds when lines extend past the track's end
- * (e.g. a longer music-video LRC mistakenly uploaded against a shorter audio duration).
- */
-internal fun lrclibSyncedOverflowMs(
+internal data class LrclibTimingMetrics(
+    val overflowMs: Long,
+    val maxSungStartMs: Long,
+)
+
+internal fun analyzeLrclibTiming(
     record: LrclibObject,
     durationSeconds: Int?,
-): Long {
-    val validDuration = durationSeconds?.takeIf { it > 0 } ?: return 0L
+): LrclibTimingMetrics {
+    val validDuration = durationSeconds?.takeIf { it > 0 }
     val synced = record.syncedLyrics
-    if (synced.isNullOrBlank()) return 0L
+    if (synced.isNullOrBlank()) return LrclibTimingMetrics(overflowMs = 0L, maxSungStartMs = 0L)
 
-    val durationMs = validDuration * 1_000L
     var maxSungStartMs = 0L
     var maxAnyStartMs = 0L
 
@@ -614,9 +630,40 @@ internal fun lrclibSyncedOverflowMs(
         }
     }
 
-    val sungOverflow = (maxSungStartMs - (durationMs + LRCLIB_SUNG_OVERFLOW_TOLERANCE_MS)).coerceAtLeast(0L)
-    val anyOverflow = (maxAnyStartMs - (durationMs + LRCLIB_ANY_OVERFLOW_TOLERANCE_MS)).coerceAtLeast(0L)
-    return maxOf(sungOverflow, anyOverflow)
+    val overflowMs =
+        if (validDuration == null) {
+            0L
+        } else {
+            val durationMs = validDuration * 1_000L
+            val sungOverflow = (maxSungStartMs - (durationMs + LRCLIB_SUNG_OVERFLOW_TOLERANCE_MS)).coerceAtLeast(0L)
+            val anyOverflow = (maxAnyStartMs - (durationMs + LRCLIB_ANY_OVERFLOW_TOLERANCE_MS)).coerceAtLeast(0L)
+            maxOf(sungOverflow, anyOverflow)
+        }
+    return LrclibTimingMetrics(overflowMs = overflowMs, maxSungStartMs = maxSungStartMs)
+}
+
+/**
+ * Returns `0L` when the LRCLIB record's synced timestamps fit cleanly inside [durationSeconds],
+ * or a positive overflow magnitude in milliseconds when lines extend past the track's end
+ * (e.g. a longer music-video LRC mistakenly uploaded against a shorter audio duration).
+ */
+internal fun lrclibSyncedOverflowMs(
+    record: LrclibObject,
+    durationSeconds: Int?,
+): Long = analyzeLrclibTiming(record, durationSeconds).overflowMs
+
+/**
+ * Returns `true` when synced LRC lines appear to end far too early (< 60% of a >= 90s track),
+ * signalling a likely truncated upload that should not short-circuit before scanning `/api/search`.
+ */
+internal fun isLrclibSyncedLikelyTruncated(
+    record: LrclibObject,
+    durationSeconds: Int?,
+): Boolean {
+    val validDuration = durationSeconds?.takeIf { it >= LRCLIB_TRUNCATED_MIN_DURATION_SEC } ?: return false
+    if (record.syncedLyrics.isNullOrBlank()) return false
+    val maxSungStartMs = analyzeLrclibTiming(record, validDuration).maxSungStartMs
+    return maxSungStartMs > 0L && maxSungStartMs < (validDuration * 1_000L * LRCLIB_TRUNCATED_COVERAGE_THRESHOLD).toLong()
 }
 
 internal fun selectLrclibLyricsRecord(
@@ -645,8 +692,10 @@ internal fun selectLrclibLyricsRecord(
         return syncedCandidates.minWith(
             compareBy<LrclibObject>(
                 { lrclibSyncedOverflowMs(it, validDuration) > 0L },
+                { isLrclibSyncedLikelyTruncated(it, validDuration) },
                 { !it.hasWordSync },
                 { lrclibSyncedOverflowMs(it, validDuration) },
+                { -analyzeLrclibTiming(it, validDuration).maxSungStartMs },
             ),
         )
     }
