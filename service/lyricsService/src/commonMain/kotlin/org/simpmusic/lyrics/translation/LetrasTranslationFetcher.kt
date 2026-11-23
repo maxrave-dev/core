@@ -53,6 +53,7 @@ internal data class LetrasParsedTranslationPage(
     val canonicalHref: String?,
     val headingTitle: String,
     val pairs: List<BilingualLinePair>,
+    val isAutoTranslated: Boolean = false,
 )
 
 internal data class LetrasParsedOriginalPage(
@@ -315,7 +316,7 @@ internal class LetrasTranslationFetcher {
         if (!isValidLetrasTranslationPath(finalPath, artistSlug)) return null
 
         val parsed = parseLetrasTranslationPage(result.html)
-        if (parsed.pairs.isEmpty()) return null
+        if (parsed.isAutoTranslated || parsed.pairs.isEmpty()) return null
 
         val canonicalPath = parsed.canonicalHref?.let(::normalizeLetrasPath)
         if (canonicalPath != null && !isValidLetrasTranslationPath(canonicalPath, artistSlug)) {
@@ -502,6 +503,8 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
     val h1Buf = StringBuilder()
     var inFirstH1 = false
     var seenFirstH1 = false
+    var skipDepth = 0
+    var isAutoTranslated = false
 
     var divDepth = 0
     var spanDepth = 0
@@ -524,6 +527,12 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
                         isImplied: Boolean,
                     ) {
                         val tag = name.lowercase()
+                        if (tag == "script" || tag == "style" || tag == "noscript") {
+                            skipDepth++
+                            return
+                        }
+                        if (skipDepth > 0) return
+
                         when (tag) {
                             "link" -> {
                                 if (canonicalHref == null &&
@@ -580,6 +589,7 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
                     }
 
                     override fun onText(text: String) {
+                        if (skipDepth > 0) return
                         if (inFirstH1) {
                             h1Buf.append(text)
                         }
@@ -587,6 +597,18 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
                             when {
                                 romanSpanDepth > 0 -> origBuf.append(text)
                                 tradSpanDepth > 0 -> tradBuf.append(text)
+                            }
+                        } else if (!isAutoTranslated && stackedContainerDivDepth == -1) {
+                            val normalized =
+                                cleanParsedText(text)
+                                    .lowercase()
+                                    .map(::foldLetrasAccent)
+                                    .joinToString("")
+                            if (normalized == "traducao automatica" ||
+                                normalized == "automatic translation" ||
+                                normalized == "traduccion automatica"
+                            ) {
+                                isAutoTranslated = true
                             }
                         }
                     }
@@ -596,6 +618,12 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
                         isImplied: Boolean,
                     ) {
                         val tag = name.lowercase()
+                        if (tag == "script" || tag == "style" || tag == "noscript") {
+                            if (skipDepth > 0) skipDepth--
+                            return
+                        }
+                        if (skipDepth > 0) return
+
                         when (tag) {
                             "h1" -> {
                                 if (inFirstH1) {
@@ -641,6 +669,7 @@ internal fun parseLetrasTranslationPage(html: String): LetrasParsedTranslationPa
         canonicalHref = canonicalHref,
         headingTitle = cleanParsedText(h1Buf),
         pairs = pairs,
+        isAutoTranslated = isAutoTranslated,
     )
 }
 

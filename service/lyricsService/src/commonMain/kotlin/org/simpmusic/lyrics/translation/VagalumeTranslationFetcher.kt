@@ -207,6 +207,8 @@ internal fun alignHumanPairsToLyrics(
     val pairTokens = pairNorms.map { tokenizeForMatch(it) }
 
     val matchedTranslations = arrayOfNulls<String>(lines.size)
+    val syncedOriginals = arrayOfNulls<String>(lines.size)
+    val matchedHumanOriginals = arrayOfNulls<String>(lines.size)
     var totalTranslatable = 0
     var matchedCount = 0
     var cursor = 0
@@ -220,6 +222,7 @@ internal fun alignHumanPairsToLyrics(
             continue
         }
         totalTranslatable++
+        syncedOriginals[index] = cleanOrig
 
         val normOrig = normalizeForMatch(cleanOrig)
         val tokensOrig = tokenizeForMatch(normOrig)
@@ -302,11 +305,23 @@ internal fun alignHumanPairsToLyrics(
                     bestSpanScore > bestScore + 0.02f &&
                     bestSpanTokensMatched > bestSingleTokensMatched
             if (bestSpanStart >= 0 && bestSpanScore >= 0.78f && (clearGain || highConfidenceCoverageGain)) {
-                val parts =
+                val origParts =
+                    (0 until bestSpanLen).map { offset ->
+                        pairs[bestSpanStart + offset].original
+                    }
+                val tradParts =
                     (0 until bestSpanLen).map { offset ->
                         pairs[bestSpanStart + offset].translated
                     }
-                matchedTranslations[index] = joinHumanTranslatedParts(parts)
+                val combinedHumanOrig = origParts.joinToString(" ")
+                val joinedTrad = joinHumanTranslatedParts(tradParts)
+                matchedHumanOriginals[index] = combinedHumanOrig
+                matchedTranslations[index] =
+                    trimStrayEdgeVocalizations(
+                        syncedOrig = cleanOrig,
+                        humanOrig = combinedHumanOrig,
+                        humanTrad = joinedTrad,
+                    )
                 matchedCount++
                 if (bestSpanStart in cursor..forwardEnd) {
                     cursor = (bestSpanStart + bestSpanLen).coerceAtMost(pairs.lastIndex)
@@ -347,6 +362,7 @@ internal fun alignHumanPairsToLyrics(
                             translated = pairs[mergedIdx].translated,
                             originalParts = listOf(cleanOrig, nextClean),
                         )
+                    syncedOriginals[index + 1] = nextClean
                     matchedTranslations[index] = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(splitParts[0])
                     matchedTranslations[index + 1] = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(splitParts[1])
                     totalTranslatable++
@@ -362,7 +378,14 @@ internal fun alignHumanPairsToLyrics(
         if (mergedHandled) continue
 
         if (bestIdx >= 0 && bestScore >= MIN_PAIR_SIMILARITY) {
-            matchedTranslations[index] = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(pairs[bestIdx].translated)
+            val cleanedTrad = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(pairs[bestIdx].translated)
+            matchedHumanOriginals[index] = pairs[bestIdx].original
+            matchedTranslations[index] =
+                trimStrayEdgeVocalizations(
+                    syncedOrig = cleanOrig,
+                    humanOrig = pairs[bestIdx].original,
+                    humanTrad = cleanedTrad,
+                )
             matchedCount++
             if (bestIdx in cursor..forwardEnd) {
                 cursor = (bestIdx + 1).coerceAtMost(pairs.lastIndex)
@@ -374,6 +397,12 @@ internal fun alignHumanPairsToLyrics(
     if (totalTranslatable == 0) return null
     val coverage = matchedCount.toFloat() / totalTranslatable.toFloat()
     if (coverage < MIN_COVERAGE_RATIO) return null
+
+    rebalanceBoundaryConnectorWords(
+        syncedOriginals = syncedOriginals,
+        matchedHumanOriginals = matchedHumanOriginals,
+        matchedTranslations = matchedTranslations,
+    )
 
     val outputLines =
         lines.mapIndexed { index, line ->
@@ -630,4 +659,215 @@ private suspend fun fillMissingTranslatedLinesInternal(
         }
     }
     return if (changed) humanTranslatedLyrics.copy(lines = merged) else humanTranslatedLyrics
+}
+
+private val EDGE_VOCALIZATION_EQUIVALENTS: Map<String, Set<String>> =
+    mapOf(
+        "oh" to setOf("oh", "ooh", "oooh", "oh-oh", "ai", "ó"),
+        "ooh" to setOf("oh", "ooh", "oooh", "oh-oh", "ai", "ó"),
+        "oooh" to setOf("oh", "ooh", "oooh", "ai"),
+        "oh-oh" to setOf("oh", "ooh", "oh-oh", "ai"),
+        "ooh-ooh" to setOf("oh", "ooh", "ooh-ooh", "oh-oh", "ai"),
+        "ah" to setOf("ah", "aah", "ah-ah", "ai"),
+        "aah" to setOf("ah", "aah", "ai"),
+        "ah-ah" to setOf("ah", "ah-ah", "ai"),
+        "uh" to setOf("uh", "uhh", "uh-uh"),
+        "uhh" to setOf("uh", "uhh"),
+        "uh-uh" to setOf("uh", "uh-uh"),
+        "yeah" to setOf("yeah", "yea", "sim"),
+        "yea" to setOf("yeah", "yea", "sim"),
+        "yah" to setOf("yeah", "yah", "sim"),
+        "whoa" to setOf("whoa", "woah", "uau", "ei"),
+        "woah" to setOf("whoa", "woah", "uau", "ei"),
+        "hey" to setOf("hey", "ei"),
+        "hm" to setOf("hm", "hmm", "mm", "mmm"),
+        "hmm" to setOf("hm", "hmm", "mm", "mmm"),
+        "mm" to setOf("hm", "hmm", "mm", "mmm"),
+        "mmm" to setOf("hm", "hmm", "mm", "mmm"),
+    )
+
+private val BOUNDARY_CONNECTOR_EQUIVALENTS: Map<String, Set<String>> =
+    mapOf(
+        "when" to setOf("quando"),
+        "and" to setOf("e"),
+        "but" to setOf("mas", "porém", "porem"),
+        "or" to setOf("ou"),
+        "so" to setOf("então", "entao"),
+        "that" to setOf("que"),
+        "if" to setOf("se"),
+        "because" to setOf("porque", "pois"),
+        "cause" to setOf("porque", "pois"),
+        "cuz" to setOf("porque", "pois"),
+        "while" to setOf("enquanto"),
+        "where" to setOf("onde"),
+        "until" to setOf("até", "ate"),
+        "til" to setOf("até", "ate"),
+        "till" to setOf("até", "ate"),
+        "before" to setOf("antes"),
+        "after" to setOf("depois"),
+        "since" to setOf("desde"),
+        "though" to setOf("embora"),
+        "although" to setOf("embora"),
+        "like" to setOf("como"),
+        "as" to setOf("como"),
+        "with" to setOf("com"),
+        "without" to setOf("sem"),
+        "oh" to setOf("oh", "ai"),
+    )
+
+private val TRAILING_WORD_SPLIT_REGEX = Regex("""^(.*?)[\s,;—–-]+([^\s,;—–-]+)\s*$""")
+private val LEADING_COMMA_WORD_REGEX = Regex("""^([^\s,;—–-]+)\s*[,;—–-]\s+(.+)$""")
+private val LEADING_WORD_REGEX = Regex("""^([^\s]+)\s+(.+)$""")
+
+private fun edgeTokenNormalized(rawWord: String): String =
+    rawWord
+        .trim { !it.isLetterOrDigit() && it != '-' }
+        .lowercase()
+        .map { if (it == '-') '-' else foldVagalumeAccent(it) }
+        .joinToString("")
+
+private fun firstEdgeToken(text: String): String {
+    val first = text.trim().substringBefore(' ')
+    return edgeTokenNormalized(first)
+}
+
+private fun lastEdgeToken(text: String): String {
+    val last = text.trim().substringAfterLast(' ')
+    return edgeTokenNormalized(last)
+}
+
+internal fun trimStrayEdgeVocalizations(
+    syncedOrig: String,
+    humanOrig: String,
+    humanTrad: String,
+): String {
+    var result = humanTrad.trim()
+    if (result.isEmpty()) return result
+
+    // 1. Trailing stray vocalization (e.g. human had "shoplifting, oh" while synced had "shoplifting").
+    val lastHuman = lastEdgeToken(humanOrig)
+    val allowedTrailing = EDGE_VOCALIZATION_EQUIVALENTS[lastHuman]
+    if (allowedTrailing != null) {
+        val lastSynced = lastEdgeToken(syncedOrig)
+        val baseHuman = lastHuman.substringBefore('-')
+        val syncedAlsoEndsWithIt =
+            lastSynced == lastHuman ||
+                lastSynced == baseHuman ||
+                lastSynced.substringBefore('-') == baseHuman
+        if (!syncedAlsoEndsWithIt) {
+            val match = TRAILING_WORD_SPLIT_REGEX.matchEntire(result)
+            if (match != null) {
+                val prefix = match.groupValues[1].trim()
+                val tailToken = edgeTokenNormalized(match.groupValues[2])
+                if (tailToken in allowedTrailing && prefix.contains(' ')) {
+                    result = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(prefix)
+                }
+            }
+        }
+    }
+
+    // 2. Leading stray vocalization (e.g. human had "Oh, it was Liz" while synced had "It was Liz").
+    val firstHuman = firstEdgeToken(humanOrig)
+    val allowedLeading = EDGE_VOCALIZATION_EQUIVALENTS[firstHuman]
+    if (allowedLeading != null) {
+        val firstSynced = firstEdgeToken(syncedOrig)
+        val baseHuman = firstHuman.substringBefore('-')
+        val syncedAlsoStartsWithIt =
+            firstSynced == firstHuman ||
+                firstSynced == baseHuman ||
+                firstSynced.substringBefore('-') == baseHuman
+        if (!syncedAlsoStartsWithIt) {
+            val match = LEADING_COMMA_WORD_REGEX.matchEntire(result)
+            if (match != null) {
+                val headToken = edgeTokenNormalized(match.groupValues[1])
+                val remainder = match.groupValues[2].trim()
+                if (headToken in allowedLeading && remainder.isNotEmpty()) {
+                    result = capitalizeFirstLetter(remainder)
+                }
+            }
+        }
+    }
+
+    return result
+}
+
+internal fun rebalanceBoundaryConnectorWords(
+    syncedOriginals: Array<String?>,
+    matchedHumanOriginals: Array<String?>,
+    matchedTranslations: Array<String?>,
+) {
+    for (i in 0 until syncedOriginals.size - 1) {
+        val syncedA = syncedOriginals[i] ?: continue
+        val syncedB = syncedOriginals[i + 1] ?: continue
+        val humanA = matchedHumanOriginals[i] ?: continue
+        val humanB = matchedHumanOriginals[i + 1] ?: continue
+        val tradA = matchedTranslations[i]?.takeIf { it.isNotBlank() } ?: continue
+        val tradB = matchedTranslations[i + 1]?.takeIf { it.isNotBlank() } ?: continue
+
+        // Direction A: connector sat at end of humanA ("... kitchen when") while synced put it at start of syncedB ("When nobody...").
+        val humanAEnd = lastEdgeToken(humanA)
+        val equivsA = BOUNDARY_CONNECTOR_EQUIVALENTS[humanAEnd]
+        if (equivsA != null &&
+            firstEdgeToken(syncedB) == humanAEnd &&
+            lastEdgeToken(syncedA) != humanAEnd &&
+            firstEdgeToken(humanB) != humanAEnd
+        ) {
+            val tradAMatch = TRAILING_WORD_SPLIT_REGEX.matchEntire(tradA)
+            if (tradAMatch != null) {
+                val prefixA = tradAMatch.groupValues[1].trim()
+                val rawMoved = tradAMatch.groupValues[2].trim()
+                val movedNorm = edgeTokenNormalized(rawMoved)
+                if (movedNorm in equivsA &&
+                    prefixA.isNotEmpty() &&
+                    firstEdgeToken(tradB) !in equivsA
+                ) {
+                    val movedWord = capitalizeFirstLetter(rawMoved.trimEnd(',', ';', '.'))
+                    val adjustedB = lowercaseLeadingCommonWord(tradB)
+                    matchedTranslations[i] = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation(prefixA)
+                    matchedTranslations[i + 1] = "$movedWord $adjustedB"
+                    continue
+                }
+            }
+        }
+
+        // Direction B: connector sat at start of humanB while synced put it at end of syncedA.
+        val humanBStart = firstEdgeToken(humanB)
+        val equivsB = BOUNDARY_CONNECTOR_EQUIVALENTS[humanBStart]
+        if (equivsB != null &&
+            lastEdgeToken(syncedA) == humanBStart &&
+            lastEdgeToken(humanA) != humanBStart &&
+            firstEdgeToken(syncedB) != humanBStart
+        ) {
+            val tradBMatch = LEADING_WORD_REGEX.matchEntire(tradB)
+            if (tradBMatch != null) {
+                val rawMoved = tradBMatch.groupValues[1].trim()
+                val remainderB = tradBMatch.groupValues[2].trim()
+                val movedNorm = edgeTokenNormalized(rawMoved)
+                if (movedNorm in equivsB &&
+                    remainderB.isNotEmpty() &&
+                    lastEdgeToken(tradA) !in equivsB
+                ) {
+                    val loweredMoved = rawMoved.trimEnd(',', ';', '.').lowercase()
+                    matchedTranslations[i] = LyricsHeaderSanitizer.cleanTranslatedLinePunctuation("$tradA $loweredMoved")
+                    matchedTranslations[i + 1] = capitalizeFirstLetter(remainderB)
+                }
+            }
+        }
+    }
+}
+
+private fun capitalizeFirstLetter(text: String): String {
+    if (text.isEmpty()) return text
+    return text[0].uppercaseChar() + text.substring(1)
+}
+
+private fun lowercaseLeadingCommonWord(text: String): String {
+    if (text.isEmpty() || !text[0].isUpperCase()) return text
+    val firstWordEnd = text.indexOfFirst { !it.isLetter() }.let { if (it < 0) text.length else it }
+    val firstWordLower = text.substring(0, firstWordEnd).lowercase()
+    return if (firstWordLower in CONTINUATION_LOWERCASE_WORDS) {
+        text[0].lowercaseChar() + text.substring(1)
+    } else {
+        text
+    }
 }

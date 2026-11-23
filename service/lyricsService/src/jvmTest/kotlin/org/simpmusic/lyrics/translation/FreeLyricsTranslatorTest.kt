@@ -507,4 +507,97 @@ class FreeLyricsTranslatorTest {
             )
         }
     }
+
+    @Test
+    fun trimsStrayEdgeVocalizationsAndRebalancesShiftedBoundaryConnectors() {
+        val pairs =
+            listOf(
+                BilingualLinePair("I get lonely", "Eu fico sozinha"),
+                BilingualLinePair("So I go shoplifting, oh", "Então eu vou roubar em uma loja, oh"),
+                BilingualLinePair("It's better than sitting", "É melhor do que sentar"),
+                BilingualLinePair("Crying in my kitchen when", "Chorando na minha cozinha quando"),
+                BilingualLinePair("Nobody, nobody, nobody calls", "Ninguém, ninguém, ninguém liga"),
+                BilingualLinePair("Oh, it was Liz, Liz", "Oh, era Liz, Liz"),
+            )
+        val synced =
+            Lyrics(
+                error = false,
+                syncType = "LINE_SYNCED",
+                lines =
+                    listOf(
+                        line("1000", "I get lonely so I go shoplifting"),
+                        line("5000", "It's better than sitting, crying in my kitchen"),
+                        line("9000", "When nobody, nobody, nobody calls"),
+                        line("13000", "Oh, it was Liz, Liz"),
+                    ),
+            )
+
+        val aligned = alignHumanPairsToLyrics(synced, pairs)
+        assertEquals(
+            listOf(
+                "Eu fico sozinha então eu vou roubar em uma loja",
+                "É melhor do que sentar, chorando na minha cozinha",
+                "Quando ninguém, ninguém, ninguém liga",
+                "Oh, era Liz, Liz",
+            ),
+            aligned?.lines?.map { it.words },
+        )
+    }
+
+    @Test
+    fun skipsLetrasAutomaticTranslationPagesWhileAcceptingHumanTranslations() {
+        runBlocking {
+            val fetcher = LetrasTranslationFetcher()
+            val sampleLyrics =
+                Lyrics(
+                    error = false,
+                    syncType = "LINE_SYNCED",
+                    lines =
+                        listOf(
+                            line("1000", "I get lonely"),
+                            line("3000", "So I go shoplifting"),
+                        ),
+                )
+            val autoHtml =
+                """
+                <html>
+                <head><link rel="canonical" href="https://www.letras.mus.br/remi-wolf/liz/traducao.html" /></head>
+                <body>
+                  <h1>Liz</h1>
+                  <div class="lyric-header"><span>Tradução automática</span></div>
+                  <div class="lyric-stackedTranslation">
+                    <p>
+                      <span class="verse"><span>Eu fico sozinho</span><span class="romanization">I get lonely</span></span>
+                      <span class="verse"><span>Então eu vou roubar em uma loja</span><span class="romanization">So I go shoplifting</span></span>
+                    </p>
+                  </div>
+                </body>
+                </html>
+                """.trimIndent()
+            val humanHtml = autoHtml.replace("<span>Tradução automática</span>", "")
+
+            val autoResult =
+                fetcher.fetchTranslation(
+                    transport = { LetrasPageFetchResult.Ok("/remi-wolf/liz/traducao.html", autoHtml) },
+                    songTitle = "Liz",
+                    artistName = "Remi Wolf",
+                    originalLyrics = sampleLyrics,
+                    targetLanguage = "pt",
+                )
+            assertNull(autoResult)
+
+            val humanResult =
+                fetcher.fetchTranslation(
+                    transport = { LetrasPageFetchResult.Ok("/remi-wolf/liz/traducao.html", humanHtml) },
+                    songTitle = "Liz",
+                    artistName = "Remi Wolf",
+                    originalLyrics = sampleLyrics,
+                    targetLanguage = "pt",
+                )
+            assertEquals(
+                listOf("Eu fico sozinho", "Então eu vou roubar em uma loja"),
+                humanResult?.lyrics?.lines?.map { it.words },
+            )
+        }
+    }
 }
