@@ -643,6 +643,10 @@ interface DataStoreManager {
 
     suspend fun setAutoBackupMaxFiles(max: Int)
 
+    val maxParallelDownloads: Flow<Int>
+
+    suspend fun setMaxParallelDownloads(count: Int)
+
     val autoBackupLastTime: Flow<Long>
 
     suspend fun setAutoBackupLastTime(time: Long)
