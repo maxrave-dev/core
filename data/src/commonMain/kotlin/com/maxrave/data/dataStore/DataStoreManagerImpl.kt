@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.maxrave.common.SELECTED_LANGUAGE
 import com.maxrave.common.SUPPORTED_LANGUAGE
+import com.maxrave.common.SUPPORTED_LOCATION
 import com.maxrave.common.SponsorBlockType
 import com.maxrave.domain.data.model.discord.DiscordSession
 import com.maxrave.domain.data.model.network.ProxyConfiguration
@@ -27,6 +28,7 @@ import com.maxrave.domain.manager.DataStoreManager.Values.REPEAT_MODE_OFF
 import com.maxrave.domain.manager.DataStoreManager.Values.REPEAT_ONE
 import com.maxrave.domain.manager.DataStoreManager.Values.SIMPMUSIC
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
+import com.maxrave.kotlinytmusicscraper.getCountry
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
@@ -84,7 +86,7 @@ internal class DataStoreManagerImpl(
 
     override val location: Flow<String> =
         settingsDataStore.data.map { preferences ->
-            preferences[LOCATION] ?: "VN"
+            preferences[LOCATION] ?: getCountry().uppercase().takeIf { it in SUPPORTED_LOCATION.items } ?: "US"
         }
 
     override suspend fun setLocation(location: String) {
