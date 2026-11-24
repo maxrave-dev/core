@@ -259,6 +259,39 @@ interface SyncDao {
         prefix: String,
     )
 
+    @Query("SELECT * FROM local_playlist WHERE title = :title")
+    suspend fun localPlaylistsByTitle(title: String): List<LocalPlaylistEntity>
+
+    /** Phone: changes to local playlist [syncId] the computer has already taken. */
+    @Query(
+        "SELECT COUNT(*) FROM sync_change WHERE serverSeq IS NOT NULL AND (((entity = 'lp' OR entity = 'lp_order') AND entityKey = :syncId) OR " +
+            "(entity = 'lp_track' AND substr(entityKey, 1, length(:prefix)) = :prefix))",
+    )
+    suspend fun sentPlaylistRows(
+        syncId: String,
+        prefix: String,
+    ): Int
+
+    /** Phone: changes to local playlist [syncId] still waiting to be sent. */
+    @Query(
+        "SELECT COUNT(*) FROM sync_change WHERE serverSeq IS NULL AND (((entity = 'lp' OR entity = 'lp_order') AND entityKey = :syncId) OR " +
+            "(entity = 'lp_track' AND substr(entityKey, 1, length(:prefix)) = :prefix))",
+    )
+    suspend fun pendingPlaylistRows(
+        syncId: String,
+        prefix: String,
+    ): Int
+
+    /** Computer: the earliest log position holding local playlist [syncId]; null when nothing of it is logged. */
+    @Query(
+        "SELECT MIN(serverSeq) FROM sync_change WHERE ((entity = 'lp' OR entity = 'lp_order') AND entityKey = :syncId) OR " +
+            "(entity = 'lp_track' AND substr(entityKey, 1, length(:prefix)) = :prefix)",
+    )
+    suspend fun firstPlaylistSeq(
+        syncId: String,
+        prefix: String,
+    ): Long?
+
     @Query("SELECT songId FROM pair_song_local_playlist WHERE playlistId = :playlistId ORDER BY position ASC")
     suspend fun playlistOrder(playlistId: Long): List<String>
 

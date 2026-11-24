@@ -10,7 +10,8 @@ import kotlin.test.assertTrue
 /**
  * The planner only decides where the fade sits: the outgoing window and the second the incoming track
  * plays from. Its length is the adapters' formula, handed in and kept. The fade ends on the outgoing
- * music's end, never starts before the middle of its last drop and never runs past its last sound.
+ * music's end and never starts before the second half of its last drop, even when that runs it past
+ * the outgoing track's last sound.
  * Wherever loudness did not tell the parts apart, the incoming track plays from 0.
  */
 class TransitionPlannerTest {
@@ -20,6 +21,7 @@ class TransitionPlannerTest {
         introEndMs: Long? = null,
         lastChorusStartMs: Long? = null,
         lastChorusEndMs: Long? = null,
+        lastDropSecondHalfMs: Long? = null,
     ) = TrackStructure(
         bpm = 148.0,
         beatMs = 60_000 / 148.0,
@@ -31,6 +33,7 @@ class TransitionPlannerTest {
         introEndMs = introEndMs,
         lastChorusStartMs = lastChorusStartMs,
         lastChorusEndMs = lastChorusEndMs,
+        lastDropSecondHalfMs = lastDropSecondHalfMs,
     )
 
     @Test
@@ -57,14 +60,27 @@ class TransitionPlannerTest {
     }
 
     @Test
-    fun `a song that ends on its drop fades no later than its last sound`() {
-        // Drop 120-150 s to the music's end, sound to 152 s: the drop's middle (135 s) plus the fade
-        // would run 6 s past the last sound, so the fade keeps its length and starts at 129 s.
-        val outgoing = track(152_000, musicEndMs = 150_000, lastChorusStartMs = 120_000)
-        val plan = assertNotNull(TransitionPlanner.plan(outgoing, track(200_000), 23_000, 1f))
+    fun `a song that ends on its drop still plays the first half of the drop to its end`() {
+        // dk__IAfOXZE as measured: drop from 128.3 s with its rest at 142.4 s, second half from 143.3 s,
+        // music to 158.3 s, sound to 159.5 s. Ending the fade on the last sound started it at 129.5 s,
+        // a second into the drop; it now starts on the second half and runs 6 s past the last sound.
+        val outgoing = track(159_470, musicEndMs = 158_280, lastChorusStartMs = 128_320, lastDropSecondHalfMs = 143_320)
+        val plan = assertNotNull(TransitionPlanner.plan(outgoing, track(200_000), 22_000, 1f))
 
-        assertEquals(129_000L, plan.outgoingStartMs)
-        assertEquals(152_000L, plan.outgoingEndMs)
+        assertEquals(143_320L, plan.outgoingStartMs)
+        assertEquals(165_320L, plan.outgoingEndMs)
+        assertEquals(22_000L, plan.durationMs)
+    }
+
+    @Test
+    fun `the rest beats the middle when the drop run took in its build`() {
+        // nHk1kT4GauQ as measured: the run from 139.7 s holds a build before the drop proper (155 s),
+        // so its middle (161.2 s) sits in the drop's first half; the rest puts the second half at 170.6 s.
+        val outgoing =
+            track(188_610, musicEndMs = 186_620, lastChorusStartMs = 139_710, lastChorusEndMs = 182_740, lastDropSecondHalfMs = 170_640)
+        val plan = assertNotNull(TransitionPlanner.plan(outgoing, track(200_000), 22_000, 1f))
+
+        assertEquals(170_640L, plan.outgoingStartMs)
     }
 
     @Test

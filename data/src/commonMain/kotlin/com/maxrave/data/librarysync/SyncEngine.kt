@@ -71,9 +71,17 @@ internal class SyncEngine(
         val deviceId = prefs.deviceId()
         if (reply.acked.isNotEmpty()) reply.acked.chunked(CHUNK).forEach { dao.markSent(it, 1) }
         if (request.since == 0L || reply.changes.any { it.toEntity().removesSomething }) backup()
+        removeDuplicatePlaylists(backup)
         val events = reply.events.associateBy { it.syncId }
         val tracking = settings.localTracking()
         val sendWhole = mutableSetOf<Long>()
+        // A playlist here takes the computer's syncId only while none of it has gone out: the computer
+        // then knows it under no other id. Sent rows are pruned after 30 days, so one with nothing
+        // pending either is treated as sent.
+        val unsent: suspend (LocalPlaylistEntity) -> Boolean = { playlist ->
+            val syncId = playlist.syncId
+            syncId == null || (dao.sentPlaylistRows(syncId, "$syncId|") == 0 && dao.pendingPlaylistRows(syncId, "$syncId|") > 0)
+        }
         withContext(SyncApplying) {
             applier.applyRefs(reply.refs)
             applier.ordered(reply.changes).forEach { change ->
@@ -83,7 +91,7 @@ internal class SyncEngine(
                 // and goes in the next request instead. Checked right before applying, not up front.
                 val mine = dao.pendingFor(change.entity, change.key)
                 if (mine != null && mine.supersedes(change.toEntity())) return@forEach
-                val applied = applier.applyOne(change, events, deviceId, sendWhole)
+                val applied = applier.applyOne(change, events, deviceId, sendWhole, unsent)
                 if (!applied && change.isPlaylistDelete()) dao.localPlaylistBySyncId(change.key)?.let { sendWhole += it.id }
             }
         }
@@ -123,6 +131,7 @@ internal class SyncEngine(
     ): SyncResponse {
         val ownId = prefs.deviceId()
         if (request.since == 0L || request.changes.any { it.toEntity().removesSomething }) backup()
+        removeDuplicatePlaylists(backup)
 
         val acked = request.changes.map { it.id }
         val events = request.events.associateBy { it.syncId }
@@ -131,6 +140,13 @@ internal class SyncEngine(
         val sendWhole = mutableSetOf<Long>()
         // Local tracking off here: plays are neither taken from phones nor handed to them.
         val tracking = settings.localTracking()
+        // A playlist here takes the phone's syncId only when nothing of it has reached that phone yet,
+        // and only while it is the only phone: another may already hold it under this side's syncId.
+        val phones = prefs.current().phones.size
+        val unseen: suspend (LocalPlaylistEntity) -> Boolean = { playlist ->
+            val syncId = playlist.syncId
+            phones <= 1 && (syncId == null || (dao.firstPlaylistSeq(syncId, "$syncId|") ?: Long.MAX_VALUE) > request.since)
+        }
         withContext(SyncApplying) { applier.applyRefs(request.refs) }
         applier.ordered(request.changes).forEach { change ->
             if (change.entity == SyncKind.HISTORY && !tracking) return@forEach
@@ -145,7 +161,7 @@ internal class SyncEngine(
             }
             val playlistId = change.playlistSyncId()
             val deletedHere = playlistId != null && dao.latest(SyncKind.LOCAL_PLAYLIST, playlistId)?.op == SyncOp.DELETE
-            val applied = withContext(SyncApplying) { applier.applyOne(change, events, ownId, sendWhole) }
+            val applied = withContext(SyncApplying) { applier.applyOne(change, events, ownId, sendWhole, unseen) }
             if (applied && deletedHere && dao.localPlaylistBySyncId(playlistId!!) != null) resend += playlistId
             when {
                 // Logged only once it holds here, so no phone is sent a state this computer does not have.
@@ -193,7 +209,20 @@ internal class SyncEngine(
 
     private fun ChangeWire.isPlaylistDelete() = entity == SyncKind.LOCAL_PLAYLIST && op == SyncOp.DELETE
 
-    private fun LocalPlaylistEntity.toMeta() = PlaylistMeta(title, thumbnail, youtubePlaylistId)
+    /**
+     * Once per device, the copies earlier pairings made of playlists both devices had are deleted (see
+     * [SyncApplier.duplicateCopies]), after a backup. They go through the normal delete, so the other
+     * device hears of it, and it keeps the same copy by the same rule.
+     */
+    private suspend fun removeDuplicatePlaylists(backup: suspend () -> Unit) {
+        if (prefs.current().playlistsDeduped) return
+        val copies = applier.duplicateCopies()
+        if (copies.isNotEmpty()) {
+            backup()
+            applier.deleteCopies(copies)
+        }
+        prefs.update { it.copy(playlistsDeduped = true) }
+    }
 
     /** The local playlist an edit belongs to; null for a deletion and for every other kind. */
     private fun ChangeWire.playlistSyncId(): String? =
@@ -212,8 +241,14 @@ internal class SyncEngine(
         val kept = mutableListOf<ChangeWire>()
         val gone = mutableListOf<String>()
         val playlists = mutableMapOf<String, LocalPlaylistEntity?>()
+        val metas = mutableMapOf<Long, PlaylistMeta>()
 
         suspend fun playlist(syncId: String) = playlists.getOrPut(syncId) { dao.localPlaylistBySyncId(syncId) }
+
+        suspend fun meta(found: LocalPlaylistEntity) =
+            metas.getOrPut(found.id) {
+                PlaylistMeta(found.title, found.thumbnail, found.youtubePlaylistId, songSetKey(dao.playlistOrder(found.id)))
+            }
         changes.forEach { change ->
             when (change.entity) {
                 SyncKind.LOCAL_PLAYLIST_TRACK -> {
@@ -227,7 +262,7 @@ internal class SyncEngine(
                         } else {
                             null
                         }
-                    kept += change.copy(meta = found?.toMeta(), setVideoId = setVideoId)
+                    kept += change.copy(meta = found?.let { meta(it) }, setVideoId = setVideoId)
                 }
 
                 SyncKind.LOCAL_PLAYLIST, SyncKind.LOCAL_PLAYLIST_ORDER -> {
@@ -240,7 +275,7 @@ internal class SyncEngine(
                         gone += change.id
                         return@forEach
                     }
-                    val meta = found.toMeta()
+                    val meta = meta(found)
                     kept +=
                         if (change.entity == SyncKind.LOCAL_PLAYLIST) {
                             change.copy(value = syncJson.encodeToString(PlaylistMeta.serializer(), meta))

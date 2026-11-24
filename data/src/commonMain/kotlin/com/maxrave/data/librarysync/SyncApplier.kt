@@ -51,13 +51,17 @@ internal class SyncApplier(
      *
      * @param ownDeviceId plays this device made itself come back marked as its own.
      * @param sendWhole collects local playlists this side must send again whole: one that just took
-     *   the other device's syncId because both were linked to the same YouTube playlist.
+     *   the other device's syncId because both were linked to the same YouTube playlist, or had the
+     *   same name and songs.
+     * @param canAdopt whether a playlist here with the same name and songs may take the other device's
+     *   syncId: only one the other device has not been sent under its own.
      */
     suspend fun applyOne(
         change: ChangeWire,
         events: Map<String, EventWire>,
         ownDeviceId: String,
         sendWhole: MutableSet<Long>,
+        canAdopt: suspend (LocalPlaylistEntity) -> Boolean,
     ): Boolean =
         try {
             val on = change.value == ON
@@ -68,9 +72,9 @@ internal class SyncApplier(
                 SyncKind.ALBUM_LIKE -> dao.setAlbumLiked(change.key, on, at).let { true }
                 SyncKind.PLAYLIST_LIKE -> dao.setPlaylistLiked(change.key, on, at).let { true }
                 SyncKind.PODCAST_FAVORITE -> dao.setPodcastFavorite(change.key, on, at).let { true }
-                SyncKind.LOCAL_PLAYLIST -> if (change.op == SyncOp.DELETE) deletePlaylist(change) else upsertPlaylist(change, sendWhole)
-                SyncKind.LOCAL_PLAYLIST_TRACK -> applyTrack(change, on, sendWhole)
-                SyncKind.LOCAL_PLAYLIST_ORDER -> applyOrder(change, sendWhole)
+                SyncKind.LOCAL_PLAYLIST -> if (change.op == SyncOp.DELETE) deletePlaylist(change) else upsertPlaylist(change, sendWhole, canAdopt)
+                SyncKind.LOCAL_PLAYLIST_TRACK -> applyTrack(change, on, sendWhole, canAdopt)
+                SyncKind.LOCAL_PLAYLIST_ORDER -> applyOrder(change, sendWhole, canAdopt)
                 SyncKind.HISTORY -> events[change.key]?.let { addPlay(it, ownDeviceId) } ?: false
                 else -> false.also { Logger.w(TAG, "unknown change kind ${change.entity}") }
             }
@@ -84,11 +88,12 @@ internal class SyncApplier(
     private suspend fun upsertPlaylist(
         change: ChangeWire,
         sendWhole: MutableSet<Long>,
+        canAdopt: suspend (LocalPlaylistEntity) -> Boolean,
     ): Boolean {
         val meta = change.value?.let { syncJson.decodeFromString(PlaylistMeta.serializer(), it) } ?: return false
         val existing = dao.localPlaylistBySyncId(change.key)
         if (existing == null) {
-            ensurePlaylist(change.key, meta, sendWhole)
+            ensurePlaylist(change.key, meta, sendWhole, canAdopt)
         } else {
             dao.setLocalPlaylistMeta(existing.id, meta.title, meta.thumbnail)
             dao.setLocalPlaylistLink(existing.id, meta.youtubePlaylistId, linkState(meta.youtubePlaylistId))
@@ -101,15 +106,18 @@ internal class SyncApplier(
      * linked to the same YouTube playlist is the same playlist imported on both devices: it takes the
      * other device's syncId instead of a copy being made, drops what was recorded under its old one,
      * and is sent again whole under the new one so the other side gets the songs only this side has.
-     * Both sides adopt the syncId they receive, so they agree whichever row arrives first.
+     * Both sides adopt the syncId they receive, so they agree whichever row arrives first. A playlist
+     * with the same name and songs that both devices had before they were paired is the same playlist
+     * too ([sameCopy]); without this, pairing gave every such playlist a copy on each side.
      */
     private suspend fun ensurePlaylist(
         syncId: String,
         meta: PlaylistMeta,
         sendWhole: MutableSet<Long>,
+        canAdopt: suspend (LocalPlaylistEntity) -> Boolean,
     ): LocalPlaylistEntity? {
         dao.localPlaylistBySyncId(syncId)?.let { return it }
-        val twin = meta.youtubePlaylistId?.let { dao.localPlaylistByYoutubeIds(youtubeIds(it)) }
+        val twin = meta.youtubePlaylistId?.let { dao.localPlaylistByYoutubeIds(youtubeIds(it)) } ?: sameCopy(meta, canAdopt)
         if (twin != null) {
             twin.syncId?.let { old -> dao.deletePlaylistChanges(old, "$old|") }
             dao.setLocalPlaylistSyncId(twin.id, syncId)
@@ -130,6 +138,37 @@ internal class SyncApplier(
         return dao.localPlaylistBySyncId(syncId)
     }
 
+    /** A playlist here with [meta]'s name and songs that [canAdopt] allows, first in [keptCopyOrder]. */
+    private suspend fun sameCopy(
+        meta: PlaylistMeta,
+        canAdopt: suspend (LocalPlaylistEntity) -> Boolean,
+    ): LocalPlaylistEntity? {
+        val songs = meta.songs ?: return null
+        return dao
+            .localPlaylistsByTitle(meta.title)
+            .filter { songSetKey(dao.playlistOrder(it.id)) == songs }
+            .sortedWith(keptCopyOrder)
+            .firstOrNull { canAdopt(it) }
+    }
+
+    /**
+     * Copies of one playlist (same name, same songs) that pairings before [sameCopy] existed left on
+     * this device: every one but the copy [keptCopyOrder] puts first. Empty playlists are never grouped.
+     */
+    suspend fun duplicateCopies(): List<LocalPlaylistEntity> =
+        dao
+            .localPlaylists()
+            .groupBy { it.title to songSetKey(dao.playlistOrder(it.id)) }
+            .filterKeys { it.second != null }
+            .values
+            .flatMap { copies -> copies.sortedWith(keptCopyOrder).drop(1) }
+
+    /** Deleted the normal way, outside [SyncApplying], so each deletion is recorded for the other device. */
+    suspend fun deleteCopies(copies: List<LocalPlaylistEntity>) {
+        copies.forEach { local.deleteLocalPlaylist(it.id) }
+        Logger.i(TAG, "removed ${copies.size} duplicate playlists: ${copies.joinToString { "${it.id}" }}")
+    }
+
     private fun linkState(youtubePlaylistId: String?) =
         if (youtubePlaylistId != null) LocalPlaylistEntity.YouTubeSyncState.Synced else LocalPlaylistEntity.YouTubeSyncState.NotSynced
 
@@ -141,12 +180,13 @@ internal class SyncApplier(
         syncId: String,
         change: ChangeWire,
         sendWhole: MutableSet<Long>,
+        canAdopt: suspend (LocalPlaylistEntity) -> Boolean,
     ): LocalPlaylistEntity? {
         dao.localPlaylistBySyncId(syncId)?.let { return it }
         val meta = change.meta ?: return null
         val last = dao.latest(SyncKind.LOCAL_PLAYLIST, syncId)
         if (last != null && last.op == SyncOp.DELETE && last.changedAt >= change.at) return null
-        return ensurePlaylist(syncId, meta, sendWhole)
+        return ensurePlaylist(syncId, meta, sendWhole, canAdopt)
     }
 
     /**
@@ -166,10 +206,11 @@ internal class SyncApplier(
         change: ChangeWire,
         inPlaylist: Boolean,
         sendWhole: MutableSet<Long>,
+        canAdopt: suspend (LocalPlaylistEntity) -> Boolean,
     ): Boolean {
         val syncId = change.key.substringBefore('|')
         val videoId = change.key.substringAfter('|')
-        val playlist = if (inPlaylist) playlistFor(syncId, change, sendWhole) else dao.localPlaylistBySyncId(syncId)
+        val playlist = if (inPlaylist) playlistFor(syncId, change, sendWhole, canAdopt) else dao.localPlaylistBySyncId(syncId)
         // Taking a song out of a playlist this side does not have leaves it as the change says.
         if (playlist == null) return !inPlaylist
         val present = dao.pairCount(playlist.id, videoId) > 0
@@ -199,9 +240,10 @@ internal class SyncApplier(
     private suspend fun applyOrder(
         change: ChangeWire,
         sendWhole: MutableSet<Long>,
+        canAdopt: suspend (LocalPlaylistEntity) -> Boolean,
     ): Boolean {
         val wanted = change.value?.let { syncJson.decodeFromString(ListSerializer(String.serializer()), it) } ?: return false
-        val playlist = playlistFor(change.key, change, sendWhole) ?: return false
+        val playlist = playlistFor(change.key, change, sendWhole, canAdopt) ?: return false
         val current = dao.playlistOrder(playlist.id)
         // The order only arranges songs this side has; songs it has that the order does not name keep
         // their place at the end, and the order cannot add one.

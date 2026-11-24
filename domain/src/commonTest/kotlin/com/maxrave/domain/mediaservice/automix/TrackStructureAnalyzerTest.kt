@@ -23,7 +23,11 @@ class TrackStructureAnalyzerTest {
     private val bars = 32
     private val quietBars = 16
 
-    private fun synth(): ShortArray {
+    /**
+     * [restBeats]: beats where the kick and the chord's bass note (110 Hz) stop, as in the rest that
+     * splits a house drop in two; the low band there falls about 16 dB under an ordinary beat.
+     */
+    private fun synth(restBeats: Set<Int> = emptySet()): ShortArray {
         val musicSeconds = bars * 4 * beatSeconds
         val total = ((leadSeconds * 2 + musicSeconds) * rate).toInt()
         val pcm = ShortArray(total)
@@ -35,9 +39,14 @@ class TrackStructureAnalyzerTest {
             val sinceBeat = t - beat * beatSeconds
             val loud = beat / 4 >= quietBars
             val accent = if (beat % 4 == 0) 1.0 else 0.6
-            val kick = (if (loud) 0.6 else 0.1) * accent * exp(-sinceBeat * 30) * sin(2 * PI * 50.0 * sinceBeat)
+            val kick =
+                if (beat in restBeats) {
+                    0.0
+                } else {
+                    (if (loud) 0.6 else 0.1) * accent * exp(-sinceBeat * 30) * sin(2 * PI * 50.0 * sinceBeat)
+                }
             // Quiet enough that the louder kick makes an 8 dB rise, well past the 6 dB a drop needs.
-            val pad = chord.sumOf { 0.015 * sin(2 * PI * it * t) }
+            val pad = chord.sumOf { if (beat in restBeats && it < 200) 0.0 else 0.015 * sin(2 * PI * it * t) }
             pcm[i] = ((kick + pad) * 32767).toInt().coerceIn(-32768, 32767).toShort()
         }
         return pcm
@@ -64,6 +73,19 @@ class TrackStructureAnalyzerTest {
         val dropStart = assertNotNull(structure.lastChorusStartMs)
         assertTrue(abs(dropStart - introEndMs) <= 100, "last drop starts $dropStart, expected $introEndMs")
         assertNull(structure.lastChorusEndMs)
+        // Every beat of the drop keeps its kick, so nothing splits it.
+        assertNull(structure.lastDropSecondHalfMs)
+    }
+
+    @Test
+    fun `a rest in the drop marks where its second half starts`() {
+        // The kick stops for the last two beats of the drop's eighth bar (beats 94-95), as house drops
+        // rest between their two 8-bar halves; the second half starts on beat 96.
+        val structure = assertNotNull(TrackStructureAnalyzer.analyze(synth(restBeats = setOf(94, 95))))
+
+        val expected = ((leadSeconds + 96 * beatSeconds) * 1000).toLong()
+        val secondHalf = assertNotNull(structure.lastDropSecondHalfMs)
+        assertTrue(abs(secondHalf - expected) <= 100, "second half $secondHalf, expected $expected")
     }
 
     @Test

@@ -74,6 +74,7 @@ import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
+import kotlin.time.TimeSource
 
 private const val TAG = "CrossfadeExoPlayerAdapter"
 
@@ -2510,10 +2511,17 @@ internal class CrossfadeExoPlayerAdapter(
         crossfadeJob =
             coroutineScope.launch {
                 try {
+                    // Each step waits for its own mark from the fade's start, not a fixed delay after the previous
+                    // step's work, so the time spent retuning the players never adds up and the fade ends at
+                    // effectiveDurationMs, where the plan lands the incoming drop. Waiting a full step after every
+                    // step (the last one included) ran a 22.4 s fade about 1.4 s long.
+                    val fadeStart = TimeSource.Monotonic.markNow()
                     for (step in 0..steps) {
                         if (!isActive) break
+                        val wait = effectiveDurationMs.toLong() * step / steps - fadeStart.elapsedNow().inWholeMilliseconds
+                        if (wait > 0) delay(wait)
 
-                        val progress = step.toFloat() / steps
+                        val progress = (fadeStart.elapsedNow().inWholeMilliseconds.toFloat() / effectiveDurationMs).coerceIn(0f, 1f)
 
                         // Equal-power crossfade (cos/sin curves) instead of linear.
                         // Human loudness perception is logarithmic — linear volume fade makes
@@ -2582,8 +2590,6 @@ internal class CrossfadeExoPlayerAdapter(
                                 lastOutgoingPitch = qOutPitch
                             }
                         }
-
-                        delay(delayPerStep.toLong())
                     }
 
                     // Transition complete

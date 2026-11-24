@@ -26,6 +26,8 @@ import kotlin.math.sqrt
  *   loudness changes from bar to bar.
  * - Sections where the mean of four bars differs from the four before by more than 3 dB, and the
  *   intro and last chorus told apart from the rest by the loudness of the parts between them.
+ * - The last drop's second half: house drops run two halves with a rest between, where the kick and
+ *   bass stop for a beat or more; found as beats whose low band sits far under the drop's own.
  */
 object TrackStructureAnalyzer {
     const val SAMPLE_RATE = 8_000
@@ -43,6 +45,8 @@ object TrackStructureAnalyzer {
     private const val MUSIC_END_DB = 10.0
     private const val CHORUS_DB = 2.0
     private const val MAX_INTRO_MS = 45_000L
+    private const val REST_DB = 10.0
+    private const val MIN_HALF_BARS = 4
 
     /** Null when the track has under 30 s of sound or too few beats to find a bar in. */
     fun analyze(pcm: ShortArray): TrackStructure? {
@@ -67,6 +71,8 @@ object TrackStructureAnalyzer {
         val endBar = musicEndBar(levels)
         val musicEndMs = toMs(barLines[endBar + 1])
         val (introEnd, lastChorusStart, lastChorusEnd) = partEdges(changes.map { it.first }, levels, endBar)
+        val secondHalf =
+            lastChorusStart?.let { secondHalfFrame(beats, low, barLines[it], barLines[lastChorusEnd ?: (endBar + 1)], period) }
         return TrackStructure(
             bpm = (bpm * 100).roundToInt() / 100.0,
             beatMs = period / FPS * 1000,
@@ -78,7 +84,43 @@ object TrackStructureAnalyzer {
             introEndMs = introEnd?.let { toMs(barLines[it]) }?.takeIf { it <= MAX_INTRO_MS },
             lastChorusStartMs = lastChorusStart?.let { toMs(barLines[it]) },
             lastChorusEndMs = lastChorusEnd?.let { toMs(barLines[it]) },
+            lastDropSecondHalfMs = secondHalf?.let { toMs(it) },
         )
+    }
+
+    /**
+     * The frame where the second half of the drop between [from] and [until] starts. A rest is a beat
+     * whose low band (kick and bass) sits [REST_DB] under the drop's median beat: measured 17 dB under
+     * on Arvenius' Want You To Stay, 27 dB on dk__IAfOXZE, while ordinary beats of a drop stay within a
+     * few dB. The second half starts on the first beat after a run of rest beats; the latest run with
+     * [MIN_HALF_BARS] bars of drop on both sides wins, which passes over the end of the song and a dip
+     * in a build the drop run took in before the drop proper. Null when the drop has no such rest.
+     */
+    private fun secondHalfFrame(
+        beats: IntArray,
+        low: DoubleArray,
+        from: Int,
+        until: Int,
+        period: Double,
+    ): Int? {
+        val inDrop = (0 until beats.size - 1).filter { beats[it] >= from && beats[it + 1] <= until }
+        if (inDrop.size < 8) return null
+        val beatDb =
+            inDrop.associateWith { i ->
+                var sum = 0.0
+                for (f in beats[i] until beats[i + 1]) sum += low[f]
+                toDb(sum / (beats[i + 1] - beats[i]))
+            }
+        val restBelow = beatDb.values.sorted()[beatDb.size / 2] - REST_DB
+        val minGap = period * 4 * MIN_HALF_BARS
+        for (i in inDrop.asReversed()) {
+            if (beatDb.getValue(i) > restBelow) continue
+            // Only the last beat of a run of rests: the half starts on the beat after the whole rest.
+            if ((beatDb[i + 1] ?: Double.MAX_VALUE) <= restBelow) continue
+            val next = beats[i + 1]
+            if (next - from >= minGap && until - next >= minGap) return next
+        }
+        return null
     }
 
     private fun toMs(frame: Int): Long = (frame * 1000 / FPS).toLong()

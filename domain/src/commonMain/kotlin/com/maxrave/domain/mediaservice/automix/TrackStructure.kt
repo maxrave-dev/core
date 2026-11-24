@@ -39,12 +39,17 @@ data class TrackStructure(
      * the song ends on its chorus or loudness does not separate the parts.
      */
     val lastChorusEndMs: Long? = null,
+    /**
+     * Where the second half of the last drop starts: the first beat after the rest (kick and bass gone
+     * for a beat or more) that splits the drop in two. Null when no rest is found in the drop.
+     */
+    val lastDropSecondHalfMs: Long? = null,
 ) {
     fun encode(): String = json.encodeToString(serializer(), this)
 
     companion object {
         /** Bump whenever the analysis changes, so results stored by an older build are measured again. */
-        const val VERSION = 3
+        const val VERSION = 4
 
         private val json =
             Json {

@@ -57,6 +57,7 @@ import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.random.Random
+import kotlin.time.TimeSource
 
 private const val TAG = "MpvPlayerAdapter"
 
@@ -2429,10 +2430,17 @@ class MpvPlayerAdapter(
         var lastOutgoingPitch = -1f
 
         try {
+            // Each step waits for its own mark from the fade's start, not a fixed delay after the previous
+            // step's work, so the time spent retuning the players never adds up and the fade ends at
+            // effectiveDurationMs, where the plan lands the incoming drop. Waiting a full step after every
+            // step (the last one included) ran a 22.4 s fade about 1.4 s long.
+            val fadeStart = TimeSource.Monotonic.markNow()
             for (step in 0..steps) {
                 currentCoroutineContext().ensureActive()
+                val wait = effectiveDurationMs.toLong() * step / steps - fadeStart.elapsedNow().inWholeMilliseconds
+                if (wait > 0) delay(wait)
 
-                val progress = step.toFloat() / steps
+                val progress = (fadeStart.elapsedNow().inWholeMilliseconds.toFloat() / effectiveDurationMs).coerceIn(0f, 1f)
                 val angle = progress * Math.PI / 2.0
 
                 val fadeOutVolume = (targetVolume * kotlin.math.cos(angle)).toInt()
@@ -2485,8 +2493,6 @@ class MpvPlayerAdapter(
                         lastOutgoingPitch = qOutPitch
                     }
                 }
-
-                delay(delayPerStep.toLong())
             }
 
             finalizeCrossfade(nextIndex, nextPlayer)

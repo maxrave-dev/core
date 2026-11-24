@@ -73,6 +73,8 @@ internal data class SyncPrefsState(
     val pendingSettings: SettingsWire? = null,
     val pendingSettingsFrom: String? = null,
     val dismissedSettingsAt: Long = 0,
+    /** The copies earlier pairings made of playlists both devices had were cleaned up (once per device). */
+    val playlistsDeduped: Boolean = false,
 ) {
     val paired: Boolean get() = desktop != null || phones.isNotEmpty()
 }

@@ -1,5 +1,6 @@
 package com.maxrave.data.librarysync
 
+import com.maxrave.domain.data.entities.LocalPlaylistEntity
 import com.maxrave.domain.data.entities.sync.SyncChangeEntity
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
@@ -76,6 +77,24 @@ internal val SyncChangeEntity.removesSomething: Boolean
     get() = op == SyncOp.DELETE || (op == SyncOp.SET && value == OFF)
 
 /** A random version-4 UUID string. Not for keys: those come from SecureRandom in the transport. */
+/**
+ * A local playlist's songs as one value two devices can compare: how many, and a hash of their ids
+ * sorted. Null for an empty playlist, which is never matched by its songs.
+ */
+internal fun songSetKey(videoIds: Collection<String>): String? {
+    val sorted = videoIds.distinct().sorted()
+    if (sorted.isEmpty()) return null
+    return "${sorted.size}:${sorted.joinToString(",").hashCode()}"
+}
+
+/**
+ * Which of several copies of one local playlist comes first, the same on every device so two devices
+ * cleaning up the same copies keep the same one: a copy linked to YouTube, then the smallest syncId.
+ * A copy with no syncId has never been synced and is unknown to the other device, so it comes last.
+ */
+internal val keptCopyOrder: Comparator<LocalPlaylistEntity> =
+    compareBy<LocalPlaylistEntity>({ it.youtubePlaylistId == null }, { it.syncId == null }, { it.syncId ?: "" }, { it.id })
+
 internal fun newSyncId(): String {
     val bytes = Random.nextBytes(16)
     bytes[6] = ((bytes[6].toInt() and 0x0f) or 0x40).toByte()

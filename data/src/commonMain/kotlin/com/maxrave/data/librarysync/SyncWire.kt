@@ -55,6 +55,12 @@ internal data class PlaylistMeta(
     val thumbnail: String? = null,
     /** The YouTube playlist it is linked to; null when it is not (or no longer) linked. */
     val youtubePlaylistId: String? = null,
+    /**
+     * Its songs as [songSetKey] gives them, so the other side can tell a playlist it already had
+     * before the two were paired from a new one. Null from builds before 2026-11-24 and for an
+     * empty playlist.
+     */
+    val songs: String? = null,
 )
 
 // The rows a change points at, so the other device can show them. Only the columns that describe the
