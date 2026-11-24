@@ -132,9 +132,15 @@ internal class LocalPlaylistRepositoryImpl(
         id: Long,
         filter: FilterState,
     ): Flow<PagingData<Pair<SongEntity, PairSongLocalPlaylist>>> {
+        val pagingConfig =
+            PagingConfig(
+                pageSize = 50,
+                initialLoadSize = 1000,
+                prefetchDistance = 200,
+            )
         if (filter == FilterState.CustomOrder || filter == FilterState.Title) {
             return Pager(
-                config = PagingConfig(pageSize = 100, prefetchDistance = 5),
+                config = pagingConfig,
                 pagingSourceFactory = {
                     LocalPlaylistPagingSource(
                         playlistId = id,
@@ -145,7 +151,7 @@ internal class LocalPlaylistRepositoryImpl(
             ).flow
         } else {
             return Pager(
-                config = PagingConfig(pageSize = 100, prefetchDistance = 5),
+                config = pagingConfig,
                 pagingSourceFactory = {
                     LocalPlaylistTimeBasedPagingSource(
                         playlistId = id,
