@@ -1,7 +1,9 @@
 package com.maxrave.kotlinytmusicscraper.extractor
 
 import com.maxrave.common.ITAG
+import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.ResponseContext
+import com.maxrave.kotlinytmusicscraper.models.Thumbnail
 import com.maxrave.kotlinytmusicscraper.models.Thumbnails
 import com.maxrave.kotlinytmusicscraper.models.YouTubeClient
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
@@ -286,4 +288,126 @@ class DirectAudioFastPathTest {
         state.clear()
         assertTrue(state.isAvailable(t0 + 2_000_001L))
     }
+
+    @Test
+    fun buildStandalonePlayerResponseExtractsVideoDetailsLoudnessAndEnforcesDuration() {
+        val raw =
+            """
+            {
+              "playabilityStatus": { "status": "OK" },
+              "playerConfig": {
+                "audioConfig": { "loudnessDb": -7.42 }
+              },
+              "videoDetails": {
+                "videoId": "HzYrZoALCCA",
+                "title": "Test Track",
+                "author": "Artist - Topic",
+                "channelId": "UC123456",
+                "lengthSeconds": "214",
+                "isLiveContent": false,
+                "musicVideoType": "MUSIC_VIDEO_TYPE_ATV",
+                "thumbnail": {
+                  "thumbnails": [
+                    { "url": "https://i.ytimg.com/vi/HzYrZoALCCA/hqdefault.jpg", "width": 480, "height": 360 }
+                  ]
+                }
+              },
+              "streamingData": {
+                "expiresInSeconds": "21540",
+                "adaptiveFormats": [
+                  {
+                    "itag": 251,
+                    "url": "https://rr3---sn-example.googlevideo.com/videoplayback?itag=251&dur=214.000&clen=3456789",
+                    "mimeType": "audio/webm; codecs=\"opus\"",
+                    "bitrate": 132000,
+                    "contentLength": "3456789"
+                  }
+                ]
+              }
+            }
+            """.trimIndent()
+
+        val parsed = DirectAudioFastPathParser.parsePlayerJson(raw)
+        assertNotNull(parsed)
+
+        val standalone =
+            DirectAudioFastPathParser.buildStandalonePlayerResponse(
+                videoId = "HzYrZoALCCA",
+                directResponse = parsed,
+                expectedDurationSec = 214,
+            )
+        assertNotNull(standalone)
+        assertEquals("OK", standalone.playabilityStatus.status)
+        assertEquals("Test Track", standalone.videoDetails?.title)
+        assertEquals("Artist - Topic", standalone.videoDetails?.author)
+        assertEquals("214", standalone.videoDetails?.lengthSeconds)
+        assertEquals(-7.42, standalone.playerConfig?.audioConfig?.loudnessDb)
+        assertNull(standalone.playbackTracking)
+        assertEquals(1, standalone.streamingData?.adaptiveFormats?.size)
+        assertEquals(ITAG.AUDIO_OPUS_MEDIUM, standalone.streamingData?.adaptiveFormats?.first()?.itag)
+
+        // Mismatched expectedDurationSec (e.g., 30s preview when DB expects 214s) must be rejected.
+        val rawPreview = raw.replace("dur=214.000", "dur=30.000")
+        val parsedPreview = DirectAudioFastPathParser.parsePlayerJson(rawPreview)!!
+        val rejected =
+            DirectAudioFastPathParser.buildStandalonePlayerResponse(
+                videoId = "HzYrZoALCCA",
+                directResponse = parsedPreview,
+                expectedDurationSec = 214,
+            )
+        assertNull(rejected)
+    }
+
+    @Test
+    fun classifyMediaTypeProtectsFastPath4By3ThumbnailsWhileHonoringExplicitVideos() {
+        val song4By3NoType =
+            PlayerResponse.VideoDetails(
+                videoId = "id1",
+                title = "Song",
+                author = "Some Artist",
+                channelId = "UC1",
+                authorAvatar = null,
+                authorSubCount = null,
+                lengthSeconds = "180",
+                isLive = false,
+                musicVideoType = null,
+                viewCount = null,
+                thumbnail = Thumbnails(listOf(Thumbnail("https://i.ytimg.com/vi/id1/hqdefault.jpg", 480, 360))),
+                description = null,
+            )
+        // Standard path classifies non-square as Video unless ATV, whereas fast path avoids false Video downgrade.
+        assertEquals(MediaType.Video, classifyMediaType(song4By3NoType, isDirectFastPath = false))
+        assertEquals(MediaType.Song, classifyMediaType(song4By3NoType, isDirectFastPath = true))
+
+        // Topic channel is always treated as Song on fast path.
+        val topic4By3 = song4By3NoType.copy(author = "Artist - Topic")
+        assertEquals(MediaType.Song, classifyMediaType(topic4By3, isDirectFastPath = true))
+
+        // Explicit OMV or UGC stays Video even on fast path (unless Topic or square thumbnail).
+        assertEquals(
+            MediaType.Video,
+            classifyMediaType(
+                song4By3NoType,
+                isDirectFastPath = true,
+                knownMusicVideoType = "MUSIC_VIDEO_TYPE_OMV",
+            ),
+        )
+        assertEquals(
+            MediaType.Video,
+            classifyMediaType(
+                song4By3NoType.copy(musicVideoType = "MUSIC_VIDEO_TYPE_UGC"),
+                isDirectFastPath = true,
+            ),
+        )
+        // Explicit ATV stays Song even when fast path is off.
+        assertEquals(
+            MediaType.Song,
+            classifyMediaType(
+                song4By3NoType,
+                isDirectFastPath = false,
+                knownMusicVideoType = "MUSIC_VIDEO_TYPE_ATV",
+            ),
+        )
+    }
 }
+

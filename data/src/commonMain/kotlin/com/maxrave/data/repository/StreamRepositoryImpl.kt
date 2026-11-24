@@ -27,9 +27,11 @@ import com.maxrave.kotlinytmusicscraper.models.MediaType
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,6 +73,10 @@ internal class StreamRepositoryImpl(
     private val verifiedAudioIds = MutableStateFlow<Set<String>>(emptySet())
     private val omvAudioTargetResolver = OmvAudioTargetResolver()
 
+    private val trackingJobLock = Any()
+    private var trackingResolveSeq = 0L
+    private var activeBackgroundTrackingJob: Job? = null
+
     @kotlin.concurrent.Volatile
     private var prefCollectorsStarted = false
     @kotlin.concurrent.Volatile
@@ -85,6 +91,8 @@ internal class StreamRepositoryImpl(
     private var cachedPreferredAudioLanguage: String? = null
     @kotlin.concurrent.Volatile
     private var cachedWatchVideo: String? = null
+    @kotlin.concurrent.Volatile
+    private var cachedSendBackToGoogle: String? = null
 
     private fun ensurePrefCollectors(dataStoreManager: DataStoreManager) {
         if (prefCollectorsStarted) return
@@ -95,6 +103,81 @@ internal class StreamRepositoryImpl(
         backgroundScope.launch { dataStoreManager.videoDownloadQuality.distinctUntilChanged().collect { cachedVideoDownloadQuality = it } }
         backgroundScope.launch { dataStoreManager.preferredAudioLanguage.distinctUntilChanged().collect { cachedPreferredAudioLanguage = it } }
         backgroundScope.launch { dataStoreManager.watchVideoInsteadOfPlayingAudio.distinctUntilChanged().collect { cachedWatchVideo = it } }
+        backgroundScope.launch { dataStoreManager.sendBackToGoogle.distinctUntilChanged().collect { cachedSendBackToGoogle = it } }
+    }
+
+    private fun beginBackgroundTrackingResolution(): Long =
+        synchronized(trackingJobLock) {
+            activeBackgroundTrackingJob?.cancel()
+            activeBackgroundTrackingJob = null
+            ++trackingResolveSeq
+        }
+
+    private fun registerBackgroundTrackingJob(
+        resolveSeq: Long,
+        job: Job,
+    ) {
+        synchronized(trackingJobLock) {
+            if (trackingResolveSeq != resolveSeq) {
+                job.cancel()
+            } else {
+                activeBackgroundTrackingJob = job
+            }
+        }
+    }
+
+    private suspend fun applyBackgroundTrackingUpdate(
+        formatKey: String,
+        cpn: String,
+        webResponse: PlayerResponse,
+    ) {
+        val playbackUrl =
+            webResponse.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
+                "https://s.youtube.com",
+                "https://music.youtube.com",
+            )
+        val atrUrl =
+            webResponse.playbackTracking?.atrUrl?.baseUrl?.replace(
+                "https://s.youtube.com",
+                "https://music.youtube.com",
+            )
+        val watchtimeUrl =
+            webResponse.playbackTracking?.videostatsWatchtimeUrl?.baseUrl?.replace(
+                "https://s.youtube.com",
+                "https://music.youtube.com",
+            )
+        val loudnessDb =
+            webResponse.playerConfig
+                ?.audioConfig
+                ?.loudnessDb
+                ?.toFloat()
+        formatStateMutex.withLock {
+            val currentPair = formatCache.value[formatKey]
+            val existing = currentPair?.second
+            if (existing != null && existing.cpn == cpn) {
+                val updated =
+                    existing.copy(
+                        playbackTrackingVideostatsPlaybackUrl = playbackUrl,
+                        playbackTrackingAtrUrl = atrUrl,
+                        playbackTrackingVideostatsWatchtimeUrl = watchtimeUrl,
+                        loudnessDb = loudnessDb ?: existing.loudnessDb,
+                    )
+                formatCache.update { it + (formatKey to (currentPair.first to updated)) }
+            }
+        }
+        formatDbMutex.withLock {
+            val currentCpn = formatCache.value[formatKey]?.second?.cpn
+            if (currentCpn == null || currentCpn == cpn) {
+                localDataSource.updatePlaybackTrackingAndLoudness(
+                    videoId = formatKey,
+                    cpn = cpn,
+                    playbackUrl = playbackUrl,
+                    atrUrl = atrUrl,
+                    watchtimeUrl = watchtimeUrl,
+                    loudnessDb = loudnessDb,
+                )
+            }
+        }
     }
 
     private suspend fun recordFormatInMemory(newFormat: NewFormatEntity): Pair<Long, NewFormatEntity?> =
@@ -155,15 +238,22 @@ internal class StreamRepositoryImpl(
         }
     }
 
-    private suspend fun insertNewFormatAsync(newFormat: NewFormatEntity) {
+    private suspend fun insertNewFormatAsync(
+        newFormat: NewFormatEntity,
+        onDbInserted: ((String) -> Unit)? = null,
+    ) {
         val (seq, memStored) = recordFormatInMemory(newFormat)
         val stored = memStored ?: localDataSource.getNewFormat(newFormat.videoId)
         evictIfEncodeChanged(stored, newFormat)
         backgroundScope.launch {
-            formatDbMutex.withLock {
-                if (formatCache.value[newFormat.videoId]?.first == seq) {
-                    localDataSource.insertNewFormat(newFormat)
+            try {
+                formatDbMutex.withLock {
+                    if (formatCache.value[newFormat.videoId]?.first == seq) {
+                        localDataSource.insertNewFormat(newFormat)
+                    }
                 }
+            } finally {
+                onDbInserted?.invoke(newFormat.videoId)
             }
         }
     }
@@ -351,6 +441,15 @@ internal class StreamRepositoryImpl(
                 cachedPreferredAudioLanguage ?: dataStoreManager.preferredAudioLanguage.first()
             val watchVideoEnabled =
                 (cachedWatchVideo ?: dataStoreManager.watchVideoInsteadOfPlayingAudio.first()) == DataStoreManager.Values.TRUE
+            val sendTracking =
+                (cachedSendBackToGoogle ?: dataStoreManager.sendBackToGoogle.first()) == DataStoreManager.Values.TRUE
+            val preferImmediate =
+                shouldPreferImmediateDirect(
+                    isVideo = isVideo,
+                    muxed = muxed,
+                    isLoggedIn = !youTube.cookie.isNullOrBlank(),
+                    requestedItag = itag,
+                )
             val allowAudioUpgrade = !isVideo && !muxed && !watchVideoEnabled
             val localSong =
                 if (!isVideo && !muxed) {
@@ -358,307 +457,350 @@ internal class StreamRepositoryImpl(
                 } else {
                     null
                 }
-            val initialResolution =
-                omvAudioTargetResolver.resolveInitialTarget(
-                    videoId = videoId,
-                    localVideoType = localSong?.videoType,
-                    allowAudioUpgrade = allowAudioUpgrade,
-                ) {
-                    youTube.resolveOfficialAudioVariantId(
-                        videoId = videoId,
-                        title = localSong?.title,
-                        artist = localSong?.artistName?.firstOrNull(),
-                        expectedDurationSec = localSong?.durationSeconds?.takeIf { it > 0 },
-                    )
-                }
-            var initialResolveId = initialResolution.targetId
-            if (initialResolution.upgradedBeforePlayer && initialResolveId != videoId) {
-                Logger.i("Stream", "Pre-resolved OMV $videoId -> ATV $initialResolveId before extraction")
-            }
-            val primaryPlayerResult =
-                youTube.player(
-                    initialResolveId,
-                    noLogIn = muxed,
-                    preferredAudioLanguage = preferredAudioLanguage,
-                    isVideo = isVideo || muxed,
+            val resolveSeq = beginBackgroundTrackingResolution()
+            val dbInsertedFormatKey = CompletableDeferred<String>()
+            var formatInsertScheduled = false
+            val onBgTrackingUpdate: suspend (String, PlayerResponse) -> Unit = { cpn, webRes ->
+                val targetKey = dbInsertedFormatKey.await()
+                applyBackgroundTrackingUpdate(
+                    formatKey = targetKey,
+                    cpn = cpn,
+                    webResponse = webRes,
                 )
-            val effectivePlayerResult =
-                if (primaryPlayerResult.isFailure && initialResolveId != videoId) {
-                    val failure = primaryPlayerResult.exceptionOrNull()
-                    if (failure is CancellationException) throw failure
-                    Logger.w(
-                        "Stream",
-                        "Pre-resolved ATV $initialResolveId failed for $videoId (${failure?.message}); falling back to original ID",
-                    )
-                    omvAudioTargetResolver.evictMapping(videoId)
-                    initialResolveId = videoId
+            }
+            try {
+                val initialResolution =
+                    omvAudioTargetResolver.resolveInitialTarget(
+                        videoId = videoId,
+                        localVideoType = localSong?.videoType,
+                        allowAudioUpgrade = allowAudioUpgrade,
+                    ) {
+                        youTube.resolveOfficialAudioVariantId(
+                            videoId = videoId,
+                            title = localSong?.title,
+                            artist = localSong?.artistName?.firstOrNull(),
+                            expectedDurationSec = localSong?.durationSeconds?.takeIf { it > 0 },
+                        )
+                    }
+                var initialResolveId = initialResolution.targetId
+                if (initialResolution.upgradedBeforePlayer && initialResolveId != videoId) {
+                    Logger.i("Stream", "Pre-resolved OMV $videoId -> ATV $initialResolveId before extraction")
+                }
+                val expectedSongDuration = localSong?.durationSeconds?.takeIf { it > 0 }
+                val primaryPlayerResult =
                     youTube.player(
-                        videoId,
+                        initialResolveId,
                         noLogIn = muxed,
                         preferredAudioLanguage = preferredAudioLanguage,
                         isVideo = isVideo || muxed,
+                        preferImmediateDirect = preferImmediate,
+                        expectedDurationSec = expectedSongDuration,
+                        knownMusicVideoType = localSong?.videoType,
+                        sendPlaybackTracking = sendTracking,
+                        backgroundScope = backgroundScope,
+                        registerBackgroundJob = { job -> registerBackgroundTrackingJob(resolveSeq, job) },
+                        onBackgroundTrackingUpdate = onBgTrackingUpdate,
                     )
-                } else {
-                    primaryPlayerResult
-                }
-            effectivePlayerResult
-                .onSuccess { initialData ->
-                    var resolvedSourceId = initialResolveId
-                    var data = initialData
-                    var response = data.second
-                    var isLive = response.videoDetails?.isLive == true
-                    if (allowAudioUpgrade &&
-                        !isLive &&
-                        omvAudioTargetResolver.shouldAttemptPostPlayerLookup(
-                            videoId = videoId,
-                            resolvedSourceId = resolvedSourceId,
-                            preResolvedAtvAttempted = initialResolution.preResolvedAtvAttempted,
-                        )
-                    ) {
-                        val initialDur = response.videoDetails?.lengthSeconds?.toIntOrNull()
-                        val shouldTryAudioVariant =
-                            localSong?.videoType == MUSIC_VIDEO_TYPE_OMV ||
-                                (data.third == MediaType.Video && !localSong?.albumId.isNullOrEmpty()) ||
-                                (localSong != null &&
-                                    localSong.durationSeconds > 0 &&
-                                    initialDur != null &&
-                                    abs(initialDur - localSong.durationSeconds) >= 2)
-                        if (shouldTryAudioVariant) {
-                            val atvId =
-                                youTube.resolveOfficialAudioVariantId(
-                                    videoId = videoId,
-                                    title = localSong.title.ifBlank { response.videoDetails?.title ?: "" }.ifBlank { null },
-                                    artist = localSong.artistName?.firstOrNull() ?: response.videoDetails?.author,
-                                    expectedDurationSec = localSong.durationSeconds.takeIf { it > 0 },
-                                )
-                            if (atvId != null && atvId != videoId) {
-                                youTube
-                                    .player(
-                                        atvId,
-                                        noLogIn = muxed,
-                                        preferredAudioLanguage = preferredAudioLanguage,
-                                        isVideo = false,
-                                    ).onSuccess { atvData ->
-                                        val atvDur = atvData.second.videoDetails?.lengthSeconds?.toIntOrNull()
-                                        Logger.i(
-                                            "Stream",
-                                            "Upgraded OMV stream $videoId (${initialDur}s) -> ATV $atvId (${atvDur}s)",
-                                        )
-                                        omvAudioTargetResolver.recordPositive(videoId, atvId)
-                                        resolvedSourceId = atvId
-                                        data = atvData
-                                        response = atvData.second
-                                        isLive = response.videoDetails?.isLive == true
-                                    }
-                            } else {
-                                omvAudioTargetResolver.recordNegative(videoId)
-                            }
-                        }
-                    }
-                    LiveStreamRegistry.recordLiveStatus(videoId, isLive)
-                    // The song row follows, so the LIVE badge and the download gate know too —
-                    // including when a broadcast has ended and its recording downloads normally.
-                    if (isLive) {
-                        localDataSource.updateSongLiveStatus(videoId, true)
-                    } else {
-                        backgroundScope.launch {
-                            localDataSource.updateSongLiveStatus(videoId, false)
-                        }
-                    }
-                    if (isLive && isDownloading) {
-                        // Nothing to save: handing an endless HLS playlist to a downloader stores
-                        // the playlist text as if it were the song. Emitting nothing fails the
-                        // download where the caller resolves its URL.
-                        Logger.i("Stream", "$videoId: live stream, refusing download")
-                        return@onSuccess
-                    }
-                    if (isLive) {
-                        // A live broadcast plays from its HLS playlist alone, so none of the itag
-                        // choice below applies. Nothing about it goes into the format table either:
-                        // the playlist URL is good for a few hours and the broadcast may be over by
-                        // the next run, so every play resolves it afresh — and the players learn
-                        // that it is live from LiveStreamRegistry, recorded just above.
-                        val liveHlsUrl = response.streamingData?.hlsManifestUrl
-                        Logger.i("Stream", "$videoId: live stream, HLS URL ${if (liveHlsUrl == null) "missing" else "found"}")
-                        emit(liveHlsUrl)
-                        return@onSuccess
-                    }
-                    Logger.d(
-                        "Stream",
-                        response.streamingData
-                            ?.formats
-                            ?.map { it.itag }
-                            .toString() + " " +
-                            response.streamingData
-                                ?.adaptiveFormats
-                                ?.map { it.itag }
-                                .toString(),
-                    )
-                    val formatList = mutableListOf<PlayerResponse.StreamingData.Format>()
-                    formatList.addAll(
-                        response.streamingData?.formats?.filter { it.url.isNullOrEmpty().not() } ?: emptyList(),
-                    )
-                    formatList.addAll(
-                        response.streamingData?.adaptiveFormats?.filter { it.url.isNullOrEmpty().not() }
-                            ?: emptyList(),
-                    )
-                    val videoFormat =
-                        formatList.find { it.itag == videoItag }
-                            ?: formatList.find { it.itag == ITAG.VIDEO_720P }
-                            ?: formatList.find { it.itag == ITAG.VIDEO_360P }
-                            ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
-                    val audioTwinItag = ITAG.highQualityTwinOf(itag)
-                    // The last resort is the BEST audio the response actually carries,
-                    // never an arbitrary entry. When the chosen itag and its high-quality
-                    // twin are both absent — a free account asking for a Premium quality
-                    // is served neither 774 nor 141 — the selection used to fall through
-                    // to the last format in the list, in practice one of the lowest
-                    // bitrate streams (~48-70 kbps), below even the Low setting.
-                    val expectedDurationSec =
-                        response.videoDetails?.lengthSeconds?.toIntOrNull()
-                            ?: localSong?.durationSeconds?.takeIf { it > 0 }
-                    val audioFormat =
-                        formatList.find { it.itag == itag }
-                            ?: audioTwinItag?.let { twin -> formatList.find { it.itag == twin } }
-                            ?: formatList
-                                .filter { it.isAudio && it.url.isNullOrEmpty().not() }
-                                .maxByOrNull { it.bitrate }
-                    var format =
-                        if (isVideo) {
-                            videoFormat
-                        } else {
-                            audioFormat
-                        }
-                    if (format == null) {
-                        format = formatList.lastOrNull { it.url.isNullOrEmpty().not() }
-                    }
-                    if (muxed) {
-                        format = formatList
-                            .filter {
-                                val url = it.url
-                                url != null && youTube.isManifestUrl(url)
-                            }.maxByOrNull { it.width ?: 0 } ?: formatList.find { it.itag == videoItag }
-                    }
-                    val chosenStreamUrl = format?.url
-                    if (!muxed && chosenStreamUrl != null && !isUrlDurationCompatible(chosenStreamUrl, expectedDurationSec)) {
+                val effectivePlayerResult =
+                    if (primaryPlayerResult.isFailure && initialResolveId != videoId) {
+                        val failure = primaryPlayerResult.exceptionOrNull()
+                        if (failure is CancellationException) throw failure
                         Logger.w(
                             "Stream",
-                            "Rejected URL with mismatched dur= for $videoId (resolved=$resolvedSourceId, expected=${expectedDurationSec}s)",
+                            "Pre-resolved ATV $initialResolveId failed for $videoId (${failure?.message}); falling back to original ID",
                         )
-                        youTube.onStreamRejected(resolvedSourceId)
-                        emit(null)
-                        return@onSuccess
-                    }
-                    // One line per resolved stream and never the URL: a googlevideo URL carries the
-                    // listener's IP address.
-                    Logger.i(
-                        "Stream",
-                        "$videoId: ${data.third}, itag ${format?.itag} ${format?.mimeType?.substringBefore(';')}" +
-                            (if (resolvedSourceId != videoId) " [atv=$resolvedSourceId]" else "") +
-                            (if (muxed) ", HLS" else "") +
-                            ", expires in ${response.streamingData?.expiresInSeconds}s",
-                    )
-                    val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
-                    if (!isVideo && !muxed) {
-                        verifiedAudioIds.update { it + videoId }
-                    }
-                    insertNewFormatAsync(
-                        NewFormatEntity(
-                            videoId = if ((isVideo && !muxed) || VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
-                            itag = format?.itag ?: itag,
-                            mimeType =
-                                Regex("""([^;]+);\s*codecs=["']([^"']+)["']""")
-                                    .find(
-                                        format?.mimeType ?: "",
-                                    )?.groupValues
-                                    ?.getOrNull(1) ?: format?.mimeType ?: "",
-                            codecs =
-                                Regex("""([^;]+);\s*codecs=["']([^"']+)["']""")
-                                    .find(
-                                        format?.mimeType ?: "",
-                                    )?.groupValues
-                                    ?.getOrNull(2) ?: format?.mimeType ?: "",
-                            bitrate = format?.bitrate,
-                            sampleRate = format?.audioSampleRate,
-                            contentLength = format?.contentLength,
-                            loudnessDb =
-                                response.playerConfig
-                                    ?.audioConfig
-                                    ?.loudnessDb
-                                    ?.toFloat(),
-                            lengthSeconds = durationSecond,
-                            playbackTrackingVideostatsPlaybackUrl =
-                                response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
-                                    "https://s.youtube.com",
-                                    "https://music.youtube.com",
-                                ),
-                            playbackTrackingAtrUrl =
-                                response.playbackTracking?.atrUrl?.baseUrl?.replace(
-                                    "https://s.youtube.com",
-                                    "https://music.youtube.com",
-                                ),
-                            playbackTrackingVideostatsWatchtimeUrl =
-                                response.playbackTracking?.videostatsWatchtimeUrl?.baseUrl?.replace(
-                                    "https://s.youtube.com",
-                                    "https://music.youtube.com",
-                                ),
-                            cpn = data.first,
-                            expiredTime = now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
-                            audioUrl = if (muxed) response.streamingData?.hlsManifestUrl else format?.url,
-                            videoUrl = if (muxed) response.streamingData?.hlsManifestUrl else videoFormat?.url,
-                            bpm = null,
-                            musicKey = null,
-                            keyScale = null,
-                        ),
-                    )
-                    // AutoMix metadata from the Tidal official API (BPM/key) is fetched
-                    // only after the format is stored, in the background: it used to be
-                    // awaited inline here, so every fresh resolve paid a Tidal search —
-                    // plus an OAuth fetch on the first song of a run — before the stream
-                    // URL could be emitted and the player could start, for data nothing
-                    // in playback itself needs.
-                    if (!isVideo && durationSecond != null && data.third == MediaType.Song) {
-                        fetchTidalMetadataAsync(
-                            videoId = videoId,
-                            title = response.videoDetails?.title ?: "",
-                            author = response.videoDetails?.author ?: "",
-                            durationSecond = durationSecond,
+                        omvAudioTargetResolver.evictMapping(videoId)
+                        initialResolveId = videoId
+                        youTube.player(
+                            videoId,
+                            noLogIn = muxed,
+                            preferredAudioLanguage = preferredAudioLanguage,
+                            isVideo = isVideo || muxed,
+                            preferImmediateDirect = preferImmediate,
+                            expectedDurationSec = expectedSongDuration,
+                            knownMusicVideoType = localSong?.videoType,
+                            sendPlaybackTracking = sendTracking,
+                            backgroundScope = backgroundScope,
+                            registerBackgroundJob = { job -> registerBackgroundTrackingJob(resolveSeq, job) },
+                            onBackgroundTrackingUpdate = onBgTrackingUpdate,
                         )
-                    }
-                    if (muxed) {
-                        emit(response.streamingData?.hlsManifestUrl)
                     } else {
-                        emit(
-                            format?.url?.let { url ->
-                                val cpnSuffix = if (data.first != null && !url.contains("cpn=")) "&cpn=${data.first}" else ""
-                                val rangeSuffix =
-                                    if (!youTube.isManifestUrl(url) && !url.contains("range=")) {
-                                        format.contentLength?.takeIf { it > 0L }?.let { "&range=0-$it" }.orEmpty()
-                                    } else {
-                                        ""
-                                    }
-                                url + cpnSuffix + rangeSuffix
+                        primaryPlayerResult
+                    }
+                effectivePlayerResult
+                    .onSuccess { initialData ->
+                        var resolvedSourceId = initialResolveId
+                        var data = initialData
+                        var response = data.second
+                        var isLive = response.videoDetails?.isLive == true
+                        if (allowAudioUpgrade &&
+                            !isLive &&
+                            omvAudioTargetResolver.shouldAttemptPostPlayerLookup(
+                                videoId = videoId,
+                                resolvedSourceId = resolvedSourceId,
+                                preResolvedAtvAttempted = initialResolution.preResolvedAtvAttempted,
+                            )
+                        ) {
+                            val initialDur = response.videoDetails?.lengthSeconds?.toIntOrNull()
+                            val shouldTryAudioVariant =
+                                localSong?.videoType == MUSIC_VIDEO_TYPE_OMV ||
+                                    (data.third == MediaType.Video && !localSong?.albumId.isNullOrEmpty()) ||
+                                    (localSong != null &&
+                                        localSong.durationSeconds > 0 &&
+                                        initialDur != null &&
+                                        abs(initialDur - localSong.durationSeconds) >= 2)
+                            if (shouldTryAudioVariant) {
+                                val atvId =
+                                    youTube.resolveOfficialAudioVariantId(
+                                        videoId = videoId,
+                                        title = localSong.title.ifBlank { response.videoDetails?.title ?: "" }.ifBlank { null },
+                                        artist = localSong.artistName?.firstOrNull() ?: response.videoDetails?.author,
+                                        expectedDurationSec = localSong.durationSeconds.takeIf { it > 0 },
+                                    )
+                                if (atvId != null && atvId != videoId) {
+                                    youTube
+                                        .player(
+                                            atvId,
+                                            noLogIn = muxed,
+                                            preferredAudioLanguage = preferredAudioLanguage,
+                                            isVideo = false,
+                                            preferImmediateDirect = preferImmediate,
+                                            expectedDurationSec = expectedSongDuration,
+                                            knownMusicVideoType = "MUSIC_VIDEO_TYPE_ATV",
+                                            sendPlaybackTracking = sendTracking,
+                                            backgroundScope = backgroundScope,
+                                            registerBackgroundJob = { job -> registerBackgroundTrackingJob(resolveSeq, job) },
+                                            onBackgroundTrackingUpdate = onBgTrackingUpdate,
+                                        ).onSuccess { atvData ->
+                                            val atvDur = atvData.second.videoDetails?.lengthSeconds?.toIntOrNull()
+                                            Logger.i(
+                                                "Stream",
+                                                "Upgraded OMV stream $videoId (${initialDur}s) -> ATV $atvId (${atvDur}s)",
+                                            )
+                                            omvAudioTargetResolver.recordPositive(videoId, atvId)
+                                            resolvedSourceId = atvId
+                                            data = atvData
+                                            response = atvData.second
+                                            isLive = response.videoDetails?.isLive == true
+                                        }
+                                } else {
+                                    omvAudioTargetResolver.recordNegative(videoId)
+                                }
+                            }
+                        }
+                        LiveStreamRegistry.recordLiveStatus(videoId, isLive)
+                        // The song row follows, so the LIVE badge and the download gate know too —
+                        // including when a broadcast has ended and its recording downloads normally.
+                        if (isLive) {
+                            localDataSource.updateSongLiveStatus(videoId, true)
+                        } else {
+                            backgroundScope.launch {
+                                localDataSource.updateSongLiveStatus(videoId, false)
+                            }
+                        }
+                        if (isLive && isDownloading) {
+                            // Nothing to save: handing an endless HLS playlist to a downloader stores
+                            // the playlist text as if it were the song. Emitting nothing fails the
+                            // download where the caller resolves its URL.
+                            Logger.i("Stream", "$videoId: live stream, refusing download")
+                            return@onSuccess
+                        }
+                        if (isLive) {
+                            // A live broadcast plays from its HLS playlist alone, so none of the itag
+                            // choice below applies. Nothing about it goes into the format table either:
+                            // the playlist URL is good for a few hours and the broadcast may be over by
+                            // the next run, so every play resolves it afresh — and the players learn
+                            // that it is live from LiveStreamRegistry, recorded just above.
+                            val liveHlsUrl = response.streamingData?.hlsManifestUrl
+                            Logger.i("Stream", "$videoId: live stream, HLS URL ${if (liveHlsUrl == null) "missing" else "found"}")
+                            emit(liveHlsUrl)
+                            return@onSuccess
+                        }
+                        Logger.d(
+                            "Stream",
+                            response.streamingData
+                                ?.formats
+                                ?.map { it.itag }
+                                .toString() + " " +
+                                response.streamingData
+                                    ?.adaptiveFormats
+                                    ?.map { it.itag }
+                                    .toString(),
+                        )
+                        val formatList = mutableListOf<PlayerResponse.StreamingData.Format>()
+                        formatList.addAll(
+                            response.streamingData?.formats?.filter { it.url.isNullOrEmpty().not() } ?: emptyList(),
+                        )
+                        formatList.addAll(
+                            response.streamingData?.adaptiveFormats?.filter { it.url.isNullOrEmpty().not() }
+                                ?: emptyList(),
+                        )
+                        val videoFormat =
+                            formatList.find { it.itag == videoItag }
+                                ?: formatList.find { it.itag == ITAG.VIDEO_720P }
+                                ?: formatList.find { it.itag == ITAG.VIDEO_360P }
+                                ?: formatList.find { !it.isAudio && it.url.isNullOrEmpty().not() }
+                        val audioTwinItag = ITAG.highQualityTwinOf(itag)
+                        // The last resort is the BEST audio the response actually carries,
+                        // never an arbitrary entry. When the chosen itag and its high-quality
+                        // twin are both absent — a free account asking for a Premium quality
+                        // is served neither 774 nor 141 — the selection used to fall through
+                        // to the last format in the list, in practice one of the lowest
+                        // bitrate streams (~48-70 kbps), below even the Low setting.
+                        val expectedDurationSec =
+                            response.videoDetails?.lengthSeconds?.toIntOrNull()
+                                ?: localSong?.durationSeconds?.takeIf { it > 0 }
+                        val audioFormat =
+                            formatList.find { it.itag == itag }
+                                ?: audioTwinItag?.let { twin -> formatList.find { it.itag == twin } }
+                                ?: formatList
+                                    .filter { it.isAudio && it.url.isNullOrEmpty().not() }
+                                    .maxByOrNull { it.bitrate }
+                        var format =
+                            if (isVideo) {
+                                videoFormat
+                            } else {
+                                audioFormat
+                            }
+                        if (format == null) {
+                            format = formatList.lastOrNull { it.url.isNullOrEmpty().not() }
+                        }
+                        if (muxed) {
+                            format = formatList
+                                .filter {
+                                    val url = it.url
+                                    url != null && youTube.isManifestUrl(url)
+                                }.maxByOrNull { it.width ?: 0 } ?: formatList.find { it.itag == videoItag }
+                        }
+                        val chosenStreamUrl = format?.url
+                        if (!muxed && chosenStreamUrl != null && !isUrlDurationCompatible(chosenStreamUrl, expectedDurationSec)) {
+                            Logger.w(
+                                "Stream",
+                                "Rejected URL with mismatched dur= for $videoId (resolved=$resolvedSourceId, expected=${expectedDurationSec}s)",
+                            )
+                            youTube.onStreamRejected(resolvedSourceId)
+                            emit(null)
+                            return@onSuccess
+                        }
+                        // One line per resolved stream and never the URL: a googlevideo URL carries the
+                        // listener's IP address.
+                        Logger.i(
+                            "Stream",
+                            "$videoId: ${data.third}, itag ${format?.itag} ${format?.mimeType?.substringBefore(';')}" +
+                                (if (resolvedSourceId != videoId) " [atv=$resolvedSourceId]" else "") +
+                                (if (muxed) ", HLS" else "") +
+                                ", expires in ${response.streamingData?.expiresInSeconds}s",
+                        )
+                        val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
+                        if (!isVideo && !muxed) {
+                            verifiedAudioIds.update { it + videoId }
+                        }
+                        formatInsertScheduled = true
+                        insertNewFormatAsync(
+                            NewFormatEntity(
+                                videoId = if ((isVideo && !muxed) || VIDEO_QUALITY.itags.contains(format?.itag)) "${MERGING_DATA_TYPE.VIDEO}$videoId" else videoId,
+                                itag = format?.itag ?: itag,
+                                mimeType =
+                                    Regex("""([^;]+);\s*codecs=["']([^"']+)["']""")
+                                        .find(
+                                            format?.mimeType ?: "",
+                                        )?.groupValues
+                                        ?.getOrNull(1) ?: format?.mimeType ?: "",
+                                codecs =
+                                    Regex("""([^;]+);\s*codecs=["']([^"']+)["']""")
+                                        .find(
+                                            format?.mimeType ?: "",
+                                        )?.groupValues
+                                        ?.getOrNull(2) ?: format?.mimeType ?: "",
+                                bitrate = format?.bitrate,
+                                sampleRate = format?.audioSampleRate,
+                                contentLength = format?.contentLength,
+                                loudnessDb =
+                                    response.playerConfig
+                                        ?.audioConfig
+                                        ?.loudnessDb
+                                        ?.toFloat(),
+                                lengthSeconds = durationSecond,
+                                playbackTrackingVideostatsPlaybackUrl =
+                                    response.playbackTracking?.videostatsPlaybackUrl?.baseUrl?.replace(
+                                        "https://s.youtube.com",
+                                        "https://music.youtube.com",
+                                    ),
+                                playbackTrackingAtrUrl =
+                                    response.playbackTracking?.atrUrl?.baseUrl?.replace(
+                                        "https://s.youtube.com",
+                                        "https://music.youtube.com",
+                                    ),
+                                playbackTrackingVideostatsWatchtimeUrl =
+                                    response.playbackTracking?.videostatsWatchtimeUrl?.baseUrl?.replace(
+                                        "https://s.youtube.com",
+                                        "https://music.youtube.com",
+                                    ),
+                                cpn = data.first,
+                                expiredTime = now().plusSeconds(response.streamingData?.expiresInSeconds?.toLong() ?: 0L),
+                                audioUrl = if (muxed) response.streamingData?.hlsManifestUrl else format?.url,
+                                videoUrl = if (muxed) response.streamingData?.hlsManifestUrl else videoFormat?.url,
+                                bpm = null,
+                                musicKey = null,
+                                keyScale = null,
+                            ),
+                            onDbInserted = { insertedKey ->
+                                dbInsertedFormatKey.complete(insertedKey)
                             },
                         )
-                    }
-                }.onFailure {
-                    if (it is CancellationException) throw it
-                    if (it is StreamResolutionException && it.reason != StreamResolutionException.Reason.NO_NETWORK) {
-                        val reason = it.message ?: "YouTube refused $videoId"
-                        lastUnrecoverableErrors.update { current ->
-                            val base =
-                                if (current.size >= 16 && videoId !in current) {
-                                    current - current.keys.first()
-                                } else {
-                                    current
-                                }
-                            base + (videoId to reason)
+                        // AutoMix metadata from the Tidal official API (BPM/key) is fetched
+                        // only after the format is stored, in the background: it used to be
+                        // awaited inline here, so every fresh resolve paid a Tidal search —
+                        // plus an OAuth fetch on the first song of a run — before the stream
+                        // URL could be emitted and the player could start, for data nothing
+                        // in playback itself needs.
+                        if (!isVideo && durationSecond != null && data.third == MediaType.Song) {
+                            fetchTidalMetadataAsync(
+                                videoId = videoId,
+                                title = response.videoDetails?.title ?: "",
+                                author = response.videoDetails?.author ?: "",
+                                durationSecond = durationSecond,
+                            )
                         }
+                        if (muxed) {
+                            emit(response.streamingData?.hlsManifestUrl)
+                        } else {
+                            emit(
+                                format?.url?.let { url ->
+                                    val cpnSuffix = if (data.first != null && !url.contains("cpn=")) "&cpn=${data.first}" else ""
+                                    val rangeSuffix =
+                                        if (!youTube.isManifestUrl(url) && !url.contains("range=")) {
+                                            format.contentLength?.takeIf { it > 0L }?.let { "&range=0-$it" }.orEmpty()
+                                        } else {
+                                            ""
+                                        }
+                                    url + cpnSuffix + rangeSuffix
+                                },
+                            )
+                        }
+                    }.onFailure {
+                        if (it is CancellationException) throw it
+                        if (it is StreamResolutionException && it.reason != StreamResolutionException.Reason.NO_NETWORK) {
+                            val reason = it.message ?: "YouTube refused $videoId"
+                            lastUnrecoverableErrors.update { current ->
+                                val base =
+                                    if (current.size >= 16 && videoId !in current) {
+                                        current - current.keys.first()
+                                    } else {
+                                        current
+                                    }
+                                base + (videoId to reason)
+                            }
+                        }
+                        it.printStackTrace()
+                        Logger.e("Stream", "Error: ${it.message}")
+                        emit(null)
                     }
-                    it.printStackTrace()
-                    Logger.e("Stream", "Error: ${it.message}")
-                    emit(null)
+            } finally {
+                if (!formatInsertScheduled && !dbInsertedFormatKey.isCompleted) {
+                    dbInsertedFormatKey.cancel()
                 }
+            }
         }.flowOn(Dispatchers.IO)
 
     override fun initPlayback(
@@ -848,14 +990,28 @@ internal class StreamRepositoryImpl(
                     .searchTidalMetadata(q, durationSecond)
                     .onSuccess { metadata ->
                         Logger.d("Stream", "Tidal metadata: $metadata")
-                        localDataSource.getNewFormat(videoId)?.let { stored ->
-                            localDataSource.updateNewFormat(
-                                stored.copy(
-                                    bpm = metadata.bpm,
-                                    musicKey = metadata.musicKey,
-                                    keyScale = metadata.keyScale,
-                                ),
+                        formatDbMutex.withLock {
+                            localDataSource.updateNewFormatTidalMetadata(
+                                videoId = videoId,
+                                bpm = metadata.bpm,
+                                musicKey = metadata.musicKey,
+                                keyScale = metadata.keyScale,
                             )
+                        }
+                        formatStateMutex.withLock {
+                            formatCache.update { current ->
+                                val existing = current[videoId] ?: return@update current
+                                current + (
+                                    videoId to (
+                                        existing.first to
+                                            existing.second.copy(
+                                                bpm = metadata.bpm,
+                                                musicKey = metadata.musicKey,
+                                                keyScale = metadata.keyScale,
+                                            )
+                                    )
+                                )
+                            }
                         }
                     }.onFailure {
                         if (it is CancellationException) throw it
@@ -875,3 +1031,14 @@ internal class StreamRepositoryImpl(
         const val TIDAL_COOLDOWN_SECONDS = 120
     }
 }
+
+internal fun isPremiumOnlyAudioItag(itag: Int): Boolean =
+    itag == ITAG.AUDIO_OPUS_HIGH || itag == ITAG.AUDIO_AAC_HIGH
+
+internal fun shouldPreferImmediateDirect(
+    isVideo: Boolean,
+    muxed: Boolean,
+    isLoggedIn: Boolean,
+    requestedItag: Int,
+): Boolean = !isVideo && !muxed && !(isLoggedIn && isPremiumOnlyAudioItag(requestedItag))
+

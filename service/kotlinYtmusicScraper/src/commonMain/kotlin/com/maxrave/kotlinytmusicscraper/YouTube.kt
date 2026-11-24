@@ -2078,12 +2078,20 @@ class YouTube {
         }
     }
 
+    @OptIn(ExperimentalTime::class)
     suspend fun player(
         videoId: String,
         playlistId: String? = null,
         noLogIn: Boolean = false,
         preferredAudioLanguage: String? = null,
         isVideo: Boolean = true,
+        preferImmediateDirect: Boolean = false,
+        expectedDurationSec: Int? = null,
+        knownMusicVideoType: String? = null,
+        sendPlaybackTracking: Boolean = true,
+        backgroundScope: CoroutineScope? = null,
+        registerBackgroundJob: ((Job) -> Unit)? = null,
+        onBackgroundTrackingUpdate: (suspend (cpn: String, res: PlayerResponse) -> Unit)? = null,
     ): Result<Triple<String?, PlayerResponse, MediaType>> =
         runCatching {
             val cpn =
@@ -2116,15 +2124,28 @@ class YouTube {
             var extractorMs = 0L
             // On audio-only tracks, race the anonymous VISIONOS 1.04 fast path alongside
             // WEB_REMIX and delay BravePipe by 700ms (or wake BravePipe immediately if VISIONOS
-            // fails earlier). When VISIONOS is in cooldown or video streams are requested,
-            // BravePipe starts at t=0.
+            // fails earlier). When preferImmediateDirect is enabled, return the standalone
+            // VISIONOS response immediately (~280ms) and let WEB_REMIX enrich tracking/loudness
+            // in the background.
             val fastPathEligible = !isVideo && videoId !in directTempRejectedIds.value
             val fastPathCooldown = fastPathEligible && !directAudioFastPath.isAvailable(resolveStartMs)
             val useDirectFastPath = fastPathEligible && !fastPathCooldown
+            val immediateDirectActive = useDirectFastPath && preferImmediateDirect
             val directDeferred =
                 if (useDirectFastPath) {
                     CoroutineScope(coroutineContext).async(Dispatchers.IO) {
                         fetchVisionOsAudio(videoId, cpn, preferredAudioLanguage)
+                    }
+                } else {
+                    null
+                }
+            val effectiveBgScope = backgroundScope ?: CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val bgWebRemixDeferred =
+                if (immediateDirectActive && sendPlaybackTracking) {
+                    effectiveBgScope.async {
+                        fetchPlayerResponse(WEB_REMIX, videoId, playlistId, cpn, signatureTimestamp)
+                    }.also { deferred ->
+                        registerBackgroundJob?.invoke(deferred)
                     }
                 } else {
                     null
@@ -2154,12 +2175,90 @@ class YouTube {
                         requireVideo = isVideo,
                     )
                 }
+
+            var streams: List<Pair<Int, String>> = emptyList()
+            var response: PlayerResponse? = null
+            var vrTierOverride: String? = null
+            var vrFailurePrefix: String? = if (fastPathCooldown) "visionos:cooldown" else null
+            var immediateFallbackOutcome: DirectAudioOutcome? = null
+
+            if (immediateDirectActive && directDeferred != null) {
+                val directOutcome =
+                    try {
+                        directDeferred.await()
+                    } catch (e: CancellationException) {
+                        bgWebRemixDeferred?.cancel()
+                        streamsDeferred.cancel()
+                        throw e
+                    }
+                if (directOutcome is DirectAudioOutcome.Success) {
+                    val standalone =
+                        DirectAudioFastPathParser.buildStandalonePlayerResponse(
+                            videoId = videoId,
+                            directResponse = directOutcome.response,
+                            preferredAudioLanguage = preferredAudioLanguage,
+                            expectedDurationSec = expectedDurationSec,
+                        )
+                    if (standalone != null) {
+                        streamsDeferred.cancel()
+                        directAudioFastPath.recordServed(videoId)
+                        ExtractSource.record(videoId, "VISIONOS")
+                        ExtractTiming.consume(videoId)
+                        val elapsedMs = Clock.System.now().toEpochMilliseconds() - resolveStartMs
+                        Logger.i(
+                            "PlayTiming",
+                            "id=$videoId post=${elapsedMs}ms extractor=0ms tier=[visionos:immediate/${directOutcome.elapsedMs}ms/${directOutcome.headLabel}] alt=false total=${elapsedMs}ms",
+                        )
+                        if (bgWebRemixDeferred != null && onBackgroundTrackingUpdate != null) {
+                            val enrichJob =
+                                effectiveBgScope.launch {
+                                    val webRes =
+                                        try {
+                                            bgWebRemixDeferred.await()
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            Logger.w(TAG, "Background WEB_REMIX enrichment failed for $videoId (${e.message})")
+                                            return@launch
+                                        }
+                                    onBackgroundTrackingUpdate(cpn, webRes)
+                                }
+                            enrichJob.invokeOnCompletion { cause ->
+                                if (cause != null) bgWebRemixDeferred.cancel()
+                            }
+                            registerBackgroundJob?.invoke(enrichJob)
+                        }
+                        val mediaType =
+                            com.maxrave.kotlinytmusicscraper.extractor.classifyMediaType(
+                                videoDetails = standalone.videoDetails,
+                                isDirectFastPath = true,
+                                knownMusicVideoType = knownMusicVideoType,
+                            )
+                        return@runCatching Triple(cpn, standalone, mediaType)
+                    } else {
+                        directAudioFastPath.markFailedOrRejected(Clock.System.now().toEpochMilliseconds())
+                        vrFailurePrefix = "visionos:dur_mismatch/${directOutcome.elapsedMs}ms"
+                        immediateFallbackOutcome = directOutcome
+                    }
+                } else {
+                    if (directOutcome is DirectAudioOutcome.Failure) {
+                        vrFailurePrefix = "visionos:${directOutcome.reason}/${directOutcome.elapsedMs}ms"
+                    }
+                    immediateFallbackOutcome = directOutcome
+                }
+            }
+
             var altClientTried = false
             var tempRes: PlayerResponse =
                 try {
-                    fetchPlayerResponse(WEB_REMIX, videoId, playlistId, cpn, signatureTimestamp)
+                    if (bgWebRemixDeferred != null) {
+                        bgWebRemixDeferred.await()
+                    } else {
+                        fetchPlayerResponse(WEB_REMIX, videoId, playlistId, cpn, signatureTimestamp)
+                    }
                 } catch (e: CancellationException) {
                     directDeferred?.cancel()
+                    bgWebRemixDeferred?.cancel()
                     streamsDeferred.cancel()
                     throw e
                 } catch (e: Exception) {
@@ -2177,10 +2276,12 @@ class YouTube {
                         fetchPlayerResponse(ANDROID, videoId, playlistId, cpn, signatureTimestamp)
                     } catch (altError: CancellationException) {
                         directDeferred?.cancel()
+                        bgWebRemixDeferred?.cancel()
                         streamsDeferred.cancel()
                         throw altError
                     } catch (altError: Exception) {
                         directDeferred?.cancel()
+                        bgWebRemixDeferred?.cancel()
                         streamsDeferred.cancel()
                         throw playerRequestFailure(videoId, altError)
                     }
@@ -2208,11 +2309,12 @@ class YouTube {
                 return@runCatching Triple(cpn, tempRes.asLiveStream(liveHlsUrl), MediaType.Video)
             }
 
-            var streams: List<Pair<Int, String>> = emptyList()
-            var response: PlayerResponse? = null
-            var vrTierOverride: String? = null
-            var vrFailurePrefix: String? = if (fastPathCooldown) "visionos:cooldown" else null
-            if (directDeferred != null) {
+            if (immediateFallbackOutcome != null) {
+                streams = streamsDeferred.await()
+                if (streams.isEmpty() && immediateFallbackOutcome is DirectAudioOutcome.Success) {
+                    streams = extractFallbackStreams(videoId, extractionId, requireVideo = isVideo)
+                }
+            } else if (directDeferred != null) {
                 val directOutcome =
                     if (directDeferred.isCompleted) {
                         directDeferred.await()
@@ -2235,6 +2337,7 @@ class YouTube {
                             baseResponse = tempRes,
                             directResponse = directOutcome.response,
                             preferredAudioLanguage = preferredAudioLanguage,
+                            expectedDurationSec = expectedDurationSec,
                         )
                     if (merged != null) {
                         streamsDeferred.cancel()
@@ -2423,13 +2526,12 @@ class YouTube {
                 "PlayTiming",
                 "id=$videoId post=${playerResponseMs}ms extractor=${extractorMs}ms tier=[$tierSummary] alt=$altClientTried total=${Clock.System.now().toEpochMilliseconds() - resolveStartMs}ms",
             )
-            val firstThumb =
-                decodedSigResponse.videoDetails
-                    ?.thumbnail
-                    ?.thumbnails
-                    ?.firstOrNull()
             val thumbnails =
-                if (firstThumb?.height == firstThumb?.width && firstThumb != null) MediaType.Song else MediaType.Video
+                com.maxrave.kotlinytmusicscraper.extractor.classifyMediaType(
+                    videoDetails = decodedSigResponse.videoDetails,
+                    isDirectFastPath = false,
+                    knownMusicVideoType = knownMusicVideoType,
+                )
             return@runCatching Triple(
                 cpn,
                 decodedSigResponse.copy(

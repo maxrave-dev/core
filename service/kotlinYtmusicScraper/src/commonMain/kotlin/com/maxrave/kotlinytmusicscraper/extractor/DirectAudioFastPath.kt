@@ -1,6 +1,10 @@
 package com.maxrave.kotlinytmusicscraper.extractor
 
 import com.maxrave.common.ITAG
+import com.maxrave.kotlinytmusicscraper.models.MediaType
+import com.maxrave.kotlinytmusicscraper.models.ResponseContext
+import com.maxrave.kotlinytmusicscraper.models.Thumbnail
+import com.maxrave.kotlinytmusicscraper.models.Thumbnails
 import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -115,6 +119,16 @@ internal class DirectAudioFastPathState(
     }
 }
 
+internal data class ParsedDirectVideoDetails(
+    val videoId: String,
+    val title: String?,
+    val author: String?,
+    val channelId: String,
+    val lengthSeconds: String,
+    val musicVideoType: String?,
+    val thumbnails: List<Thumbnail>,
+)
+
 internal data class ParsedDirectPlayerResponse(
     val status: String,
     val reason: String?,
@@ -123,6 +137,7 @@ internal data class ParsedDirectPlayerResponse(
     val expiresInSeconds: Int,
     val adaptiveFormats: List<PlayerResponse.StreamingData.Format>,
     val loudnessDb: Double?,
+    val videoDetails: ParsedDirectVideoDetails? = null,
 )
 
 internal object DirectAudioFastPathParser {
@@ -147,9 +162,35 @@ internal object DirectAudioFastPathParser {
         val status = playability?.stringOrNull("status") ?: "ERROR"
         val reason = playability?.stringOrNull("reason")
 
-        val videoDetails = root["videoDetails"] as? JsonObject
-        val isLive = videoDetails?.booleanOrNull("isLive") == true
-        val lengthSeconds = videoDetails?.intOrNull("lengthSeconds")
+        val videoDetailsObj = root["videoDetails"] as? JsonObject
+        val isLive = videoDetailsObj?.booleanOrNull("isLive") == true
+        val lengthSeconds = videoDetailsObj?.intOrNull("lengthSeconds")
+        val thumbnails =
+            (videoDetailsObj?.get("thumbnail") as? JsonObject)
+                ?.get("thumbnails")
+                ?.let { el ->
+                    (el as? kotlinx.serialization.json.JsonArray)?.mapNotNull { t ->
+                        val tObj = t as? JsonObject ?: return@mapNotNull null
+                        val tUrl = tObj.stringOrNull("url") ?: return@mapNotNull null
+                        Thumbnail(
+                            url = tUrl,
+                            width = tObj.intOrNull("width"),
+                            height = tObj.intOrNull("height"),
+                        )
+                    }
+                }.orEmpty()
+        val parsedVideoDetails =
+            videoDetailsObj?.let { vd ->
+                ParsedDirectVideoDetails(
+                    videoId = vd.stringOrNull("videoId").orEmpty(),
+                    title = vd.stringOrNull("title"),
+                    author = vd.stringOrNull("author"),
+                    channelId = vd.stringOrNull("channelId").orEmpty(),
+                    lengthSeconds = lengthSeconds?.toString() ?: vd.stringOrNull("lengthSeconds").orEmpty(),
+                    musicVideoType = vd.stringOrNull("musicVideoType"),
+                    thumbnails = thumbnails,
+                )
+            }
 
         val audioConfig =
             (root["playerConfig"] as? JsonObject)
@@ -172,6 +213,7 @@ internal object DirectAudioFastPathParser {
             expiresInSeconds = expiresInSeconds,
             adaptiveFormats = adaptiveFormats,
             loudnessDb = loudnessDb,
+            videoDetails = parsedVideoDetails,
         )
     }
 
@@ -355,6 +397,91 @@ internal object DirectAudioFastPathParser {
         )
     }
 
+    /**
+     * Builds a complete standalone [PlayerResponse] from [directResponse] (`VISIONOS`) so playback
+     * can begin immediately without waiting for `WEB_REMIX` (`playbackTracking` / `captions`).
+     *
+     * Validates `dur=` against [expectedDurationSec] (when available) or [directResponse]'s own
+     * declared duration, and populates `playerConfig.audioConfig.loudnessDb` and `videoDetails`.
+     */
+    fun buildStandalonePlayerResponse(
+        videoId: String,
+        directResponse: ParsedDirectPlayerResponse,
+        preferredAudioLanguage: String? = null,
+        expectedDurationSec: Int? = null,
+    ): PlayerResponse? {
+        if (directResponse.status != "OK" || directResponse.isLive) return null
+        val vd = directResponse.videoDetails
+        val effectiveExpectedDur =
+            expectedDurationSec?.takeIf { it > 0 }
+                ?: directResponse.lengthSeconds?.takeIf { it > 0 }
+        val directStreams =
+            extractDirectAudioStreams(directResponse, effectiveExpectedDur)
+                .orderByAudioTrack(preferredAudioLanguage)
+        if (directStreams.isEmpty()) return null
+
+        val directFormatsByItag =
+            directResponse.adaptiveFormats
+                .filter { it.isAudio && it.itag in ITAG.AUDIO_PLAYABLE && !it.url.isNullOrEmpty() }
+                .associateBy { it.itag }
+
+        val adaptiveFormats =
+            directStreams.mapNotNull { (itag, url) ->
+                val format = directFormatsByItag[itag] ?: return@mapNotNull null
+                format.copy(
+                    url = url,
+                    contentLength = contentLengthOf(url) ?: format.contentLength,
+                )
+            }
+        if (adaptiveFormats.isEmpty()) return null
+
+        val resolvedLengthStr =
+            vd?.lengthSeconds?.takeIf { it.isNotBlank() }
+                ?: effectiveExpectedDur?.toString()
+                ?: return null
+
+        val playerConfig =
+            directResponse.loudnessDb?.let { loudness ->
+                PlayerResponse.PlayerConfig(
+                    audioConfig =
+                        PlayerResponse.PlayerConfig.AudioConfig(
+                            loudnessDb = loudness,
+                            perceptualLoudnessDb = loudness,
+                        ),
+                )
+            }
+        val videoDetails =
+            PlayerResponse.VideoDetails(
+                videoId = vd?.videoId?.takeIf { it.isNotBlank() } ?: videoId,
+                title = vd?.title,
+                author = vd?.author,
+                channelId = vd?.channelId.orEmpty(),
+                authorAvatar = null,
+                authorSubCount = null,
+                lengthSeconds = resolvedLengthStr,
+                isLive = false,
+                musicVideoType = vd?.musicVideoType,
+                viewCount = null,
+                thumbnail = Thumbnails(vd?.thumbnails.orEmpty()),
+                description = null,
+            )
+        return PlayerResponse(
+            responseContext = ResponseContext(serviceTrackingParams = emptyList()),
+            playabilityStatus = PlayerResponse.PlayabilityStatus(status = "OK", reason = null),
+            playerConfig = playerConfig,
+            streamingData =
+                PlayerResponse.StreamingData(
+                    hlsManifestUrl = null,
+                    formats = emptyList(),
+                    adaptiveFormats = adaptiveFormats,
+                    expiresInSeconds = directResponse.expiresInSeconds,
+                ),
+            videoDetails = videoDetails,
+            playbackTracking = null,
+            captions = null,
+        )
+    }
+
     private fun JsonObject.stringOrNull(key: String): String? =
         (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
 
@@ -375,4 +502,39 @@ internal object DirectAudioFastPathParser {
 
     private fun JsonObject.booleanOrNull(key: String): Boolean? =
         (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.booleanOrNull
+}
+
+/**
+ * Classifies whether a resolved track is a [MediaType.Song] or [MediaType.Video].
+ *
+ * When [isDirectFastPath] is true (immediate `VISIONOS` return without waiting for `WEB_REMIX`),
+ * thumbnails frequently arrive in 4:3 (`480x360` / `120x90`) even for official songs because
+ * `VISIONOS` targets the main YouTube client rather than YouTube Music. In that mode we treat the
+ * track as [MediaType.Song] unless [knownMusicVideoType] or [PlayerResponse.VideoDetails.musicVideoType]
+ * explicitly identifies it as `MUSIC_VIDEO_TYPE_OMV` or `MUSIC_VIDEO_TYPE_UGC`.
+ */
+internal fun classifyMediaType(
+    videoDetails: PlayerResponse.VideoDetails?,
+    isDirectFastPath: Boolean,
+    knownMusicVideoType: String? = null,
+): MediaType {
+    val effectiveType =
+        videoDetails?.musicVideoType?.takeIf { it.isNotBlank() }
+            ?: knownMusicVideoType?.takeIf { it.isNotBlank() }
+    if (effectiveType == "MUSIC_VIDEO_TYPE_ATV") return MediaType.Song
+    val thumbs = videoDetails?.thumbnail?.thumbnails.orEmpty()
+    if (!isDirectFastPath) {
+        val firstThumb = thumbs.firstOrNull()
+        return if (firstThumb?.height == firstThumb?.width && firstThumb != null) MediaType.Song else MediaType.Video
+    }
+    if (thumbs.any { it.width != null && it.width > 0 && it.width == it.height }) {
+        return MediaType.Song
+    }
+    if (videoDetails?.author?.endsWith(" - Topic", ignoreCase = true) == true) {
+        return MediaType.Song
+    }
+    if (effectiveType == "MUSIC_VIDEO_TYPE_OMV" || effectiveType == "MUSIC_VIDEO_TYPE_UGC") {
+        return MediaType.Video
+    }
+    return if (videoDetails != null) MediaType.Song else MediaType.Video
 }

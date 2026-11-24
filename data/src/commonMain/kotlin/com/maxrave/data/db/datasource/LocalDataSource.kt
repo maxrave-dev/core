@@ -548,6 +548,34 @@ internal class LocalDataSource(
 
     suspend fun getNewFormatAsFlow(videoId: String) = databaseDao.getNewFormatAsFlow(videoId)
 
+    suspend fun updatePlaybackTrackingAndLoudness(
+        videoId: String,
+        cpn: String,
+        playbackUrl: String?,
+        atrUrl: String?,
+        watchtimeUrl: String?,
+        loudnessDb: Float?,
+    ) = databaseDao.updatePlaybackTrackingAndLoudness(
+        videoId = videoId,
+        cpn = cpn,
+        playbackUrl = playbackUrl,
+        atrUrl = atrUrl,
+        watchtimeUrl = watchtimeUrl,
+        loudnessDb = loudnessDb,
+    )
+
+    suspend fun updateNewFormatTidalMetadata(
+        videoId: String,
+        bpm: Int?,
+        musicKey: String?,
+        keyScale: String?,
+    ) = databaseDao.updateNewFormatTidalMetadata(
+        videoId = videoId,
+        bpm = bpm,
+        musicKey = musicKey,
+        keyScale = keyScale,
+    )
+
     suspend fun insertSongInfo(songInfo: SongInfoEntity) = databaseDao.insertSongInfo(songInfo)
 
     suspend fun getSongInfo(videoId: String) = databaseDao.getSongInfo(videoId)

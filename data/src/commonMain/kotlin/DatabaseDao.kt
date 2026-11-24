@@ -788,6 +788,35 @@ interface DatabaseDao {
     @Query("SELECT * FROM new_format WHERE videoId = :videoId")
     fun getNewFormatAsFlow(videoId: String): Flow<NewFormatEntity?>
 
+    @Query(
+        "UPDATE new_format " +
+            "SET playbackTrackingVideostatsPlaybackUrl = :playbackUrl, " +
+            "playbackTrackingAtrUrl = :atrUrl, " +
+            "playbackTrackingVideostatsWatchtimeUrl = :watchtimeUrl, " +
+            "loudnessDb = COALESCE(:loudnessDb, loudnessDb) " +
+            "WHERE videoId = :videoId AND cpn = :cpn",
+    )
+    suspend fun updatePlaybackTrackingAndLoudness(
+        videoId: String,
+        cpn: String,
+        playbackUrl: String?,
+        atrUrl: String?,
+        watchtimeUrl: String?,
+        loudnessDb: Float?,
+    )
+
+    @Query(
+        "UPDATE new_format " +
+            "SET bpm = :bpm, music_key = :musicKey, keyScale = :keyScale " +
+            "WHERE videoId = :videoId",
+    )
+    suspend fun updateNewFormatTidalMetadata(
+        videoId: String,
+        bpm: Int?,
+        musicKey: String?,
+        keyScale: String?,
+    )
+
     @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertSongInfo(songInfo: SongInfoEntity)
 
