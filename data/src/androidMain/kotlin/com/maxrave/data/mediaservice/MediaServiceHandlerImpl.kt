@@ -2369,6 +2369,31 @@ internal class MediaServiceHandlerImpl(
 
     override fun getProgress(): Long = player.currentPosition
 
+    /**
+     * The queue in the playlist's own order, for saving. With shuffle on, listTracks follows the
+     * shuffled order (reorderShuffledQueue), and saving it that way froze one shuffle: the next launch
+     * restored the queue with shuffle off (shuffle is only remembered with Save playback state on) and
+     * played that shuffle again, in the same order every day (#2814). Kept as it is whenever a track
+     * is not the one the player holds at its unshuffled position: right after shuffle is toggled or a
+     * row is moved, listTracks and the player's order are briefly out of step.
+     */
+    private fun inPlaylistOrder(tracks: List<Track>): List<Track> {
+        if (!player.shuffleModeEnabled || tracks.size != player.mediaItemCount) return tracks
+        val original = arrayOfNulls<Track>(tracks.size)
+        try {
+            tracks.forEachIndexed { shuffled, track ->
+                val index = player.getUnshuffledIndex(shuffled)
+                if (index !in original.indices || original[index] != null) return tracks
+                if (player.getMediaItemAt(index)?.mediaId != track.videoId) return tracks
+                original[index] = track
+            }
+        } catch (e: IndexOutOfBoundsException) {
+            // Desktop reads the player's lists from another thread; one changing mid-read is "out of step" too.
+            return tracks
+        }
+        return original.filterNotNull()
+    }
+
     override fun mayBeSaveRecentSong(runBlocking: Boolean) {
         val unit =
             suspend {
@@ -2392,7 +2417,7 @@ internal class MediaServiceHandlerImpl(
                     )
                     val temp: ArrayList<Track> = ArrayList()
                     temp.clear()
-                    temp.addAll(_queueData.value.data.listTracks)
+                    temp.addAll(inPlaylistOrder(_queueData.value.data.listTracks))
                     Logger.i("Check recover queue", "Saved ${temp.size} tracks for the next launch")
                     songRepository.recoverQueue(temp)
                 }

@@ -157,16 +157,22 @@ internal class LocalPlaylistRepositoryImpl(
         }
     }
 
-    override suspend fun getFullPlaylistTracks(id: Long): List<SongEntity> {
+    override suspend fun getFullPlaylistTracks(
+        id: Long,
+        filterState: FilterState,
+    ): List<SongEntity> {
         val playlist = localDataSource.getLocalPlaylist(id) ?: return emptyList()
         Logger.d(TAG, "getFullPlaylistTracks: $playlist")
+        // Older first and newer first are position ASC and DESC (their time only cuts the screen's
+        // pages), so both read the custom order, newer first reversed; title pages by title.
+        val pagedBy = if (filterState == FilterState.Title) FilterState.Title else FilterState.CustomOrder
         val tracks = mutableListOf<SongEntity>()
         var currentPage = 0
         while (true) {
             val pairs =
                 localDataSource.getPlaylistPairSongByOffset(
                     playlistId = id,
-                    filterState = FilterState.CustomOrder,
+                    filterState = pagedBy,
                     offset = currentPage,
                 )
             if (pairs.isNullOrEmpty()) {
@@ -185,7 +191,7 @@ internal class LocalPlaylistRepositoryImpl(
             tracks.addAll(sorted)
             currentPage++
         }
-        return tracks
+        return if (filterState == FilterState.NewerFirst) tracks.reversed() else tracks
     }
 
     override suspend fun getListTrackVideoId(id: Long): List<String> {

@@ -101,7 +101,10 @@ internal fun CarContext.mediaRow(
 /**
  * Fire-and-forget play through the session's browser. Runs on the future's
  * executor, not a screen scope: navigating right after pops the screen and
- * would cancel a coroutine before the command is sent.
+ * would cancel a coroutine before the command is sent. Only the item is sent:
+ * the session callback loads and starts the queue itself, and when it refuses
+ * the item (an explicit song with explicit content off, a song it cannot find)
+ * a prepare and play sent after it would resume the previous song instead.
  */
 @UnstableApi
 internal fun playViaBrowser(
@@ -114,8 +117,6 @@ internal fun playViaBrowser(
         runCatching {
             val browser = browserFuture.get()
             browser.setMediaItem(item)
-            browser.prepare()
-            browser.play()
         }.onFailure {
             Logger.e(tag, "playItem(${item.mediaId}) failed: ${it.message}")
         }

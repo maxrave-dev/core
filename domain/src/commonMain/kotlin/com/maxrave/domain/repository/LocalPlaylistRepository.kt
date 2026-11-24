@@ -114,7 +114,11 @@ interface LocalPlaylistRepository {
         filter: FilterState,
     ): Flow<PagingData<Pair<SongEntity, PairSongLocalPlaylist>>>
 
-    suspend fun getFullPlaylistTracks(id: Long): List<SongEntity>
+    /** Every song of the playlist in [filterState]'s order, the order the playlist screen lists and plays it in. */
+    suspend fun getFullPlaylistTracks(
+        id: Long,
+        filterState: FilterState = FilterState.CustomOrder,
+    ): List<SongEntity>
 
     suspend fun getListTrackVideoId(id: Long): List<String>
 
