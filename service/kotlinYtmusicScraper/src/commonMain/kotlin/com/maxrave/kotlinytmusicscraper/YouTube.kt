@@ -599,14 +599,17 @@ class YouTube {
     ): List<SongItem> {
         if (songs.none { MusicVideoType.isVideoSong(it.musicVideoType) }) return songs
         val nextItems =
-            runCatching {
-                next(WatchEndpoint(playlistId = playlistId)).getOrNull()?.items.orEmpty()
-            }.getOrDefault(emptyList())
+            withTimeoutOrNull(1_000L) {
+                runCatching {
+                    next(WatchEndpoint(playlistId = playlistId)).getOrNull()?.items.orEmpty()
+                }.getOrDefault(emptyList())
+            }.orEmpty()
+        if (nextItems.isEmpty()) return songs
         return songs.map { song ->
             if (!MusicVideoType.isVideoSong(song.musicVideoType)) {
                 return@map song
             }
-            val nextCandidate =
+            val resolvedAudio =
                 nextItems
                     .firstOrNull { it.id == song.id }
                     ?.counterpart
@@ -621,13 +624,6 @@ class YouTube {
                                 excludeVideoId = song.id,
                             )
                     }
-            val resolvedAudio =
-                nextCandidate ?: resolveOfficialAudioVariant(
-                    excludeVideoId = song.id,
-                    title = song.title,
-                    artist = song.artists.firstOrNull()?.name,
-                    expectedDurationSec = song.duration,
-                )
             if (resolvedAudio != null) {
                 Logger.i(
                     TAG,
