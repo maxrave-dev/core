@@ -11,6 +11,7 @@ import com.maxrave.domain.data.model.promo.Promo
 import com.maxrave.domain.data.type.RecentlyType
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.CommonRepository
+import com.maxrave.domain.restore.RestoreProgress
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.YouTubeLocale
 import com.maxrave.logger.Logger
@@ -35,6 +36,7 @@ import org.simpmusic.aiservice.AIHost
 import org.simpmusic.aiservice.AiClient
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
+import com.eygraber.uri.Uri
 
 internal class CommonRepositoryImpl(
     private val coroutineScope: CoroutineScope,
@@ -383,6 +385,22 @@ internal class CommonRepositoryImpl(
                 packageName,
             )
         }
+
+    override suspend fun backupTo(
+        uri: Uri,
+        config: BackupRestoreConfig,
+        progressCallback: ((RestoreProgress) -> Unit)? = null
+    ): BackupResult {
+        return backupNative(uri, config, progressCallback)
+    }
+
+    override suspend fun restoreFrom(
+        uri: Uri,
+        config: BackupRestoreConfig,
+        progressCallback: ((RestoreProgress) -> Unit)? = null
+    ): RestoreResult {
+        return restoreNative(uri, config, progressCallback)
+    }
 }
 
 private data class ProxyData(
@@ -404,3 +422,16 @@ expect fun getCookies(
     url: String,
     packageName: String,
 ): CookieItem
+
+// Platform-specific backup/restore implementations
+expect suspend fun backupNative(
+    uri: com.eygraber.uri.Uri,
+    config: BackupRestoreConfig,
+    progressCallback: ((RestoreProgress) -> Unit)?
+): BackupResult
+
+expect suspend fun restoreNative(
+    uri: com.eygraber.uri.Uri,
+    config: BackupRestoreConfig,
+    progressCallback: ((RestoreProgress) -> Unit)?
+): RestoreResult
