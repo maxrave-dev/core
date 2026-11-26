@@ -1394,7 +1394,7 @@ internal class MediaServiceHandlerImpl(
         }
     }
 
-    override fun shufflePlaylist(randomTrackIndex: Int) {
+    override fun shufflePlaylist(firstRowId: Int) {
         val playlistId = _queueData.value.data.playlistId ?: return
         val firstPlayedTrack = _queueData.value.data.firstPlayedTrack ?: return
         coroutineScope.launch {
@@ -1408,27 +1408,26 @@ internal class MediaServiceHandlerImpl(
                 }
                 addMediaItem(firstPlayedTrack.toGenericMediaItem(), playWhenReady = true)
                 val longId = playlistId.replace(LOCAL_PLAYLIST_ID, "").toLong()
-                val localPlaylist = localPlaylistRepository.getLocalPlaylist(longId).lastOrNull()?.data
-                if (localPlaylist != null) {
-                    Logger.w(TAG, "shufflePlaylist: Local playlist track size ${localPlaylist.tracks?.size}")
-                    val trackCount = localPlaylist.tracks?.size ?: return@launch
-                    val listPosition =
-                        (0 until trackCount).toMutableList().apply {
-                            remove(randomTrackIndex)
-                        }
-                    if (listPosition.isEmpty()) return@launch
-                    listPosition.shuffle()
-                    _queueData.update {
-                        it.copy(
-                            // After shuffle prefix is offset and list position
-                            data =
-                                it.data.copy(
-                                    continuation = "SHUFFLE0_${fromListIntToString(listPosition)}",
-                                ),
-                        )
+                // The playlist's real rows, one per copy of a song, minus the one already playing.
+                // Not positions: they keep a gap after a removal and stop matching `tracks` after a
+                // move, so a list of positions left songs out or played the first one twice.
+                val rowIds =
+                    localPlaylistRepository.getPlaylistRows(longId).map { it.id }.toMutableList().apply {
+                        remove(firstRowId)
                     }
-                    loadMore()
+                Logger.d(TAG, "shufflePlaylist: ${rowIds.size} rows left to shuffle")
+                if (rowIds.isEmpty()) return@launch
+                rowIds.shuffle()
+                _queueData.update {
+                    it.copy(
+                        // After the prefix: the batch offset, then the shuffled row ids
+                        data =
+                            it.data.copy(
+                                continuation = "SHUFFLE0_${fromListIntToString(rowIds)}",
+                            ),
+                    )
                 }
+                loadMore()
             }
         }
     }
@@ -1461,12 +1460,12 @@ internal class MediaServiceHandlerImpl(
                         val regex = Regex("(?<=SHUFFLE)\\d+(?=_)")
                         var offset = regex.find(continuation)?.value?.toInt() ?: return@launch
                         val posString = continuation.removePrefix("SHUFFLE${offset}_")
-                        val listPosition = fromStringToListInt(posString) ?: return@launch
-                        val theLastLoad = 50 * (offset + 1) >= listPosition.size
+                        val rowIds = fromStringToListInt(posString) ?: return@launch
+                        val theLastLoad = 50 * (offset + 1) >= rowIds.size
                         localPlaylistRepository
-                            .getPlaylistPairSongByListPosition(
+                            .getPlaylistPairSongByRowIds(
                                 longId,
-                                listPosition.subList(50 * offset, if (theLastLoad) listPosition.size else 50 * (offset + 1)),
+                                rowIds.subList(50 * offset, if (theLastLoad) rowIds.size else 50 * (offset + 1)),
                             ).singleOrNull()
                             ?.let { pair ->
                                 Logger.w("Check loadMore response", pair.size.toString())

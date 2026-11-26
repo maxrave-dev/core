@@ -34,10 +34,14 @@ interface LocalPlaylistRepository {
 
     suspend fun insertPairSongLocalPlaylist(pairSongLocalPlaylist: PairSongLocalPlaylist)
 
-    fun getPlaylistPairSongByListPosition(
+    /** The rows [rowIds] of the playlist, in the order of [rowIds] (a shuffled order stays shuffled). */
+    fun getPlaylistPairSongByRowIds(
         playlistId: Long,
-        listPosition: List<Int>,
+        rowIds: List<Int>,
     ): Flow<List<PairSongLocalPlaylist>?>
+
+    /** Every row of the playlist, one per copy of a song, in playlist order. */
+    suspend fun getPlaylistRows(playlistId: Long): List<PairSongLocalPlaylist>
 
     fun getPlaylistPairSongByOffset(
         playlistId: Long,
@@ -119,8 +123,6 @@ interface LocalPlaylistRepository {
         id: Long,
         filterState: FilterState = FilterState.CustomOrder,
     ): List<SongEntity>
-
-    suspend fun getListTrackVideoId(id: Long): List<String>
 
     fun insertLocalPlaylist(
         localPlaylist: LocalPlaylistEntity,

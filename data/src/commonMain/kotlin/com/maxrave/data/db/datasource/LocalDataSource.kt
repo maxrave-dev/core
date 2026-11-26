@@ -603,10 +603,10 @@ internal class LocalDataSource(
         offset,
     )
 
-    suspend fun getPlaylistPairSongByListPosition(
+    suspend fun getPlaylistPairSongByRowIds(
         playlistId: Long,
-        listPosition: List<Int>,
-    ) = databaseDao.getPlaylistPairSongByListPosition(playlistId, listPosition)
+        rowIds: List<Int>,
+    ) = databaseDao.getPlaylistPairSongByRowIds(playlistId, rowIds)
 
     /**
      * Search one local playlist by title or artist.

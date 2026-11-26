@@ -194,11 +194,6 @@ internal class LocalPlaylistRepositoryImpl(
         return if (filterState == FilterState.NewerFirst) tracks.reversed() else tracks
     }
 
-    override suspend fun getListTrackVideoId(id: Long): List<String> {
-        val playlist = localDataSource.getLocalPlaylist(id)
-        return playlist?.tracks ?: emptyList()
-    }
-
     override fun insertLocalPlaylist(
         localPlaylist: LocalPlaylistEntity,
         successMessage: String,
@@ -936,13 +931,19 @@ internal class LocalPlaylistRepositoryImpl(
             localDataSource.insertPairSongLocalPlaylist(pairSongLocalPlaylist)
         }
 
-    override fun getPlaylistPairSongByListPosition(
+    override fun getPlaylistPairSongByRowIds(
         playlistId: Long,
-        listPosition: List<Int>,
+        rowIds: List<Int>,
     ): Flow<List<PairSongLocalPlaylist>?> =
         flow {
-            emit(localDataSource.getPlaylistPairSongByListPosition(playlistId, listPosition))
+            // SQL hands the rows back in table order, which is how a shuffle used to come out as
+            // one random song and then the playlist from the top (#2520).
+            val rank = rowIds.withIndex().associate { (index, id) -> id to index }
+            emit(localDataSource.getPlaylistPairSongByRowIds(playlistId, rowIds).sortedBy { rank[it.id] })
         }.flowOn(Dispatchers.IO)
+
+    override suspend fun getPlaylistRows(playlistId: Long): List<PairSongLocalPlaylist> =
+        withContext(Dispatchers.IO) { localDataSource.getAllPlaylistPairSongByPosition(playlistId) }
 
     override fun getPlaylistPairSongByOffset(
         playlistId: Long,

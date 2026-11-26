@@ -855,10 +855,11 @@ interface DatabaseDao {
         offset: Int,
     ): List<PairSongLocalPlaylist>
 
-    @Query("SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId AND position in (:positionList)")
-    suspend fun getPlaylistPairSongByListPosition(
+    // Rows come back in table order, not in the order of [rowIds]: the repository restores it.
+    @Query("SELECT * FROM pair_song_local_playlist WHERE playlistId = :playlistId AND id IN (:rowIds)")
+    suspend fun getPlaylistPairSongByRowIds(
         playlistId: Long,
-        positionList: List<Int>,
+        rowIds: List<Int>,
     ): List<PairSongLocalPlaylist>
 
     /**

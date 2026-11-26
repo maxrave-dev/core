@@ -79,7 +79,8 @@ interface MediaPlayerHandler {
     fun resetCrossfade()
 
     // Queue management
-    fun shufflePlaylist(randomTrackIndex: Int = 0)
+    /** Shuffles the local playlist in the queue after [firstRowId], the playlist row already playing. */
+    fun shufflePlaylist(firstRowId: Int)
 
     fun loadMore()
 
