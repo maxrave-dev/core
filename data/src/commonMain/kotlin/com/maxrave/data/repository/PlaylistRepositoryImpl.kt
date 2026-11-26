@@ -681,7 +681,8 @@ internal class PlaylistRepositoryImpl(
         }.flowOn(Dispatchers.IO)
 
     override fun getMixedForYou(): Flow<Resource<List<PlaylistsResult>>> =
-        flow {
+        // Typed here: through .flowOn the declared return type does not reach the builder's inference.
+        flow<Resource<List<PlaylistsResult>>> {
             youTube
                 .getMixedForYou()
                 .onSuccess { data ->
