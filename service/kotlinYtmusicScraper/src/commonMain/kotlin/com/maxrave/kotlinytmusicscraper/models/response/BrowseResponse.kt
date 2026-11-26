@@ -6,6 +6,8 @@ import com.maxrave.kotlinytmusicscraper.models.Menu
 import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicTwoRowItemRenderer
+import com.maxrave.kotlinytmusicscraper.models.NavigationEndpoint
+import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.ResponseContext
 import com.maxrave.kotlinytmusicscraper.models.Runs
 import com.maxrave.kotlinytmusicscraper.models.SectionListRenderer
@@ -24,7 +26,42 @@ data class BrowseResponse(
     val responseContext: ResponseContext,
     val background: Background?,
     val onResponseReceivedActions: List<OnResponseReceivedActions>?,
+    val frameworkUpdates: FrameworkUpdates? = null,
 ) {
+    /** Entity mutations a button can point at instead of carrying its endpoint (see [NavigationEndpoint.executeEntityCommand]). */
+    @Serializable
+    data class FrameworkUpdates(
+        val entityBatchUpdate: EntityBatchUpdate? = null,
+    ) {
+        @Serializable
+        data class EntityBatchUpdate(
+            val mutations: List<Mutation>? = null,
+        )
+
+        @Serializable
+        data class Mutation(
+            val entityKey: String? = null,
+            val payload: Payload? = null,
+        )
+
+        @Serializable
+        data class Payload(
+            val commandEntity: CommandEntity? = null,
+        )
+
+        // Only the field read today. A full NavigationEndpoint here would fail the whole page on any entity
+        // command missing a field that endpoint model requires (a search query, a queue target…).
+        @Serializable
+        data class CommandEntity(
+            val command: Command? = null,
+        ) {
+            @Serializable
+            data class Command(
+                val watchPlaylistEndpoint: WatchEndpoint? = null,
+            )
+        }
+    }
+
     @Serializable
     data class OnResponseReceivedActions(
         val appendContinuationItemsAction: AppendContinuationItemsAction?,

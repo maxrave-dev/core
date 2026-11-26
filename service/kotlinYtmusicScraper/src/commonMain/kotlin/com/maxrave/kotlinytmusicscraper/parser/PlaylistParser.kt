@@ -2,6 +2,7 @@ package com.maxrave.kotlinytmusicscraper.parser
 
 import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
+import com.maxrave.kotlinytmusicscraper.models.NavigationEndpoint
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.getContinuation
@@ -215,7 +216,7 @@ fun BrowseResponse.getPlaylistRadioEndpoint(): WatchEndpoint? {
                 it.menuNavigationItemRenderer?.icon?.iconType == "MIX"
             }?.menuNavigationItemRenderer
             ?.navigationEndpoint
-            ?.watchPlaylistEndpoint
+            ?.let { watchPlaylistEndpointOf(it) }
     } else {
         return this.contents
             ?.twoColumnBrowseResultsRenderer
@@ -230,14 +231,14 @@ fun BrowseResponse.getPlaylistRadioEndpoint(): WatchEndpoint? {
             ?.header
             ?.musicResponsiveHeaderRenderer
             ?.buttons
-            ?.lastOrNull()
+            ?.findLast { it.menuRenderer != null }
             ?.menuRenderer
             ?.items
             ?.find {
                 it.menuNavigationItemRenderer?.icon?.iconType == "MIX"
             }?.menuNavigationItemRenderer
             ?.navigationEndpoint
-            ?.watchPlaylistEndpoint
+            ?.let { watchPlaylistEndpointOf(it) }
             ?: this.contents
                 ?.twoColumnBrowseResultsRenderer
                 ?.tabs
@@ -256,7 +257,7 @@ fun BrowseResponse.getPlaylistRadioEndpoint(): WatchEndpoint? {
                     it.menuNavigationItemRenderer?.icon?.iconType == "MIX"
                 }?.menuNavigationItemRenderer
                 ?.navigationEndpoint
-                ?.watchPlaylistEndpoint
+                ?.let { watchPlaylistEndpointOf(it) }
     }
 }
 
@@ -287,14 +288,14 @@ fun BrowseResponse.getPlaylistShuffleEndpoint(): WatchEndpoint? {
             ?.header
             ?.musicResponsiveHeaderRenderer
             ?.buttons
-            ?.lastOrNull()
+            ?.findLast { it.menuRenderer != null }
             ?.menuRenderer
             ?.items
             ?.find {
                 it.menuNavigationItemRenderer?.icon?.iconType == "MUSIC_SHUFFLE"
             }?.menuNavigationItemRenderer
             ?.navigationEndpoint
-            ?.watchPlaylistEndpoint
+            ?.let { watchPlaylistEndpointOf(it) }
             ?: this.contents
                 ?.twoColumnBrowseResultsRenderer
                 ?.tabs
@@ -313,9 +314,26 @@ fun BrowseResponse.getPlaylistShuffleEndpoint(): WatchEndpoint? {
                     it.menuNavigationItemRenderer?.icon?.iconType == "MUSIC_SHUFFLE"
                 }?.menuNavigationItemRenderer
                 ?.navigationEndpoint
-                ?.watchPlaylistEndpoint
+                ?.let { watchPlaylistEndpointOf(it) }
     }
 }
+
+/**
+ * The playlist a menu item starts. Liked Music's Shuffle item carries no endpoint, only an
+ * `executeEntityCommand` key, and its command (`LM` + the shuffle params) sits in [BrowseResponse.frameworkUpdates].
+ */
+private fun BrowseResponse.watchPlaylistEndpointOf(endpoint: NavigationEndpoint): WatchEndpoint? =
+    endpoint.watchPlaylistEndpoint
+        ?: endpoint.executeEntityCommand?.commandEntityKey?.let { key ->
+            frameworkUpdates
+                ?.entityBatchUpdate
+                ?.mutations
+                ?.firstOrNull { it.entityKey == key }
+                ?.payload
+                ?.commandEntity
+                ?.command
+                ?.watchPlaylistEndpoint
+        }
 
 fun MusicShelfRenderer.Content.toPlaylistItemData(): MusicResponsiveListItemRenderer.PlaylistItemData? =
     this.musicResponsiveListItemRenderer?.playlistItemData

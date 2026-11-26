@@ -680,7 +680,7 @@ internal class PlaylistRepositoryImpl(
                 }
         }.flowOn(Dispatchers.IO)
 
-    override fun getMixedForYou(): Flow<List<PlaylistsResult>?> =
+    override fun getMixedForYou(): Flow<Resource<List<PlaylistsResult>>> =
         flow {
             youTube
                 .getMixedForYou()
@@ -702,7 +702,7 @@ internal class PlaylistRepositoryImpl(
                     val listItem = mutableListOf<PlaylistsResult>()
                     if (input.isNullOrEmpty()) {
                         Logger.w("Mixed For You", "No playlists found")
-                        emit(null)
+                        emit(Resource.Success(emptyList()))
                         return@onSuccess
                     }
                     listItem.addAll(
@@ -739,11 +739,11 @@ internal class PlaylistRepositoryImpl(
                                 continuation = null
                             }
                     }
-                    if (listItem.isNotEmpty()) {
-                        emit(listItem)
-                    } else {
-                        emit(null)
-                    }
+                    emit(Resource.Success(listItem))
+                }.onFailure { e ->
+                    // A failed request (a 401, #2944) used to end the flow without emitting, leaving the screen on Loading.
+                    Logger.e("Mixed For You", "Error: ${e.message}")
+                    emit(Resource.Error(e.message.toString()))
                 }
         }.flowOn(Dispatchers.IO)
 
