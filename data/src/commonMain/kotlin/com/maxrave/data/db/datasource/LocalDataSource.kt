@@ -709,6 +709,27 @@ internal class LocalDataSource(
         syncRecorder.playlistTrack(playlistId, videoId, inPlaylist = false)
     }
 
+    /**
+     * Removes exactly the row [pairId]. Library sync tracks a song as in the playlist or not, so it
+     * hears the song left only once its last copy is gone; dropping one of several copies only
+     * moves the order.
+     *
+     * @return false when the row no longer exists.
+     */
+    suspend fun removePairSongFromLocalPlaylist(
+        playlistId: Long,
+        videoId: String,
+        pairId: Int,
+    ): Boolean {
+        val lastCopy = databaseDao.removePairSongFromLocalPlaylist(playlistId, videoId, pairId) ?: return false
+        if (lastCopy) {
+            syncRecorder.playlistTrack(playlistId, videoId, inPlaylist = false)
+        } else {
+            syncRecorder.playlistOrder(playlistId)
+        }
+        return true
+    }
+
     suspend fun getGoogleAccounts() = databaseDao.getAllGoogleAccount()
 
     suspend fun insertGoogleAccount(googleAccountEntity: GoogleAccountEntity) = databaseDao.insertGoogleAccount(googleAccountEntity)

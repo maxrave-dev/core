@@ -192,9 +192,11 @@ interface LocalPlaylistRepository {
         errorMessage: String,
     ): Flow<LocalResource<String>>
 
+    /** Removes the playlist row [pairId] of [song], exactly the copy the user picked. */
     fun removeTrackFromLocalPlaylist(
         id: Long,
         song: SongEntity,
+        pairId: Int,
         successMessage: String,
         updatedYtMessage: String,
         errorMessage: String,
