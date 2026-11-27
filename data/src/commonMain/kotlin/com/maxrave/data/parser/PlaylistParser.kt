@@ -19,6 +19,13 @@ import com.maxrave.kotlinytmusicscraper.pages.PodcastItem
 import com.maxrave.logger.Logger
 import kotlinx.datetime.LocalDateTime
 
+internal fun parseTrackCountFromSubtitle(runs: List<String>?): Int {
+    if (runs.isNullOrEmpty()) return 0
+    val raw = if (runs.size >= 5) runs.getOrNull(2) else runs.firstOrNull()
+    val digits = raw?.trim()?.takeWhile { !it.isLetter() }?.filter { it.isDigit() }
+    return digits?.toIntOrNull() ?: 0
+}
+
 internal fun parsePlaylistData(
     header: Any?,
     listContent: List<MusicShelfRenderer.Content>,
@@ -59,6 +66,7 @@ internal fun parsePlaylistData(
                 }
                 val secondSubtitle = header.secondSubtitle.runs
                 Logger.w("PlaylistParser", "secondSubtitle: $secondSubtitle")
+                trackCount = parseTrackCountFromSubtitle(secondSubtitle?.mapNotNull { it.text })
                 if (!secondSubtitle.isNullOrEmpty() && secondSubtitle.size > 2) {
                     duration += secondSubtitle.getOrNull(2)?.text
                 }
@@ -109,11 +117,9 @@ internal fun parsePlaylistData(
                     )
                 listAuthor.add(author)
                 Logger.d("PlaylistParser", "author: $author")
-                if (header.header.musicDetailHeaderRenderer
-                        ?.secondSubtitle
-                        ?.runs
-                        ?.size!! > 4
-                ) {
+                val editableSecondSubtitle = header.header.musicDetailHeaderRenderer?.secondSubtitle?.runs
+                trackCount = parseTrackCountFromSubtitle(editableSecondSubtitle?.mapNotNull { it.text })
+                if (editableSecondSubtitle?.size ?: 0 > 4) {
                     duration +=
                         header.header.musicDetailHeaderRenderer
                             ?.secondSubtitle
@@ -161,34 +167,7 @@ internal fun parsePlaylistData(
                         ?.text
                 Logger.d("PlaylistParser", "title: $title")
                 val secondSubtitle = header.secondSubtitle?.runs
-                if (!secondSubtitle.isNullOrEmpty()) {
-                    /**
-                     * Fuck Kotlin
-                     * Ref: https://stackoverflow.com/q/48379981/20605098
-                     */
-                    trackCount =
-                        try {
-                            if (secondSubtitle.size >= 5) {
-                                secondSubtitle
-                                    .getOrNull(2)
-                                    ?.text
-                                    ?.split("\\s".toRegex())
-                                    ?.firstOrNull()
-                                    ?.toInt() ?: 0
-                            } else {
-                                secondSubtitle
-                                    .firstOrNull()
-                                    ?.text
-                                    ?.split("\\s".toRegex())
-                                    ?.firstOrNull()
-                                    ?.toInt() ?: 0
-                            }
-                        } catch (e: Exception) {
-                            Logger.e("PlaylistParser", "Error parsing track count: ${e.message}")
-                            e.printStackTrace()
-                            0
-                        }
-                }
+                trackCount = parseTrackCountFromSubtitle(secondSubtitle?.mapNotNull { it.text })
                 year =
                     header.subtitle
                         ?.runs
@@ -349,7 +328,7 @@ internal fun parsePlaylistData(
             privacy = "PUBLIC",
             thumbnails = listThumbnails,
             title = title,
-            trackCount = if (trackCount == 0) listContent.size else trackCount,
+            trackCount = if (trackCount == 0) listTrack.size else trackCount,
             tracks = listTrack,
             year = year,
         )
