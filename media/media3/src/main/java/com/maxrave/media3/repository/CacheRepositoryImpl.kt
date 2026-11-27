@@ -5,6 +5,7 @@ import androidx.media3.datasource.cache.SimpleCache
 import com.maxrave.common.Config
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.domain.repository.CacheRepository
+import com.maxrave.media3.extension.isDownloadFullyCached
 import com.maxrave.media3.extension.isFullyCached
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -51,17 +52,21 @@ internal class CacheRepositoryImpl(
     }
 
     override suspend fun getAllCacheKeys(cacheName: String): List<String> =
-        when (cacheName) {
-            Config.PLAYER_CACHE -> {
-                playerCache.keys.toList()
+        withContext(Dispatchers.IO) {
+            when (cacheName) {
+                Config.PLAYER_CACHE -> {
+                    playerCache.keys.toList()
+                }
+                Config.DOWNLOAD_CACHE -> {
+                    downloadCache.keys.toList().filter { key ->
+                        downloadCache.isDownloadFullyCached(key)
+                    }
+                }
+                Config.CANVAS_CACHE -> {
+                    canvasCache.keys.toList()
+                }
+                else -> emptyList()
             }
-            Config.DOWNLOAD_CACHE -> {
-                downloadCache.keys.toList()
-            }
-            Config.CANVAS_CACHE -> {
-                canvasCache.keys.toList()
-            }
-            else -> emptyList()
         }
 
     // SimpleCache is synchronized, and a write in progress holds its lock, so these stay off the
