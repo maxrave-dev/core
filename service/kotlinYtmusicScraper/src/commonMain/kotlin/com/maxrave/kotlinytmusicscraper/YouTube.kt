@@ -1451,7 +1451,6 @@ class YouTube {
         tempRes: PlayerResponse,
         preferredAudioLanguage: String? = null,
     ): PlayerResponse? {
-        val listUrlSig = mutableListOf<String>()
         var decodedSigResponse: PlayerResponse?
         var sigResponse: PlayerResponse?
         Logger.d(TAG, "YouTube TempRes ${tempRes.playabilityStatus}")
@@ -1525,32 +1524,21 @@ class YouTube {
                             },
                     ),
             )
-        listUrlSig.addAll(
-            (
-                decodedSigResponse
-                    .streamingData
-                    ?.adaptiveFormats
-                    ?.mapNotNull { it.url }
-                    ?.toMutableList() ?: mutableListOf()
-            ).apply {
-                decodedSigResponse
-                    .streamingData
-                    ?.formats
-                    ?.mapNotNull { it.url }
-                    ?.let { addAll(it) }
-            },
-        )
-        listUrlSig.forEach {
-            Logger.d(TAG, "YouTube NewPipe URL $it")
-        }
-        val randomUrl = listUrlSig.randomOrNull() ?: return null
-        if (listUrlSig.isNotEmpty() && !is403Url(randomUrl)) {
-            Logger.d(TAG, "YouTube NewPipe Found URL $randomUrl")
-            return decodedSigResponse
-        } else {
-            Logger.d(TAG, "YouTube NewPipe No URL Found")
+        // PipePipe already checks an audio URL before returning streams. A second random
+        // HEAD here could discard valid audio because an unrelated video URL is rejected.
+        val hasAudio =
+            decodedSigResponse.streamingData?.adaptiveFormats?.any {
+                it.itag in ITAG.AUDIO && !it.url.isNullOrBlank()
+            } == true
+        val hasManifest =
+            decodedSigResponse.streamingData?.formats?.any {
+                it.url?.let(::isManifestUrl) == true
+            } == true
+        if (!hasAudio && !hasManifest) {
+            Logger.w(TAG, "NewPipe returned no mapped audio or manifest for $videoId")
             return null
         }
+        return decodedSigResponse
     }
 
     fun isManifestUrl(url: String): Boolean = url.contains(".m3u8") || url.contains(".mpd") || url.contains("manifest")
