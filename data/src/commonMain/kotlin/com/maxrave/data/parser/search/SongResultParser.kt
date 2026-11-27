@@ -9,8 +9,7 @@ import com.maxrave.kotlinytmusicscraper.pages.SearchResult
 
 internal fun parseSearchSong(result: SearchResult): ArrayList<SongsResult> {
     val songsResult: ArrayList<SongsResult> = arrayListOf()
-    result.items.forEach {
-        val song = it as SongItem
+    result.items.filterIsInstance<SongItem>().forEach { song ->
         songsResult.add(
             SongsResult(
                 album =

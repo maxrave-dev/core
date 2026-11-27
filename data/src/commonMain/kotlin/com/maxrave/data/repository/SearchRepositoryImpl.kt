@@ -44,6 +44,16 @@ internal class SearchRepositoryImpl(
             localDataSource.deleteSearchHistory()
         }
 
+    override suspend fun searchSongsFirstPage(query: String): Resource<List<SongsResult>> =
+        withContext(Dispatchers.IO) {
+            youTube
+                .search(query, YouTube.SearchFilter.FILTER_SONG)
+                .fold(
+                    onSuccess = { Resource.Success<List<SongsResult>>(parseSearchSong(it)) },
+                    onFailure = { Resource.Error<List<SongsResult>>(it.message.toString()) },
+                )
+        }
+
     override fun getSearchDataSong(query: String): Flow<Resource<ArrayList<SongsResult>>> =
         flow {
             runCatching {
