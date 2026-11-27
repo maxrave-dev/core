@@ -34,3 +34,16 @@ data class ResponseContext(
         )
     }
 }
+
+/**
+ * Whether YouTube served this response to an anonymous visitor.
+ *
+ * `GFEEDBACK` carries `logged_in=0` in that case — the visible symptom is a login prompt instead
+ * of the requested shelf. An absent param proves nothing, so only an explicit `0` counts.
+ */
+fun ResponseContext.isLoggedOut(): Boolean =
+    serviceTrackingParams
+        ?.firstOrNull { it.service == "GFEEDBACK" }
+        ?.params
+        ?.firstOrNull { it.key == "logged_in" }
+        ?.value == "0"

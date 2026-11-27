@@ -16,6 +16,7 @@ import com.maxrave.domain.data.entities.YourYouTubePlaylistList
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.playlist.Author
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
+import com.maxrave.domain.data.model.library.YouTubeLibraryPlaylists
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.data.model.searchResult.songs.Thumbnail
 import com.maxrave.domain.data.type.ChartItem
@@ -25,11 +26,13 @@ import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioMix
+import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.domain.utils.toTrack
 import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
+import com.maxrave.kotlinytmusicscraper.models.isLoggedOut
 import com.maxrave.kotlinytmusicscraper.pages.NextPage
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistContinuation
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistRadioEndpoint
@@ -45,6 +48,9 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.lastOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.LocalDateTime
+
+/** Upper bound for the cached-metadata fallback; the library rarely holds more than a few hundred. */
+private const val STORED_PLAYLIST_LIMIT = 500
 
 internal class PlaylistRepositoryImpl(
     private val dataStoreManager: DataStoreManager,
@@ -563,29 +569,100 @@ internal class PlaylistRepositoryImpl(
 
     override fun getLibraryPlaylist(): Flow<List<PlaylistsResult>?> =
         flow {
-            youTube
-                .getLibraryPlaylists()
-                .onSuccess { data ->
-                    val input =
-                        data.contents
-                            ?.singleColumnBrowseResultsRenderer
-                            ?.tabs
-                            ?.get(
-                                0,
-                            )?.tabRenderer
-                            ?.content
-                            ?.sectionListRenderer
-                            ?.contents
-                            ?.get(
-                                0,
-                            )?.gridRenderer
-                            ?.items
-                    val listItem = mutableListOf<PlaylistsResult>()
-                    if (input.isNullOrEmpty()) {
+            fetchYouTubeLibraryPlaylists()
+                .onSuccess { fetched ->
+                    if (fetched.playlists.isNotEmpty()) {
+                        emit(fetched.playlists)
+                        saveYouTubePlaylistSnapshot(fetched.playlists)
+                    } else {
                         Logger.w("Library", "No playlists found")
                         emit(null)
-                        return@onSuccess
                     }
+                }.onFailure { e ->
+                    Logger.e("Library", "Error: ${e.message}")
+                    e.printStackTrace()
+                    emit(storedYouTubePlaylistSnapshot())
+                }
+        }.flowOn(Dispatchers.IO)
+
+    override fun getYouTubeLibraryPlaylists(): Flow<YouTubeLibraryPlaylists> =
+        flow {
+            fetchYouTubeLibraryPlaylists()
+                .onSuccess { fetched ->
+                    if (fetched.playlists.isNotEmpty()) {
+                        saveYouTubePlaylistSnapshot(fetched.playlists)
+                        emit(
+                            YouTubeLibraryPlaylists(
+                                playlists = fetched.playlists,
+                                source = YouTubeLibraryPlaylists.Source.ONLINE,
+                                sessionExpired = false,
+                            ),
+                        )
+                    } else if (fetched.loggedOut) {
+                        // YouTube answered, but as an anonymous visitor. Show what the device
+                        // already holds and say why, instead of an empty tab that reads as
+                        // "you have no playlists".
+                        emit(
+                            YouTubeLibraryPlaylists(
+                                playlists = storedYouTubePlaylists(),
+                                source = YouTubeLibraryPlaylists.Source.SAVED_ON_DEVICE,
+                                sessionExpired = true,
+                            ),
+                        )
+                    } else {
+                        emit(
+                            YouTubeLibraryPlaylists(
+                                playlists = emptyList(),
+                                source = YouTubeLibraryPlaylists.Source.ONLINE,
+                                sessionExpired = false,
+                            ),
+                        )
+                    }
+                }.onFailure { e ->
+                    Logger.e("Library", "Error: ${e.message}")
+                    e.printStackTrace()
+                    val saved = storedYouTubePlaylists()
+                    emit(
+                        YouTubeLibraryPlaylists(
+                            playlists = saved,
+                            // Only claim the tiles are local when there are tiles to show.
+                            source =
+                                if (saved.isEmpty()) {
+                                    YouTubeLibraryPlaylists.Source.ONLINE
+                                } else {
+                                    YouTubeLibraryPlaylists.Source.SAVED_ON_DEVICE
+                                },
+                            // A failed request is not evidence that the session died.
+                            sessionExpired = false,
+                        ),
+                    )
+                }
+        }.flowOn(Dispatchers.IO)
+
+    private data class YouTubeLibraryPlaylistsFetch(
+        val playlists: List<PlaylistsResult>,
+        val loggedOut: Boolean,
+    )
+
+    private suspend fun fetchYouTubeLibraryPlaylists(): Result<YouTubeLibraryPlaylistsFetch> =
+        youTube
+            .getLibraryPlaylists()
+            .map { data ->
+                val gridMap =
+                    data.contents
+                        ?.singleColumnBrowseResultsRenderer
+                        ?.tabs
+                        ?.getOrNull(0)
+                        ?.tabRenderer
+                        ?.content
+                        ?.sectionListRenderer
+                        ?.contents
+                        ?.firstOrNull { it.gridRenderer != null }
+                        ?.gridRenderer
+
+                val input = gridMap?.items
+                val listItem = mutableListOf<PlaylistsResult>()
+                if (!input.isNullOrEmpty()) {
                     listItem.addAll(
                         parseLibraryPlaylist(input),
                     )
@@ -610,9 +687,8 @@ internal class PlaylistRepositoryImpl(
                             .onSuccess { nextData ->
                                 continuation = nextData.second
                                 Logger.w("Library", "continuation: $continuation")
-                                val nextInput = nextData.first
                                 listItem.addAll(
-                                    parseNextLibraryPlaylist(nextInput),
+                                    parseNextLibraryPlaylist(nextData.first),
                                 )
                             }.onFailure { exception ->
                                 exception.printStackTrace()
@@ -620,65 +696,77 @@ internal class PlaylistRepositoryImpl(
                                 continuation = null
                             }
                     }
-                    if (listItem.isNotEmpty()) {
-                        emit(listItem)
-                        val account = localDataSource.getUsedGoogleAccount()
-                        val isNeeded =
-                            dataStoreManager.keepYouTubePlaylistOffline.first() == DataStoreManager.TRUE &&
-                                dataStoreManager.loggedIn.first() == DataStoreManager.TRUE && account != null
-                        if (isNeeded) {
-                            insertYourYouTubePlaylist(
-                                YourYouTubePlaylistList(
-                                    emailPageId = "${account.email}_${account.pageId ?: ""}",
-                                    listBrowseIds = listItem.map { it.browseId },
-                                ),
-                            )
-                        }
-                    } else {
-                        emit(null)
-                    }
-                }.onFailure { e ->
-                    Logger.e("Library", "Error: ${e.message}")
-                    e.printStackTrace()
-                    val account = localDataSource.getUsedGoogleAccount()
-                    val isNeeded =
-                        dataStoreManager.keepYouTubePlaylistOffline.first() == DataStoreManager.TRUE &&
-                            dataStoreManager.loggedIn.first() == DataStoreManager.TRUE && account != null
-                    if (isNeeded) {
-                        val list =
-                            getYourYouTubePlaylistList("${account.email}_${account.pageId ?: ""}")
-                                .lastOrNull()
-                        if (list != null) {
-                            emit(
-                                list.listBrowseIds.mapNotNull { id ->
-                                    getPlaylist(id).lastOrNull()?.let {
-                                        PlaylistsResult(
-                                            author = it.author ?: "",
-                                            browseId = it.id,
-                                            category = "",
-                                            itemCount = "${ it.trackCount }",
-                                            resultType = "",
-                                            thumbnails =
-                                                listOf(
-                                                    Thumbnail(
-                                                        width = 544,
-                                                        url = it.thumbnails,
-                                                        height = 544,
-                                                    ),
-                                                ),
-                                            title = it.title,
-                                        )
-                                    }
-                                },
-                            )
-                        } else {
-                            emit(null)
-                        }
-                    } else {
-                        emit(null)
-                    }
                 }
-        }.flowOn(Dispatchers.IO)
+                YouTubeLibraryPlaylistsFetch(
+                    playlists = listItem,
+                    loggedOut = data.responseContext.isLoggedOut(),
+                )
+            }
+
+    private suspend fun saveYouTubePlaylistSnapshot(playlists: List<PlaylistsResult>) {
+        val account = localDataSource.getUsedGoogleAccount() ?: return
+        val isNeeded =
+            dataStoreManager.keepYouTubePlaylistOffline.first() == DataStoreManager.TRUE &&
+                dataStoreManager.loggedIn.first() == DataStoreManager.TRUE
+        if (!isNeeded) return
+        insertYourYouTubePlaylist(
+            YourYouTubePlaylistList(
+                emailPageId = "${account.email}_${account.pageId ?: ""}",
+                listBrowseIds = playlists.map { it.browseId },
+            ),
+        )
+    }
+
+    /**
+     * The opt-in snapshot first, because it is the user explicitly asking for this list to be kept;
+     * failing that, whatever playlist metadata the device already cached. Radio stations are left
+     * out — they are generated streams, not library playlists — as is the pinned liked-music entry,
+     * which is not a playlist either.
+     *
+     * Snapshot ids may carry YouTube's `VL` browse prefix while the cached entity is keyed without
+     * it, so it is stripped before the lookup.
+     */
+    private suspend fun storedYouTubePlaylists(): List<PlaylistsResult> {
+        val snapshot =
+            storedYouTubePlaylistSnapshot()
+                ?.filterNot { it.browseId.isRadioPlaylistId() || it.browseId == "LM" }
+                .orEmpty()
+        if (snapshot.isNotEmpty()) return snapshot
+        return localDataSource
+            .getAllPlaylists(STORED_PLAYLIST_LIMIT)
+            .filterNot { it.id.isRadioPlaylistId() || it.id == "LM" || it.title.isBlank() }
+            .map { it.toPlaylistsResult() }
+    }
+
+    private suspend fun storedYouTubePlaylistSnapshot(): List<PlaylistsResult>? {
+        val account = localDataSource.getUsedGoogleAccount() ?: return null
+        val isNeeded =
+            dataStoreManager.keepYouTubePlaylistOffline.first() == DataStoreManager.TRUE &&
+                dataStoreManager.loggedIn.first() == DataStoreManager.TRUE
+        if (!isNeeded) return null
+        val list =
+            getYourYouTubePlaylistList("${account.email}_${account.pageId ?: ""}")
+                .lastOrNull() ?: return null
+        return list.listBrowseIds.mapNotNull { id ->
+            getPlaylist(id.removePrefix("VL")).lastOrNull()?.toPlaylistsResult()
+        }
+    }
+
+    private fun PlaylistEntity.toPlaylistsResult(): PlaylistsResult =
+        PlaylistsResult(
+            author = author ?: "",
+            browseId = id,
+            category = "",
+            itemCount = "$trackCount",
+            resultType = "",
+            thumbnails =
+                if (thumbnails.isEmpty()) {
+                    emptyList()
+                } else {
+                    listOf(Thumbnail(width = 544, url = thumbnails, height = 544))
+                },
+            title = title,
+        )
 
     override fun getMixedForYou(): Flow<Resource<List<PlaylistsResult>>> =
         // Typed here: through .flowOn the declared return type does not reach the builder's inference.
