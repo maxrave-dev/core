@@ -214,6 +214,9 @@ class JvmMediaPlayerHandlerImpl(
             null
         }
 
+    @Volatile
+    private var macOSPlaybackIsLoading = false
+
     // macOS Media Integration (Now Playing Center + Remote Command Center)
     private val macOSMediaIntegration: MacOSMediaIntegration? by lazy {
         if (MacOSMediaIntegration.isSupported()) {
@@ -643,12 +646,16 @@ class JvmMediaPlayerHandlerImpl(
                         Pair(speed, pitch)
                     }.distinctUntilChanged().collectLatest { pair ->
                         Logger.w(TAG, "Playback speed: ${pair.first}, Pitch: ${pair.second}")
+                        val previousSpeed = player.playbackParameters.speed
                         player.playbackParameters =
                             GenericPlaybackParameters(
                                 pair.first,
                                 2f.pow(pair.second.toFloat() / 12),
                             )
                         Logger.w(TAG, "Playback current speed: ${player.playbackParameters.speed}, Pitch: ${player.playbackParameters.pitch}")
+                        if (player.playbackParameters.speed != previousSpeed) {
+                            updateMacOSElapsedTime()
+                        }
                         // A speed change shifts the RPC start/end timestamps (Discord renders the bar
                         // from timestamps client-side), so refresh presence while actively playing.
                         if (player.isPlaying) {
@@ -1104,7 +1111,6 @@ class JvmMediaPlayerHandlerImpl(
                     val intervalMs = if (AppOnScreen.onScreen.value) tickIntervalMs else OFF_SCREEN_TICK_MS
                     delay(intervalMs.milliseconds)
                     _simpleMediaState.value = SimpleMediaState.Progress(smoothedPosition(player.currentPosition))
-                    updateMacOSElapsedTime()
                     sinceLastPositionSaveMs += intervalMs
                     if (sinceLastPositionSaveMs >= positionPersistIntervalMs) {
                         sinceLastPositionSaveMs = 0
@@ -2865,9 +2871,11 @@ class JvmMediaPlayerHandlerImpl(
         }
         updateNextPreviousTrackAvailability()
         updateMacOSPlaybackState(isPlaying)
+        updateMacOSElapsedTime()
     }
 
     override fun onSeeked(positionMs: Long) {
+        updateMacOSElapsedTime(positionMs)
         // Paused, the progress ticker is stopped, so nothing else tells the UI the position moved:
         // every seek bar, clock and lyric line would wait for play to catch up (#2480). Unlike the
         // Android twin there is no Discord refresh here: each seek branch already does it.
@@ -2909,6 +2917,7 @@ class JvmMediaPlayerHandlerImpl(
             // timestamps would otherwise keep the previous play's start/end. Refresh them so Discord's
             // progress bar restarts with the track.
             nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
+            updateMacOSElapsedTime()
         }
         queueData.value.data.listTracks.let { list ->
             if ((list.size > 3 || runBlocking { dataStoreManager.endlessQueue.first() == TRUE }) &&
@@ -3089,6 +3098,10 @@ class JvmMediaPlayerHandlerImpl(
      * was true almost always. Comparing the two positions directly is what it meant to say.
      */
     override fun onIsLoadingChanged(isLoading: Boolean) {
+        if (macOSPlaybackIsLoading != isLoading) {
+            macOSPlaybackIsLoading = isLoading
+            updateMacOSElapsedTime()
+        }
         Logger.d(
             TAG,
             "onIsLoadingChanged: $isLoading (buffered=${player.bufferedPosition}ms, " +
@@ -3304,7 +3317,7 @@ class JvmMediaPlayerHandlerImpl(
                 album = songEntity.albumName ?: "",
                 durationSeconds = getPlayerDuration() / 1000.0,
                 elapsedTimeSeconds = player.contentPosition / 1000.0,
-                playbackRate = 1.0,
+                playbackRate = macOSPlaybackRate(),
                 artworkUrl = songEntity.thumbnails,
                 queueIndex = player.currentMediaItemIndex,
                 queueCount = queueData.value.data.listTracks.size,
@@ -3344,11 +3357,12 @@ class JvmMediaPlayerHandlerImpl(
         )
     }
 
-    /**
-     * Update macOS Now Playing elapsed time (called periodically)
-     */
-    private fun updateMacOSElapsedTime() {
-        macOSMediaIntegration?.updateElapsedTime(player.currentPosition / 1000.0, 1.0)
+    private fun macOSPlaybackRate(): Double =
+        if (player.isPlaying && !macOSPlaybackIsLoading) player.playbackParameters.speed.toDouble() else 0.0
+
+    // Now Playing extrapolates from this position and rate until the next playback event.
+    private fun updateMacOSElapsedTime(positionMs: Long = player.currentPosition) {
+        macOSMediaIntegration?.updateElapsedTime(positionMs.coerceAtLeast(0L) / 1000.0, macOSPlaybackRate())
     }
 
     /**

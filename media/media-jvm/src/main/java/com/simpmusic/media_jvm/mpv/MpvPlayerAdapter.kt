@@ -541,18 +541,23 @@ class MpvPlayerAdapter(
             // A live broadcast has no start to go back to, so Previous always means the previous track.
             if (cachedPosition > positionThresholdMs && !isCurrentTrackLive()) {
                 Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms > ${positionThresholdMs}ms — seeking to start")
-                currentPlayer?.seekTo(0)
-                cachedPosition = 0
+                restartCurrentTrack()
             } else if (hasPreviousMediaItem()) {
                 Logger.d(TAG, "seekToPrevious: pos=${cachedPosition}ms <= ${positionThresholdMs}ms — going to previous track")
                 val prevIndex = getPreviousMediaItemIndex()
                 seekTo(prevIndex, 0)
             } else if (!isCurrentTrackLive()) {
                 Logger.d(TAG, "seekToPrevious: No previous item, seeking to start")
-                currentPlayer?.seekTo(0)
-                cachedPosition = 0
+                restartCurrentTrack()
             }
         }
+    }
+
+    private fun restartCurrentTrack() {
+        val player = currentPlayer ?: return
+        player.seekTo(0L)
+        cachedPosition = 0L
+        notifyListeners { onSeeked(0L) }
     }
 
     override fun seekToPreviousMediaItem() {
@@ -1614,6 +1619,7 @@ class MpvPlayerAdapter(
             coroutineScope.launch {
                 try {
                     transitionToState(InternalState.PREPARING)
+                    cachedPosition = startPositionMs
 
                     // Notify media item transition (fire-and-forget to avoid
                     // blocking the service thread with runBlocking inside handler)
@@ -2191,6 +2197,8 @@ class MpvPlayerAdapter(
                     // track has no video, leaving a dead surface from a soon-released player on
                     // screen (the "black video until next/prev" bug).
                     localCurrentMediaItemIndex = nextIndex
+                    // Publish the incoming timeline before listeners announce its metadata.
+                    cachedPosition = nextPlayer.time.takeIf { it > 0L } ?: incomingStartMs
                     unpinCurrent()
                     _currentVideoFrames.value = nextPlayer.videoFrames
                     notifyListeners {
@@ -2276,6 +2284,7 @@ class MpvPlayerAdapter(
         secondaryPlayer = null
         if (revertIndex && crossfadeFromIndex >= 0) {
             localCurrentMediaItemIndex = crossfadeFromIndex
+            cachedPosition = currentPlayer?.time?.coerceAtLeast(0L) ?: 0L
             playlist.getOrNull(crossfadeFromIndex)?.let { mediaItem ->
                 notifyListeners {
                     onMediaItemTransition(
