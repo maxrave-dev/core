@@ -164,8 +164,23 @@ fun MediaPlayerView(
     }
 
     // Manage lifecycle events
-    DisposableEffect(Unit) {
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, exoPlayer) {
+        val observer =
+            androidx.lifecycle.LifecycleEventObserver { _, event ->
+                when (event) {
+                    androidx.lifecycle.Lifecycle.Event.ON_STOP -> exoPlayer.pause()
+                    androidx.lifecycle.Lifecycle.Event.ON_START -> {
+                        if (exoPlayer.playbackState != Player.STATE_IDLE) {
+                            exoPlayer.play()
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             exoPlayer.removeListener(playerListener)
             exoPlayer.release()
         }
