@@ -1,11 +1,17 @@
 package com.maxrave.domain.repository
 
+import com.maxrave.data.repository.BackupContents
+import com.maxrave.data.repository.BackupRestoreConfig
+import com.maxrave.data.repository.BackupResult
+import com.maxrave.data.repository.RestoreResult
 import com.maxrave.domain.data.entities.NotificationEntity
 import com.maxrave.domain.data.model.cookie.CookieItem
 import com.maxrave.domain.data.model.library.LibraryOverview
 import com.maxrave.domain.data.type.RecentlyType
 import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.domain.restore.RestoreProgress
 import kotlinx.coroutines.flow.Flow
+import com.eygraber.uri.Uri
 
 interface CommonRepository {
     fun init(cookiePath: String, dataStoreManager: DataStoreManager, isDevBuild: Boolean = false)
@@ -38,4 +44,17 @@ interface CommonRepository {
     suspend fun writeTextToFile(text: String, filePath: String): Boolean
 
     suspend fun getCookiesFromInternalDatabase(url: String, packageName: String): CookieItem
+
+    // Backup & Restore
+    suspend fun backupTo(
+        uri: Uri,
+        config: BackupRestoreConfig,
+        progressCallback: ((RestoreProgress) -> Unit)? = null
+    ): BackupResult
+
+    suspend fun restoreFrom(
+        uri: Uri,
+        config: BackupRestoreConfig,
+        progressCallback: ((RestoreProgress) -> Unit)? = null
+    ): RestoreResult
 }
