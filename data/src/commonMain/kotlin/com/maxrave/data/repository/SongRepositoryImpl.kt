@@ -378,6 +378,12 @@ internal class SongRepositoryImpl(
 
     override fun getMostPlayedSongs(): Flow<List<SongEntity>> = localDataSource.getMostPlayedSongs()
 
+    override fun observeHomeMostPlayedSongs(limit: Int, allowExplicit: Boolean): Flow<List<SongEntity>> =
+        localDataSource.observeHomeMostPlayedSongs(limit, allowExplicit)
+
+    override fun observeHomeLikedSongs(limit: Int, allowExplicit: Boolean): Flow<List<SongEntity>> =
+        localDataSource.observeHomeLikedSongs(limit, allowExplicit)
+
     override suspend fun updateDownloadState(
         videoId: String,
         downloadState: Int,
