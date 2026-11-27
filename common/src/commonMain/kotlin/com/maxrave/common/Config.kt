@@ -369,8 +369,8 @@ object VIDEO_QUALITY {
 }
 
 object LIMIT_CACHE_SIZE {
-    val items: Array<CharSequence> = arrayOf("100MB", "250MB", "500MB", "1GB", "2GB", "5GB", "8GB", "∞")
-    val data: Array<Int> = arrayOf(100, 250, 500, 1000, 2000, 5000, 8000, -1)
+    val items: Array<CharSequence> = arrayOf("100MB", "250MB", "500MB", "1GB", "2GB", "5GB", "8GB", "16GB", "32GB", "∞")
+    val data: Array<Int> = arrayOf(100, 250, 500, 1000, 2000, 5000, 8000, 16000, 32000, -1)
 
     fun getDataFromItem(item: CharSequence?): Int {
         val index = items.indexOf(item)
