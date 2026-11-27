@@ -566,20 +566,19 @@ internal class PlaylistRepositoryImpl(
             youTube
                 .getLibraryPlaylists()
                 .onSuccess { data ->
-                    val input =
+                    val gridMap =
                         data.contents
                             ?.singleColumnBrowseResultsRenderer
                             ?.tabs
-                            ?.get(
-                                0,
-                            )?.tabRenderer
+                            ?.getOrNull(0)
+                            ?.tabRenderer
                             ?.content
                             ?.sectionListRenderer
                             ?.contents
-                            ?.get(
-                                0,
-                            )?.gridRenderer
-                            ?.items
+                            ?.firstOrNull { it.gridRenderer != null }
+                            ?.gridRenderer
+
+                    val input = gridMap?.items
                     val listItem = mutableListOf<PlaylistsResult>()
                     if (input.isNullOrEmpty()) {
                         Logger.w("Library", "No playlists found")
@@ -590,17 +589,8 @@ internal class PlaylistRepositoryImpl(
                         parseLibraryPlaylist(input),
                     )
                     var continuation =
-                        data.contents
-                            ?.singleColumnBrowseResultsRenderer
-                            ?.tabs
-                            ?.firstOrNull()
-                            ?.tabRenderer
-                            ?.content
-                            ?.sectionListRenderer
-                            ?.contents
-                            ?.firstOrNull()
-                            ?.gridRenderer
-                            ?.continuations
+                        gridMap
+                            .continuations
                             ?.firstOrNull()
                             ?.nextContinuationData
                             ?.continuation
@@ -686,20 +676,19 @@ internal class PlaylistRepositoryImpl(
             youTube
                 .getMixedForYou()
                 .onSuccess { data ->
-                    val input =
+                    val gridMap =
                         data.contents
                             ?.singleColumnBrowseResultsRenderer
                             ?.tabs
-                            ?.get(
-                                0,
-                            )?.tabRenderer
+                            ?.getOrNull(0)
+                            ?.tabRenderer
                             ?.content
                             ?.sectionListRenderer
                             ?.contents
-                            ?.get(
-                                0,
-                            )?.gridRenderer
-                            ?.items
+                            ?.firstOrNull { it.gridRenderer != null }
+                            ?.gridRenderer
+
+                    val input = gridMap?.items
                     val listItem = mutableListOf<PlaylistsResult>()
                     if (input.isNullOrEmpty()) {
                         Logger.w("Mixed For You", "No playlists found")
@@ -710,17 +699,8 @@ internal class PlaylistRepositoryImpl(
                         parseLibraryPlaylist(input),
                     )
                     var continuation =
-                        data.contents
-                            ?.singleColumnBrowseResultsRenderer
-                            ?.tabs
-                            ?.firstOrNull()
-                            ?.tabRenderer
-                            ?.content
-                            ?.sectionListRenderer
-                            ?.contents
-                            ?.firstOrNull()
-                            ?.gridRenderer
-                            ?.continuations
+                        gridMap
+                            .continuations
                             ?.firstOrNull()
                             ?.nextContinuationData
                             ?.continuation
