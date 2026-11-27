@@ -1867,6 +1867,19 @@ internal class DataStoreManagerImpl(
         }
     }
 
+    override val maxParallelDownloads: Flow<Int> =
+        settingsDataStore.data.map { preferences ->
+            preferences[MAX_PARALLEL_DOWNLOADS] ?: 3
+        }
+
+    override suspend fun setMaxParallelDownloads(count: Int) {
+        withContext(Dispatchers.IO) {
+            settingsDataStore.edit { settings ->
+                settings[MAX_PARALLEL_DOWNLOADS] = count
+            }
+        }
+    }
+
     override val autoBackupLastTime: Flow<Long> =
         settingsDataStore.data.map { preferences ->
             preferences[AUTO_BACKUP_LAST_TIME] ?: 0L
@@ -2017,6 +2030,7 @@ internal class DataStoreManagerImpl(
         val AUTO_BACKUP_ENABLED = stringPreferencesKey("auto_backup_enabled")
         val AUTO_BACKUP_FREQUENCY = stringPreferencesKey("auto_backup_frequency")
         val AUTO_BACKUP_MAX_FILES = intPreferencesKey("auto_backup_max_files")
+        val MAX_PARALLEL_DOWNLOADS = intPreferencesKey("max_parallel_downloads")
         val AUTO_BACKUP_LAST_TIME = longPreferencesKey("auto_backup_last_time")
     }
 }

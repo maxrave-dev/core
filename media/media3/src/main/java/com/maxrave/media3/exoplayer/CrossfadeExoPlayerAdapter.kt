@@ -841,6 +841,7 @@ internal class CrossfadeExoPlayerAdapter(
                             player.pause()
                             transitionToState(InternalState.PAUSED)
                             internalPlayWhenReady = false
+                            stopPositionUpdates()
                         }
                     }
 
@@ -3262,8 +3263,7 @@ internal class CrossfadeExoPlayerAdapter(
                     try {
                         currentPlayer?.let { player ->
                             if (internalState == InternalState.PLAYING ||
-                                internalState == InternalState.READY ||
-                                internalState == InternalState.PAUSED
+                                internalState == InternalState.READY
                             ) {
                                 // During crossfade, show the incoming track's timeline
                                 val timelinePlayer = if (isCrossfading) secondaryPlayer ?: player else player
