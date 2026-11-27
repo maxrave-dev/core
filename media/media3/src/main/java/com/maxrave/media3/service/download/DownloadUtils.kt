@@ -144,7 +144,22 @@ internal class DownloadUtils(
                             isDownloading = true,
                             isVideo = false,
                         ).lastOrNull()
-                        ?.let {
+                        .let { firstAttempt ->
+                            firstAttempt ?: run {
+                                if (!LiveStreamRegistry.isLive(mediaId)) {
+                                    kotlinx.coroutines.delay(500)
+                                    streamRepository
+                                        .getStream(
+                                            dataStoreManager,
+                                            mediaId,
+                                            isDownloading = true,
+                                            isVideo = false,
+                                        ).lastOrNull()
+                                } else {
+                                    null
+                                }
+                            }
+                        }?.let {
                             if (it.contains("MPD")) {
                                 DashManifestParser().parse(
                                     it.toUri(),
